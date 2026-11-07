@@ -566,8 +566,10 @@ is unit-tested.
 ## Run it
 
 Installers for Windows (`.msi`, setup `.exe`) and Linux (`.deb`) are on the
-[Releases](https://github.com/jp101216/itriage/releases) page. CI also builds
-them on every push, under each run's artifacts.
+[Releases](https://github.com/jp101216/itriage/releases) page, with
+`SHA256SUMS.txt` and a build-provenance attestation for each file (see
+[Checking a download](#checking-a-download)). CI also builds them on every
+push, under each run's artifacts; those builds are never signed.
 
 To build yourself you need Rust (stable) and the Tauri CLI (`cargo install tauri-cli`).
 
@@ -600,11 +602,92 @@ ITRIAGE_PROFILE=profiles/home-lab.toml cargo run -p itriage-core --example triag
 3. On GitHub: **Actions → Release → Run workflow** (on `main`). There's nothing
    to type; it works from the GitHub mobile app too.
 
-The Release workflow runs the full CI build and tests, then tags that commit
-with the version from `tauri.conf.json` and publishes the release with the
-Windows and Linux installers attached. It stops before publishing if that
-version has already been released. Pushing a `vX.Y.Z` tag from a clone does
-the same, but leaves the release as a draft to review first.
+The Release workflow runs the full CI build and tests, rebuilds and signs the
+Windows installers when [code signing](#code-signing) is set up, then tags
+that commit with the version from `tauri.conf.json` and publishes the release
+with the installers, `SHA256SUMS.txt` and a build-provenance attestation for
+each file. It stops before publishing if that version has already been
+released. Tick **Dry run** to build (and sign) without publishing: the
+installers are then attached to the run instead. Pushing a `vX.Y.Z` tag from a
+clone does the same as Run workflow, but leaves the release as a draft to
+review first.
+
+## Code signing
+
+Release builds sign the Windows installers, and the app inside them, with
+[Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/)
+(Microsoft's code-signing service, formerly Trusted Signing) once it's set up.
+Until then the Release workflow publishes them unsigned and says so in the run.
+
+Signing puts a verified publisher name on the installers and on the UAC
+prompt (the MSI, and itriage's "Relaunch as admin") instead of "Unknown
+publisher", and lets endpoint security tools identify who made it. It doesn't
+make SmartScreen's warning disappear at once: reputation builds as signed
+releases from the same identity are downloaded and run.
+
+What it takes: an Azure subscription and about $9.99 a month (the Basic tier:
+5,000 signatures and one certificate profile; a release uses about five).
+Individual developers must be in the US or Canada, and Microsoft checks a
+government ID.
+
+**One-time setup** in the Azure portal:
+
+1. Under **Subscriptions → your subscription → Resource providers**, register
+   **Microsoft.CodeSigning**. The billing account's type must be
+   *Individual*, and its legal name and sold-to address must match the ID you
+   verify with.
+2. Create an **Artifact Signing account** (Basic tier). Note its region's
+   endpoint, such as `https://eus.codesigning.azure.net` for East US.
+3. On the account, under **Access control (IAM)**, give yourself the
+   **Artifact Signing Identity Verifier** role. Then **Identity validations →
+   Individual Developer → New identity → Public**, and follow the Microsoft
+   Verified ID steps (a photo of your ID and a selfie). It takes 1 to 20
+   business days.
+4. When the validation shows **Completed**, add a **Certificate profile** of
+   type **Public Trust** with your validated identity.
+5. In **Microsoft Entra ID → App registrations**, create an app (for example
+   "itriage releases"). Under **Certificates & secrets → Federated
+   credentials**, add **GitHub Actions deploying Azure resources** with
+   organization `jp101216`, repository `ITriage` (same capitals), entity
+   **Environment**, and name `release`. Only the release workflow's signing job
+   runs in that environment, so nothing else can sign, and there's no secret to
+   store or renew.
+6. Back on the signing account, **Access control (IAM) → Add role
+   assignment → Artifact Signing Certificate Profile Signer**, for that app.
+
+Then in GitHub, under **Settings → Secrets and variables → Actions →
+Variables** (none of these values are secret):
+
+| Variable | Value |
+|---|---|
+| `AZURE_TENANT_ID` | the app registration's Directory (tenant) ID |
+| `AZURE_CLIENT_ID` | the app registration's Application (client) ID |
+| `ARTIFACT_SIGNING_ENDPOINT` | the account's endpoint, e.g. `https://eus.codesigning.azure.net` |
+| `ARTIFACT_SIGNING_ACCOUNT` | the Artifact Signing account's name |
+| `ARTIFACT_SIGNING_PROFILE` | the certificate profile's name |
+
+Optionally, under **Settings → Environments → release**, limit deployments to
+`main` and `v*` tags, so a branch can't sign.
+
+Try it with **Release → Run workflow → Dry run**. The **Sign Windows
+installers** job lists each file with its signer, and the run's
+`signed-Windows` artifact holds the signed installers to test on a PC. The
+signing step uses Microsoft's own pieces only: `signtool` from the Windows SDK
+with the Artifact Signing plug-in from NuGet (version pinned in `release.yml`).
+
+### Checking a download
+
+From the release after v0.5.0, every release has these. `SHA256SUMS.txt`
+lists each file's SHA-256. The attestation proves a file was built by this
+repository's Release workflow, from a specific commit:
+
+```bash
+gh attestation verify itriage_X.Y.Z_x64-setup.exe -R jp101216/ITriage
+```
+
+On Windows, a signed installer shows its publisher under **Properties →
+Digital Signatures**, or with
+`Get-AuthenticodeSignature .\itriage_X.Y.Z_x64-setup.exe` in PowerShell.
 
 ## Security notes
 
@@ -621,6 +704,11 @@ the same, but leaves the release as a draft to review first.
 * KB links open only if they're `https://`; history files can only be loaded
   from the history folder (other reports come in by content, through Open).
 * A run and a fix never overlap, and every fix attempt is audited.
+* Releases carry SHA-256 checksums and GitHub build-provenance attestations,
+  and the Windows installers are signed once [code signing](#code-signing) is
+  set up. The signing job signs in to Azure with a short-lived OIDC token
+  that only the `release` environment can get, so no signing secret is stored
+  in GitHub.
 * Windows checks use native APIs rather than spawning PowerShell, which is
   faster and still works where PowerShell is locked down. Three Tune-up steps
   need cmdlets with no plain API (adapter power settings and adapter restarts
@@ -662,7 +750,6 @@ RUSTC_BOOTSTRAP=1 cargo clippy -Zbuild-std=std,panic_abort \
 * Gateway and DNS latency over the destination's route, as NetTriage does, rather than the default route.
 * Secure-channel check for domain trust (needs elevation).
 * More OEMs, plus flatpak/snap on Linux.
-* Code signing for the Windows installer.
 
 ## License
 
