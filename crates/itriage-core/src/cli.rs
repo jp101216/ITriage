@@ -42,7 +42,8 @@ SAFETY
 OUTPUT
   --json                 Print the full JSON report instead of text
   --log                  Include each module's transcript in the text
-  --out PATH             Also write the JSON report to PATH (and PATH.txt)
+  --out PATH             Also write the JSON report (or comparison) to PATH,
+                         with the text beside it as PATH.txt
   --no-history           Don't save this run in the history folder
   --quiet                No progress lines on stderr
 
@@ -155,7 +156,7 @@ pub fn main(argv: Vec<String>) -> i32 {
         return 0;
     }
     if let Some((old, new)) = &args.compare {
-        return compare(old, new, args.json);
+        return compare(old, new, args.json, args.out.as_deref());
     }
     if let Some((id, target)) = &args.fix {
         return match crate::actions::run(id, target.as_deref(), &profile, remote_safe) {
@@ -344,7 +345,9 @@ fn list(profile: &Profile, remote_safe: bool) {
     }
 }
 
-fn compare(old: &std::path::Path, new: &std::path::Path, json: bool) -> i32 {
+/// Compare-NetTriage: two saved runs of one computer, as text (or JSON),
+/// and with `--out` as a JSON file with the text beside it.
+fn compare(old: &std::path::Path, new: &std::path::Path, json: bool, out: Option<&std::path::Path>) -> i32 {
     let load = |p: &std::path::Path| report::load(p);
     let (a, b) = match (load(old), load(new)) {
         (Ok(a), Ok(b)) => (a, b),
@@ -353,20 +356,26 @@ fn compare(old: &std::path::Path, new: &std::path::Path, json: bool) -> i32 {
             return 1;
         }
     };
-    match report::compare(&a, &b) {
-        Ok(d) if json => {
-            println!("{}", serde_json::to_string_pretty(&d).expect("diff serializes"));
-            0
-        }
-        Ok(d) => {
-            println!("{}", report::render_diff(&d, &a.host.hostname));
-            0
-        }
+    let d = match report::compare(&a, &b) {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("itriage: {e}");
-            1
+            return 1;
+        }
+    };
+    let as_json = serde_json::to_string_pretty(&d).expect("diff serializes");
+    let as_text = report::render_diff(&d, &a.host.hostname);
+    let mut code = 0;
+    if let Some(out) = out {
+        let txt = out.with_extension("txt");
+        let written = std::fs::write(out, &as_json).and_then(|_| if txt != out { std::fs::write(&txt, &as_text) } else { Ok(()) });
+        if let Err(e) = written {
+            eprintln!("itriage: couldn't write {}: {e}", out.display());
+            code = 1;
         }
     }
+    println!("{}", if json { &as_json } else { &as_text });
+    code
 }
 
 /// Windows release builds are GUI programs, which start without a console.
@@ -423,6 +432,43 @@ mod tests {
         assert_eq!(run(&["--quiet", "--no-history", "--preset", "nope"]), 1);
         assert_eq!(run(&["--quiet", "--no-history", "--target", "bad host;x"]), 1);
         assert_eq!(run(&["--compare", "missing-a.json", "missing-b.json"]), 1);
+    }
+
+    #[test]
+    fn compares_two_saved_runs_and_writes_the_comparison() {
+        use crate::model::{Category, Finding, ModuleResult};
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-cli-compare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let run_at = |when: &str, ms: f64| {
+            let finding = if ms > 20.0 { Finding::warn("Gateway round trip", format!("avg {ms} ms")) } else { Finding::ok("Gateway round trip", format!("avg {ms} ms")) };
+            let result = ModuleResult {
+                module_id: "net.latency".into(),
+                title: "Latency & packet loss".into(),
+                category: Category::Network,
+                findings: vec![finding.with_metric(ms, "ms", true)],
+                summary: String::new(),
+                error: None,
+                duration_ms: 1,
+                log: Vec::new(),
+                restart_required: false,
+                preview: false,
+            };
+            let mut r = Report::new(crate::host_context(), None, vec![result], false);
+            r.generated = when.into();
+            serde_json::to_string(&r).unwrap()
+        };
+        let (before, after, out) = (dir.join("before.json"), dir.join("after.json"), dir.join("comparison.json"));
+        std::fs::write(&before, run_at("2026-11-01T10:00:00Z", 38.0)).unwrap();
+        std::fs::write(&after, run_at("2026-11-02T10:00:00Z", 3.0)).unwrap();
+        let path = |p: &std::path::Path| p.display().to_string();
+        let code = main(vec!["--compare".into(), path(&after), path(&before), "--out".into(), path(&out)]);
+        assert_eq!(code, 0);
+        let diff: crate::report::ReportDiff = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+        assert_eq!(diff.resolved, 1, "the older run is the baseline, whichever order they're given");
+        let text = std::fs::read_to_string(out.with_extension("txt")).unwrap();
+        assert!(text.contains("38 ms → 3 ms"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -263,6 +263,14 @@ foreach ($n in $names | Where-Object { $failed -notcontains $_ }) {
 'ITRIAGE-ROWS ' + (ConvertTo-Json -InputObject @($rows) -Compress)
 "#;
 
+/// What the restart script would restart: physical adapters that are up.
+#[cfg_attr(not(windows), allow(dead_code))]
+const PHYSICAL_UP: &str = r#"
+$ErrorActionPreference = 'Stop'
+$rows = @(Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { [pscustomobject]@{ Item = $_.Name; Status = 'Skipped'; Detail = $_.InterfaceDescription } })
+'ITRIAGE-ROWS ' + (ConvertTo-Json -InputObject @($rows) -Compress)
+"#;
+
 impl TriageModule for RestartAdapters {
     fn info(&self) -> ModuleInfo {
         let description = if cfg!(windows) {
@@ -396,9 +404,21 @@ mod imp {
         }
     }
 
-    /// What a real run restarts: the physical adapters that are up.
+    /// What a real run restarts, asked the same way the restart script
+    /// asks (physical adapters that are up), with their addresses.
     pub fn restart_targets() -> Result<Vec<(String, String)>, String> {
-        Ok(up_adapters())
+        let out = crate::win::ps::run(PHYSICAL_UP, &RunContext::silent(), Duration::from_secs(60))?;
+        let rows = crate::fixes::rows(&out.stdout).ok_or_else(|| {
+            format!("PowerShell couldn't list the adapters ({})", crate::util::exit_label(out.code))
+        })?;
+        let addrs = up_adapters();
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let a = addrs.iter().find(|(n, _)| *n == r.item).map_or_else(|| "no address".to_string(), |(_, a)| a.clone());
+                (r.item, a)
+            })
+            .collect())
     }
 
     pub fn restart_adapters(ctx: &RunContext) -> Result<Vec<Finding>, String> {

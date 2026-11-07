@@ -78,7 +78,9 @@ with the last triage even if a tune-up ran in between. The comparison shows:
   measurement one run has and the other doesn't, or a different site profile.
 
 To compare any two saved runs: **History**, tick two, **Compare**; or
-`itriage --compare before.json after.json`. They must be from the same computer.
+`itriage --compare before.json after.json` (add `--out comparison.json` to save
+the comparison as JSON with a text summary beside it, as Compare-NetTriage's
+`-ExportPath` does). They must be from the same computer.
 
 ### Invoke-EndpointTuneUp → Tune-up
 
@@ -439,7 +441,8 @@ itriage [OPTIONS] [MODULE...]
   --redact-serial        Show REDACTED instead of the serial number
   --json                 Print the full JSON report instead of text
   --log                  Include each module's transcript in the text
-  --out PATH             Also write the JSON report to PATH (and PATH.txt)
+  --out PATH             Also write the JSON report (or comparison) to PATH,
+                         with the text beside it as PATH.txt
   --no-history           Don't save this run in the history folder
   --quiet                No progress lines on stderr
   --fix ID [TARGET]      Run one one-click fix
@@ -632,7 +635,7 @@ the same, but leaves the release as a draft to review first.
 |---|---|---|
 | Workspace, Linux | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | Core crate, Windows | clippy-clean for `x86_64-pc-windows-msvc` via `-Zbuild-std` | clean |
-| Engine | 127 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison | all pass |
+| Engine | 129 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison | all pass |
 | Command line, Linux | every read-only module and the triage preset (with a destination) run for real; the Tune-up and update modules previewed; exit codes checked | working |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: the new commands exercised over IPC (presets, destination parsing, preview runs, remote-safe refusals, two triage runs compared, transcripts, fix validation, concurrent-run refusal) and the tune-up preview screen rendered | working |
 | Interface | the browser preview driven through every v0.5 flow (presets, preview, restart banner, destination, remote-safe locks, comparison, transcript, narrow layout), no console errors | working |

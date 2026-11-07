@@ -82,6 +82,8 @@ impl TriageModule for Latency {
             };
             let loss = stats.loss_pct();
             let silent = stats.received == 0;
+            // "gateway" mid-sentence, but "DNS server" keeps its capitals.
+            let word = if t.kind == "Gateway" { "gateway" } else { t.kind };
             match stats.avg_ms {
                 Some(avg) => {
                     findings.push(
@@ -97,7 +99,7 @@ impl TriageModule for Latency {
                         )
                         .with_metric(avg, "ms", true),
                     );
-                    parts.push(format!("{} {}, {loss}% loss", t.kind.to_lowercase(), ms(avg)));
+                    parts.push(format!("{word} {}, {loss}% loss", ms(avg)));
                 }
                 None => {
                     findings.push(Finding::new(
@@ -105,7 +107,7 @@ impl TriageModule for Latency {
                         "no reply",
                         if t.must_answer { Severity::Critical } else { Severity::Info },
                     ));
-                    parts.push(format!("{} not answering", t.kind.to_lowercase()));
+                    parts.push(format!("{word} not answering"));
                 }
             }
             let severity = if silent && !t.must_answer { Severity::Info } else { th.packet_loss_pct.high(loss) };

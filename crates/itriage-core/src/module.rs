@@ -102,7 +102,7 @@ impl<'a> RunContext<'a> {
     }
 
     /// The same context with a different progress sink.
-    fn with_sink<'b>(&self, sink: &'b (dyn Fn(&str) + Send + Sync)) -> RunContext<'b>
+    pub(crate) fn with_sink<'b>(&self, sink: &'b (dyn Fn(&str) + Send + Sync)) -> RunContext<'b>
     where
         'a: 'b,
     {

@@ -330,7 +330,7 @@
       F("Outbound TCP (8.8.8.8:53)", "connected in 19 ms", "ok", null, { metric: M(19, "ms") }),
       F("Public IP", "203.0.113.47"),
     ]),
-    "net.latency": R("net.latency", "Latency & packet loss", "network", "Gateway 38 ms, 0% loss · dns server 12 ms, 0% loss", 4120, [
+    "net.latency": R("net.latency", "Latency & packet loss", "network", "Gateway 38 ms, 0% loss · DNS server 12 ms, 0% loss", 4120, [
       F("Gateway 10.20.32.1 round trip", "avg 38 ms (min 4 ms / max 121 ms)", "warning", null, { metric: M(38, "ms") }),
       F("Gateway 10.20.32.1 packet loss", "0% (4 of 4 replies)", "ok", null, { metric: M(0, "%") }),
       F("DNS server 10.20.0.53 round trip", "avg 12 ms (min 9 ms / max 16 ms)", "ok", null, { metric: M(12, "ms") }),

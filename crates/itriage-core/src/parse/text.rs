@@ -155,6 +155,34 @@ pub fn utf16le_base64(text: &str) -> String {
 
 /// Hide the password in a proxy URL: `http://user:secret@proxy:8080` →
 /// `http://user:•••@proxy:8080`.
+/// The error text in a line of PowerShell's CLIXML, the form it writes its
+/// error, warning and progress streams in when stderr is redirected. One
+/// entry per line of the message; progress and other records give nothing.
+pub fn clixml_errors(line: &str) -> Vec<String> {
+    const OPEN: &str = "<S S=\"Error\">";
+    let mut text = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let Some(end) = after.find("</S>") else { break };
+        text.push_str(&after[..end]);
+        rest = &after[end + "</S>".len()..];
+    }
+    text.replace("_x000D__x000A_", "\n")
+        .replace("_x000A_", "\n")
+        .replace("_x000D_", "")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn redact_userinfo(url: &str) -> String {
     let (scheme, rest) = match url.find("://") {
         Some(i) => (&url[..i + 3], &url[i + 3..]),
@@ -173,6 +201,21 @@ pub fn redact_userinfo(url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_errors_out_of_clixml() {
+        let progress = r#"<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><Obj S="progress" RefId="0"><TN RefId="0"><T>System.Management.Automation.PSCustomObject</T></TN><MS><PR N="Record"><AV>Preparing modules for first use.</AV></PR></MS></Obj></Objs>"#;
+        assert!(clixml_errors(progress).is_empty());
+        let error = r#"<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04"><S S="Error">Restart-NetAdapter : Access is denied._x000D__x000A_</S><S S="Error">At line:5 char:9_x000D__x000A_</S><S S="Error">    + CategoryInfo : PermissionDenied: (MSFT_NetAdapter &lt;Wi-Fi&gt;) _x000D__x000A_</S></Objs>"#;
+        assert_eq!(
+            clixml_errors(error),
+            vec![
+                "Restart-NetAdapter : Access is denied.".to_string(),
+                "At line:5 char:9".to_string(),
+                "+ CategoryInfo : PermissionDenied: (MSFT_NetAdapter <Wi-Fi>)".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn strips_escape_codes() {
