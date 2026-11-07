@@ -1,0 +1,88 @@
+name: Release
+
+# Publishes a GitHub Release with the Windows and Linux installers.
+#
+#   * Actions -> Release -> Run workflow (on main). Nothing to type: it
+#     releases the version in src-tauri/tauri.conf.json and tags the commit
+#     it built. It stops if that version has already been released.
+#   * Pushing a vX.Y.Z tag from a clone does the same, but leaves the release
+#     as a draft to review first. The tag must match the app version.
+#
+# The full CI workflow (lint, tests, smoke runs, installers) runs first, and
+# the notes come from release-notes/<tag>.md when that file exists.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Work out the version and notes
+        shell: bash
+        run: |
+          version="v$(jq -r .version src-tauri/tauri.conf.json)"
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            tag="$GITHUB_REF_NAME"
+            if [[ "$tag" != "$version" ]]; then
+              echo "::error::Tag $tag doesn't match the app version ($version in src-tauri/tauri.conf.json)."
+              exit 1
+            fi
+            draft=true
+          else
+            if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+              echo "::error::Releases are published from main; this run is on $GITHUB_REF_NAME."
+              exit 1
+            fi
+            tag="$version"
+            if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+              echo "::error::$tag has already been released. Bump the version first (see Releasing in the README)."
+              exit 1
+            fi
+            draft=false
+          fi
+          if [[ -f "release-notes/$tag.md" ]]; then
+            cp "release-notes/$tag.md" notes.md
+          else
+            echo "itriage $tag" > notes.md
+          fi
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "DRAFT=$draft" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: itriage-*
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: itriage ${{ env.TAG }}
+          body_path: notes.md
+          draft: ${{ env.DRAFT }}
+          fail_on_unmatched_files: true
+          files: |
+            dist/**/*.msi
+            dist/**/*.exe
+            dist/**/*.deb
