@@ -625,10 +625,13 @@ publisher", and lets endpoint security tools identify who made it. It doesn't
 make SmartScreen's warning disappear at once: reputation builds as signed
 releases from the same identity are downloaded and run.
 
-What it takes: an Azure subscription and about $9.99 a month (the Basic tier:
-5,000 signatures and one certificate profile; a release uses about five).
-Individual developers must be in the US or Canada, and Microsoft checks a
-government ID.
+What it takes: a paid Azure subscription (pay-as-you-go; free, trial and
+sponsored subscriptions aren't supported) and about $9.99 a month for the
+Basic tier (5,000 signatures and one certificate profile; a release uses about
+five). Individual developers must be in the US or Canada, and Microsoft checks
+a government ID. If the portal shows an **Upgrade** button, the subscription
+is a free account: upgrade it first, because signing resources can't be moved
+to another subscription later.
 
 **One-time setup** in the Azure portal:
 
@@ -636,8 +639,10 @@ government ID.
    **Microsoft.CodeSigning**. The billing account's type must be
    *Individual*, and its legal name and sold-to address must match the ID you
    verify with.
-2. Create an **Artifact Signing account** (Basic tier). Note its region's
-   endpoint, such as `https://eus.codesigning.azure.net` for East US.
+2. Search the portal (the magnifying glass at the top) for **Artifact Signing
+   Accounts**; it isn't in the Create a resource categories. Select **Create**
+   and pick the Basic tier. Note its region's endpoint, such as
+   `https://eus.codesigning.azure.net` for East US.
 3. On the account, under **Access control (IAM)**, give yourself the
    **Artifact Signing Identity Verifier** role. Then **Identity validations →
    Individual Developer → New identity → Public**, and follow the Microsoft
