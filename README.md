@@ -639,7 +639,7 @@ the same, but leaves the release as a draft to review first.
 | Command line, Linux | every read-only module and the triage preset (with a destination) run for real; the Tune-up and update modules previewed; exit codes checked | working |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: the new commands exercised over IPC (presets, destination parsing, preview runs, remote-safe refusals, two triage runs compared, transcripts, fix validation, concurrent-run refusal) and the tune-up preview screen rendered | working |
 | Interface | the browser preview driven through every v0.5 flow (presets, preview, restart banner, destination, remote-safe locks, comparison, transcript, narrow layout), no console errors | working |
-| Windows, CI | `windows-latest` runs the tests, every read-only module, the triage preset with a destination, and previews of the Tune-up and update modules (which exercises the PowerShell runner read-only) | see the latest CI run |
+| Windows, CI | `windows-latest` (Windows Server 2025): 122 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); installers built | passing |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 
 A CI runner is a server VM with no Wi-Fi, battery, printers or domain, so those
