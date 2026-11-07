@@ -1503,7 +1503,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "itriage"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "itriage-core",
  "serde",
@@ -1514,12 +1514,13 @@ dependencies = [
 
 [[package]]
 name = "itriage-core"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "libc",
  "serde",
  "serde_json",
  "sysinfo",
+ "toml 1.2.1+spec-1.1.0",
  "windows 0.62.2",
 ]
 

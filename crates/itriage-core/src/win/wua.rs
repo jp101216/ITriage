@@ -53,6 +53,8 @@ pub enum Outcome {
     InstalledWithErrors,
     Failed(String),
     DownloadFailed(String),
+    /// Not attempted because the run was cancelled.
+    Skipped,
 }
 
 impl Outcome {
@@ -65,6 +67,7 @@ impl Outcome {
             Outcome::InstalledWithErrors => "installed, with errors".into(),
             Outcome::Failed(why) => format!("install failed ({why})"),
             Outcome::DownloadFailed(why) => format!("download failed ({why})"),
+            Outcome::Skipped => "skipped (run cancelled)".into(),
         }
     }
 }
@@ -212,7 +215,17 @@ pub fn install(kind: Kind, include_optional: bool, ctx: &RunContext) -> Result<I
     let mut ready: Vec<(IUpdate, Pending)> = Vec::new();
     let mut results: Vec<(Pending, Outcome)> = Vec::new();
 
+    let mut announced = false;
     for (n, (u, p)) in chosen.into_iter().enumerate() {
+        // Cancelling is safe between downloads: nothing is half-installed.
+        if ctx.cancelled() {
+            if !announced {
+                ctx.log("Cancelled: skipping the remaining downloads.");
+                announced = true;
+            }
+            results.push((p, Outcome::Skipped));
+            continue;
+        }
         // SAFETY: property calls on a live IUpdate.
         unsafe {
             if !yes(u.EulaAccepted().map_err(wu("reading EULA state"))?) {
@@ -238,6 +251,15 @@ pub fn install(kind: Kind, include_optional: bool, ctx: &RunContext) -> Result<I
     }
 
     if ready.is_empty() {
+        return Ok(InstallReport {
+            results,
+            reboot_required: false,
+        });
+    }
+    // Last safe point: once the batch starts it runs to completion.
+    if ctx.cancelled() {
+        ctx.log("Cancelled before installing; downloaded updates stay cached for next time.");
+        results.extend(ready.into_iter().map(|(_, p)| (p, Outcome::Skipped)));
         return Ok(InstallReport {
             results,
             reboot_required: false,

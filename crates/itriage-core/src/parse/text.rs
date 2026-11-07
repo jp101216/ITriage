@@ -119,6 +119,19 @@ pub fn first_line(s: &str) -> &str {
     s.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("")
 }
 
+/// Collapse every run of whitespace, line breaks included, to one space.
+pub fn collapse_whitespace(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `key=value` lines, as `systemctl show` and `timedatectl show` print them.
+pub fn key_values(s: &str) -> std::collections::HashMap<String, String> {
+    s.lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,5 +173,14 @@ mod tests {
         assert_eq!(truncate_chars("héllo wörld", 6), "héllo…");
         assert_eq!(truncate_chars("short", 10), "short");
         assert_eq!(first_line("\n  \n  first \nsecond"), "first");
+    }
+
+    #[test]
+    fn collapses_whitespace_and_reads_key_values() {
+        assert_eq!(collapse_whitespace("Faulting app: x.exe,\r\n  version: 1.2\r\n"), "Faulting app: x.exe, version: 1.2");
+        let kv = key_values("NTP=yes\nNTPSynchronized=no\nTimezone=America/Detroit\njunk");
+        assert_eq!(kv["NTP"], "yes");
+        assert_eq!(kv["Timezone"], "America/Detroit");
+        assert_eq!(kv.len(), 3);
     }
 }

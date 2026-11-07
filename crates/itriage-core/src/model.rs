@@ -35,6 +35,10 @@ pub enum Category {
     Network,
     Processes,
     Eventlog,
+    /// Service-desk workstation checks: time, domain, printers, devices, Wi-Fi, certs, battery.
+    Workstation,
+    /// Site-profile driven checks: required apps, services and endpoints.
+    Site,
     Fixes,
     Updates,
 }
@@ -46,10 +50,34 @@ impl Category {
             Category::Network => "Network",
             Category::Processes => "Processes & services",
             Category::Eventlog => "Event log",
+            Category::Workstation => "Workstation",
+            Category::Site => "Site & clinical",
             Category::Fixes => "Fixes",
             Category::Updates => "Updates",
         }
     }
+}
+
+/// A one-click fix offered on a finding ("Restart Print Spooler"). The core
+/// strips actions the active site policy doesn't allow before results leave
+/// the engine, and re-checks the policy when the fix actually runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FixRef {
+    /// Built-in fix id, e.g. `restart-spooler`, `start-service`.
+    pub id: String,
+    /// Button text.
+    pub label: String,
+    /// What the fix acts on, e.g. a service name for `start-service`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub requires_admin: bool,
+}
+
+/// A knowledge-base article linked to a finding by the site profile.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KbLink {
+    pub title: String,
+    pub url: String,
 }
 
 /// One line of a report: a labelled value with a severity, plus an optional
@@ -61,6 +89,10 @@ pub struct Finding {
     pub severity: Severity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<FixRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kb: Option<KbLink>,
 }
 
 impl Finding {
@@ -70,6 +102,8 @@ impl Finding {
             value: value.into(),
             severity,
             detail: None,
+            action: None,
+            kb: None,
         }
     }
     pub fn ok(label: impl Into<String>, value: impl Into<String>) -> Self {
@@ -91,6 +125,11 @@ impl Finding {
         if !detail.trim().is_empty() {
             self.detail = Some(detail);
         }
+        self
+    }
+    /// Offer a one-click fix on this finding (see `crate::actions`).
+    pub fn with_action(mut self, action: FixRef) -> Self {
+        self.action = Some(action);
         self
     }
 }
@@ -130,6 +169,10 @@ pub struct ModuleInfo {
     pub warning: Option<String>,
     /// Which OSes this module actually does something useful on.
     pub platforms: Vec<&'static str>,
+    /// Set when the active site policy blocks this module; the UI shows it
+    /// locked with this reason, and the engine refuses to run it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<String>,
 }
 
 impl ModuleInfo {
@@ -145,7 +188,13 @@ impl ModuleInfo {
             requires_admin: false,
             warning: None,
             platforms: vec!["windows", "linux"],
+            locked: None,
         }
+    }
+    /// Restrict to one platform (for checks that only make sense there).
+    pub fn only(mut self, platform: &'static str) -> Self {
+        self.platforms = vec![platform];
+        self
     }
     pub fn mutating(mut self) -> Self {
         self.mutating = true;

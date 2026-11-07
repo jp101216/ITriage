@@ -1,0 +1,95 @@
+# Example site profile: a shared clinical workstation.
+#
+# Every host name, service and article below is a PLACEHOLDER. Replace them
+# with the values from your own environment's documentation before using it.
+#
+# Deploy it machine-wide, where only administrators can edit it:
+#   Windows: %ProgramData%\itriage\profile.toml
+#   Linux:   /etc/itriage/profile.toml
+# A machine-wide profile always wins over a per-user one, and if it doesn't
+# parse, itriage runs read-only rather than ignoring it.
+
+name = "Clinical workstation (example)"
+description = "Shared nursing-unit PC: badge-tap sign-in, virtual desktop, label printer"
+
+[policy]
+# Patching comes from the management platform, so the install modules are locked.
+allow_installs = false
+# Only these one-click fixes can run. Delete a line to switch that fix off.
+# "start-service:<name>" allows starting that one service only.
+fixes = [
+  "restart-spooler",
+  "clear-print-queue",
+  "resync-time",
+  "gpupdate",
+  "flush-dns",
+  "start-service:Spooler",
+  "start-service:W32Time",
+]
+# Open in the simple self-service view. Set technician_view = false to keep
+# the app in self-service mode (a kiosk for end users).
+start_in = "self-service"
+technician_view = true
+
+[time]
+# The clock is measured against this server (usually a domain controller).
+server = "dc01.example.org"
+# Windows zone name or IANA name ("America/Detroit"); a mismatch is flagged.
+zone = "Eastern Standard Time"
+
+[[require.service]]
+name = "Spooler"
+label = "Print Spooler"
+
+[[require.service]]
+name = "W32Time"
+label = "Windows Time"
+
+[[require.app]]
+# Matched against installed program names, case-insensitively.
+name = "Citrix Workspace"
+min_version = "24.2"
+
+[[require.app]]
+name = "Imprivata"
+label = "Badge-tap SSO agent"
+
+[[require.endpoint]]
+label = "EHR gateway"
+host = "ehr-gateway.example.org"
+port = 443
+
+[[require.endpoint]]
+label = "Print server"
+host = "print01.example.org"
+port = 445
+
+[[require.device]]
+# Matched against device names, case-insensitively.
+label = "Badge reader"
+match = "pcProx"
+
+[[require.device]]
+label = "Dictation microphone"
+match = "PowerMic"
+
+# Knowledge-base links, attached to findings that need attention.
+# `module` limits a rule to one module; `match` is a case-insensitive
+# substring of the finding's label, value or detail.
+[[kb]]
+module = "desk.printers"
+match = "stuck"
+title = "Clear a stuck print queue"
+url = "https://kb.example.org/printing/stuck-queue"
+
+[[kb]]
+module = "desk.time"
+match = "Offset"
+title = "Clock drift and sign-in failures"
+url = "https://kb.example.org/windows/time-sync"
+
+[[kb]]
+module = "desk.wifi"
+match = "Signal"
+title = "Report a Wi-Fi dead spot"
+url = "https://kb.example.org/network/wifi-coverage"

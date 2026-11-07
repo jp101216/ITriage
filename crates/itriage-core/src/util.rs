@@ -382,6 +382,27 @@ pub fn privileged_shell(script: &str) -> Result<(Command, bool), String> {
     }
 }
 
+/// Run `program args…` as root *without* a shell: directly when already
+/// root, otherwise through pkexec. Arguments are passed through untouched,
+/// so nothing in them is ever interpreted. Returns the command and whether
+/// pkexec is in the way.
+#[cfg(unix)]
+pub fn privileged(program: &str, args: &[&str]) -> Result<(Command, bool), String> {
+    let path = find_in_path(program).ok_or_else(|| format!("`{program}` isn't installed."))?;
+    if crate::host::is_elevated() {
+        let mut c = cmd(&path);
+        c.args(args);
+        Ok((c, false))
+    } else if command_exists("pkexec") {
+        let mut c = cmd("pkexec");
+        c.arg(&path).args(args);
+        Ok((c, true))
+    } else {
+        Err("Needs root: run itriage with sudo, or install polkit (pkexec) so it can ask for your password."
+            .to_string())
+    }
+}
+
 /// pkexec's own exit codes: 126 = the password dialog was dismissed,
 /// 127 = this account isn't allowed to authenticate as an admin.
 #[cfg(unix)]

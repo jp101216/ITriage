@@ -52,25 +52,28 @@ mod imp {
             Ok(report) => {
                 restart |= report.reboot_required;
                 let ok = report.results.iter().filter(|(_, o)| o.succeeded()).count();
-                let failed = report.results.len() - ok;
+                let skipped = report.results.iter().filter(|(_, o)| matches!(o, wua::Outcome::Skipped)).count();
+                let failed = report.results.len() - ok - skipped;
+                let mut value = if report.results.is_empty() {
+                    "nothing to install".to_string()
+                } else {
+                    format!("{ok} installed, {failed} failed")
+                };
+                if skipped > 0 {
+                    value.push_str(&format!(", {skipped} skipped"));
+                }
                 findings.push(Finding::new(
                     "Windows Update",
-                    if report.results.is_empty() {
-                        "nothing to install".to_string()
-                    } else {
-                        format!("{ok} installed, {failed} failed")
-                    },
-                    if failed > 0 { Severity::Warning } else { Severity::Ok },
+                    value,
+                    if failed > 0 || skipped > 0 { Severity::Warning } else { Severity::Ok },
                 ));
                 for (p, outcome) in &report.results {
-                    findings.push(
-                        Finding::new(
-                            p.label(),
-                            outcome.label(),
-                            if outcome.succeeded() { Severity::Ok } else { Severity::Critical },
-                        )
-                        .with_detail(p.title.clone()),
-                    );
+                    let severity = match outcome {
+                        o if o.succeeded() => Severity::Ok,
+                        wua::Outcome::Skipped => Severity::Info,
+                        _ => Severity::Critical,
+                    };
+                    findings.push(Finding::new(p.label(), outcome.label(), severity).with_detail(p.title.clone()));
                 }
                 if ok > 0 {
                     installed.push(format!("{ok} Windows update{}", plural(ok)));
@@ -80,7 +83,9 @@ mod imp {
         }
 
         // --- 2. Apps via winget ---
-        if winget::available() {
+        if ctx.cancelled() {
+            findings.push(Finding::info("winget apps", "skipped (run cancelled)"));
+        } else if winget::available() {
             ctx.log("Upgrading apps with winget…");
             match winget::upgrade_all(ctx) {
                 Ok(run) => {

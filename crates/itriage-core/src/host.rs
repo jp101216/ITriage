@@ -2,15 +2,15 @@
 //! host's name, whether we're elevated, and how admin-only modules will get
 //! their rights.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HostContext {
     pub hostname: String,
     pub os: String,
     /// `std::env::consts::OS`: "windows", "linux", …
-    pub platform: &'static str,
+    pub platform: String,
     pub elevated: bool,
     /// Windows only: the app can restart itself elevated through UAC.
     pub can_relaunch_elevated: bool,
@@ -29,7 +29,7 @@ pub fn host_context() -> HostContext {
     HostContext {
         hostname,
         os,
-        platform,
+        platform: platform.to_string(),
         elevated,
         can_relaunch_elevated,
         elevation_note,
@@ -87,6 +87,48 @@ pub fn relaunch_elevated() -> Result<(), String> {
 #[cfg(not(windows))]
 pub fn relaunch_elevated() -> Result<(), String> {
     Err("Relaunching elevated is a Windows feature. On Linux, install modules ask for your password through pkexec instead.".into())
+}
+
+/// Open an `https://` link (a KB article) in the default browser. Anything
+/// else is refused, so a link can never launch a program or a local file.
+pub fn open_url(url: &str) -> Result<(), String> {
+    let safe = url.starts_with("https://")
+        && url.len() > "https://".len()
+        && url.len() <= 2048
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\');
+    if !safe {
+        return Err("Only https:// links can be opened.".into());
+    }
+    open_target(url)
+}
+
+/// Show a folder in the file manager.
+pub fn open_folder(path: &std::path::Path) -> Result<(), String> {
+    if !path.is_dir() {
+        return Err(format!("{} doesn't exist yet.", path.display()));
+    }
+    open_target(&path.display().to_string())
+}
+
+#[cfg(windows)]
+fn open_target(target: &str) -> Result<(), String> {
+    crate::win::shell::open(target)
+}
+
+#[cfg(not(windows))]
+fn open_target(target: &str) -> Result<(), String> {
+    if !crate::util::command_exists("xdg-open") {
+        return Err("xdg-open isn't installed, so links can't be opened from here.".into());
+    }
+    let mut c = crate::util::cmd("xdg-open");
+    c.arg(target)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child = c.spawn().map_err(|e| format!("couldn't run xdg-open: {e}"))?;
+    std::thread::spawn(move || {
+        let _ = child.wait(); // reap it; xdg-open hands off and exits
+    });
+    Ok(())
 }
 
 /// The machine's manufacturer, for routing driver/BIOS updates to the right

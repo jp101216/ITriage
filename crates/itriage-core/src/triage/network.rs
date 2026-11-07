@@ -46,11 +46,15 @@ impl TriageModule for Connectivity {
             .to_socket_addrs()
             .map(|mut addrs| addrs.next().is_some())
             .unwrap_or(false);
-        findings.push(Finding::new(
+        let mut dns = Finding::new(
             "DNS resolution (example.com)",
             if dns_ok { "resolved" } else { "failed" },
             if dns_ok { Severity::Ok } else { Severity::Critical },
-        ));
+        );
+        if !dns_ok {
+            dns = dns.with_action(crate::actions::offer("flush-dns", None));
+        }
+        findings.push(dns);
 
         // --- Outbound TCP reachability ---
         let target: SocketAddr = "1.1.1.1:443".parse().expect("valid literal socket address");
