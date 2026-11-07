@@ -345,8 +345,9 @@ ITRIAGE_PROFILE=profiles/home-lab.toml cargo run -p itriage-core --example triag
 | Core crate, Windows | type-checked and clippy-clean for `x86_64-pc-windows-msvc` via `-Zbuild-std` | clean |
 | Engine | 69 unit tests: parsers (SNTP, versions, printer flags, lpstat, battery XML/sysfs, nmcli, Device Manager codes, winget, event XML, journald, package managers), profiles and policy, fix validation, history save and compare, endpoint probes | all pass |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: every command exercised over IPC (profile, locks, run, save, history, compare, import, fix validation, path and URL guards, re-check, concurrent-run refusal), both views rendered | working |
-| Read-only modules, Windows | CI smoke run on `windows-latest` (Windows Server 2025): native SCM, Event Log, WUA, registry, winget | working (v0.3 modules) |
-| Workstation & site modules, Windows | CI smoke run with the example profile | see the latest CI run |
+| Engine, Windows | the same suite on `windows-latest` (65 tests; a few are Linux-only) plus clippy with the runner's newer toolchain | all pass |
+| Read-only modules, Windows | CI smoke run on `windows-latest` (Windows Server 2025): native SCM, Event Log, WUA, registry, winget | working |
+| Workstation & site modules, Windows | CI smoke run, with and without the example profile: SNTP offset measured against time.windows.com, machine certificates read (it caught the runner's expired ones), spooler, SetupAPI problem codes, WLAN/adapters, Uninstall keys, policy locks, time-zone and requirement checks | working |
 | Fixes, installs, OEM tools on real hardware | not run on a physical Windows workstation yet | ⚠ next step |
 
 A CI runner is a server VM with no Wi-Fi, battery, printers or domain, so those

@@ -5,7 +5,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     CM_Get_DevNode_Status, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
     SetupDiGetDeviceRegistryPropertyW, CM_DEVNODE_STATUS_FLAGS, CM_PROB, CR_SUCCESS, DIGCF_ALLCLASSES,
     DIGCF_PRESENT, DN_HAS_PROBLEM, HDEVINFO, SETUP_DI_REGISTRY_PROPERTY, SPDRP_CLASS, SPDRP_DEVICEDESC,
-    SPDRP_FRIENDLYNAME, SP_DEVINFO_DATA,
+    SPDRP_FRIENDLYNAME, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
 };
 
 #[derive(Clone, Debug)]
@@ -34,9 +34,12 @@ pub fn present() -> Result<Vec<Device>, String> {
                 break; // ERROR_NO_MORE_ITEMS
             }
             index += 1;
+            // Driverless devices often have neither name; Device Manager calls
+            // them "Unknown device", and the hardware ID is what identifies them.
             let name = property(set, &data, SPDRP_FRIENDLYNAME)
                 .or_else(|| property(set, &data, SPDRP_DEVICEDESC))
-                .unwrap_or_default();
+                .or_else(|| property(set, &data, SPDRP_HARDWAREID).map(|id| format!("Unknown device ({id})")))
+                .unwrap_or_else(|| "Unknown device".to_string());
             let class = property(set, &data, SPDRP_CLASS).unwrap_or_default();
             let mut status = CM_DEVNODE_STATUS_FLAGS::default();
             let mut problem = CM_PROB::default();

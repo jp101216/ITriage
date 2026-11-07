@@ -82,13 +82,10 @@ impl TriageModule for ClockSync {
         }
         findings.extend(source.extra);
 
-        let worst = findings.iter().map(|f| f.severity).max_by_key(|s| s.rank()).unwrap_or(Severity::Ok);
-        let summary = summary.unwrap_or_else(|| {
-            if worst.rank() >= Severity::Warning.rank() {
-                "Time sync needs attention".to_string()
-            } else {
-                "Time source looks right; offset not measured".to_string()
-            }
+        let problem = findings.iter().find(|f| f.severity.rank() >= Severity::Warning.rank());
+        let summary = summary.unwrap_or_else(|| match problem {
+            Some(f) => format!("{} needs attention", f.label),
+            None => "Time source looks right; offset not measured".to_string(),
         });
         Ok(Output::new(summary, findings))
     }
@@ -107,7 +104,7 @@ struct Source {
 fn measure(server: &str) -> Result<sntp::Sample, String> {
     let addr = (server, 123)
         .to_socket_addrs()
-        .map_err(|e| format!("can't resolve {server}: {e}"))?
+        .map_err(|_| format!("{server} doesn't resolve (DNS)"))?
         .next()
         .ok_or_else(|| format!("{server} has no address"))?;
     let socket = UdpSocket::bind(if addr.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" })
