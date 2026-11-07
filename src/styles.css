@@ -226,6 +226,14 @@ body::after {
   font-family: var(--mono); font-size: 11.5px; color: var(--warn);
   border: 1px dashed rgba(255, 178, 46, 0.45); border-radius: 4px; padding: 1px 7px; white-space: nowrap;
 }
+/* Browser preview only: where to get the real app. */
+.tag.getapp {
+  font-family: var(--mono); font-size: 11.5px; color: var(--red); text-decoration: none;
+  border: 1px solid rgba(255, 59, 54, 0.5); border-radius: 4px; padding: 1px 7px; white-space: nowrap;
+}
+.tag.getapp:hover, .tag.getapp:focus-visible {
+  color: var(--fg); border-color: var(--red); box-shadow: 0 0 8px var(--glow); outline: none;
+}
 
 .stats {
   margin: 0 0 0 auto;

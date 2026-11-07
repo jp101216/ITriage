@@ -1,0 +1,87 @@
+name: Preview site
+
+# Publishes the browser preview (the app's own frontend, which runs on sample
+# data outside the desktop app) to GitHub Pages, so anyone can try the
+# interface from a link. It redeploys whenever the frontend changes on main.
+#
+# One-time setting: Settings -> Pages -> Build and deployment -> Source:
+# "GitHub Actions". Until that's set, this workflow fails at "Configure Pages".
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and deploy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - id: pages
+        name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      # The site is src/ as it is, plus a link-card image, an icon, and the
+      # meta tags that make a shared link show a preview card.
+      - name: Assemble the site
+        shell: bash
+        env:
+          BASE_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          mkdir -p _site
+          cp -r src/. _site/
+          cp site/og.jpg _site/og.jpg
+          cp src-tauri/icons/32x32.png _site/favicon.png
+          python3 - <<'EOF'
+          import html, os
+          base = os.environ["BASE_URL"].rstrip("/")
+          title = "itriage: IT triage for Windows and Linux"
+          desc = ("Pick checks, repairs and updates, preview every change, and compare "
+                  "before and after. Try the interface in your browser with sample data.")
+          tags = f"""
+              <meta name="description" content="{html.escape(desc)}" />
+              <meta property="og:type" content="website" />
+              <meta property="og:title" content="{html.escape(title)}" />
+              <meta property="og:description" content="{html.escape(desc)}" />
+              <meta property="og:url" content="{base}/" />
+              <meta property="og:image" content="{base}/og.jpg" />
+              <meta property="og:image:width" content="1200" />
+              <meta property="og:image:height" content="630" />
+              <meta property="og:image:alt" content="The itriage technician console after a triage run" />
+              <meta name="twitter:card" content="summary_large_image" />
+              <link rel="icon" type="image/png" href="favicon.png" />"""
+          path = "_site/index.html"
+          page = open(path, encoding="utf-8").read()
+          assert page.count("<title>itriage</title>") == 1, "index.html's title changed"
+          page = page.replace("<title>itriage</title>", f"<title>{html.escape(title)}</title>{tags}", 1)
+          open(path, "w", encoding="utf-8").write(page)
+          EOF
+          ls -la _site
+
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+      - id: deployment
+        name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
