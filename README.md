@@ -18,6 +18,11 @@ Given arguments, the same program runs without a window
 (`itriage --preset triage`) and returns the PowerShell toolkit's exit codes,
 for remote shells, scheduled tasks and RMM tools.
 
+**Try the interface in your browser:**
+[jp101216.github.io/ITriage](https://jp101216.github.io/ITriage/) runs the
+app's own frontend on sample data, with nothing to install. It redeploys
+whenever the frontend changes on `main` (`.github/workflows/pages.yml`).
+
 A **site profile** tailors it to an environment: which services, apps,
 servers and devices a machine must have, which fixes are allowed, whether
 installs are locked, the alert thresholds, which network probes run, and which

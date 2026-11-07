@@ -654,10 +654,10 @@
         <span class="logo">${I.logo}</span>
         <span class="name">itriage</span>
         <span class="brk">${VERSION}</span>
-        ${isTauri ? "" : '<span class="tag preview">PREVIEW · SAMPLE DATA</span>'}
+        ${isTauri ? "" : '<span class="tag preview">PREVIEW · SAMPLE DATA</span><a class="tag getapp" href="https://github.com/jp101216/ITriage/releases/latest" target="_blank" rel="noopener" title="Download itriage for Windows or Linux">GET THE APP ↗</a>'}
         <button class="tag profile" id="profileTag" type="button" title="Site profile"><span id="profileIcon">${I.shield}</span><span id="profileName">PROFILE —</span></button>
         <span class="tag mode-tag pv" id="tagPreview" hidden title="Preview (what-if) is on: nothing will be changed">${I.eye}PREVIEW</span>
-        <span class="tag mode-tag safe" id="tagSafe" hidden title="Remote-safe is on: nothing that drops the session or restarts the PC can run">${I.shield}REMOTE-SAFE</span>
+        <span class="tag mode-tag safe" id="tagSafe" hidden title="Remote-safe is on: nothing that could drop the session or restart the PC can run">${I.shield}REMOTE-SAFE</span>
         <button class="bk-btn xs view-switch" id="toSelf" type="button" title="The simple view end users see">${I.swap}Self-service view</button>
       </div>
       <dl class="stats">
