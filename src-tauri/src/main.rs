@@ -5,24 +5,29 @@
 //! lives in `itriage-core`.
 //!
 //! Commands:
-//! * `list_modules`, `get_profile`, `list_fixes`, `get_host_context`: what the
-//!   UI renders before anything runs (the checklist, with modules the site
-//!   policy blocks marked locked).
+//! * `list_modules`, `list_presets`, `get_profile`, `list_fixes`,
+//!   `get_host_context`, `check_target`: what the UI renders before anything
+//!   runs (the checklist, with modules the site policy or remote-safe mode
+//!   blocks marked locked).
 //! * `run_modules` / `cancel_run`: run the selected modules on a background
-//!   thread, streaming progress as events; cancelling stops at the next safe
-//!   point. A finished run is audited, saved to the history folder and
-//!   compared with the previous run of this machine.
+//!   thread (optionally as a preview, in remote-safe mode, against a typed
+//!   destination), streaming progress as events; cancelling stops at the next
+//!   safe point. A finished run is audited, saved to the history folder with
+//!   its transcript, and compared with the last comparable run of this machine.
 //! * `run_fix`: one policy-checked, audited one-click fix.
-//! * `list_history`, `load_report`, `import_report`, `compare_with_previous`:
-//!   the report viewer.
+//! * `list_history`, `load_report`, `import_report`, `compare_with_previous`,
+//!   `compare_reports`, `report_text`: the report viewer and comparisons.
 //! * `open_link` (https only), `open_history_folder`, `relaunch_elevated`.
 //! * `get_telemetry`: one live sample for the HUD charts, polled about once a second.
 //!
 //! A run and a fix never overlap: both claim the same busy flag.
+//!
+//! Given any command-line arguments, the binary runs the command line
+//! (`itriage --help`) instead of opening a window.
 
 use itriage_core::{
-    actions, audit, catalogue, host, host_context, profile, registry, report, HostContext, ModuleInfo,
-    ProfileStatus, Report, ReportDiff, ReportMeta, RunContext, Sampler, Telemetry,
+    actions, audit, catalogue, host, host_context, profile, registry, report, HostContext, ModuleInfo, Preset,
+    ProfileStatus, Report, ReportDiff, ReportMeta, RunContext, Sampler, Target, Telemetry, PRESETS,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -55,8 +60,19 @@ fn claim(flag: &Arc<AtomicBool>) -> Result<Busy, String> {
 }
 
 #[tauri::command]
-fn list_modules(app: State<'_, App>) -> Vec<ModuleInfo> {
-    catalogue(&app.profile)
+fn list_modules(app: State<'_, App>, remote_safe: Option<bool>) -> Vec<ModuleInfo> {
+    catalogue(&app.profile, remote_safe.unwrap_or(app.profile.policy.remote_safe))
+}
+
+#[tauri::command]
+fn list_presets() -> Vec<Preset> {
+    PRESETS.to_vec()
+}
+
+/// Validate a typed destination ("fileserver01:445,3389").
+#[tauri::command]
+fn check_target(app: State<'_, App>, text: String) -> Result<Target, String> {
+    Target::parse(&text, &app.profile.network.target_ports)
 }
 
 #[tauri::command]
@@ -70,6 +86,7 @@ struct FixInfo {
     label: &'static str,
     description: &'static str,
     requires_admin: bool,
+    disruptive: bool,
 }
 
 #[tauri::command]
@@ -81,6 +98,7 @@ fn list_fixes() -> Vec<FixInfo> {
             label: f.label,
             description: f.description,
             requires_admin: actions::requires_admin(f.id),
+            disruptive: f.disruptive,
         })
         .collect()
 }
@@ -125,28 +143,45 @@ struct RunOutcome {
 ///   `run-complete`  { count, cancelled }         at the end
 ///
 /// `record` (default true) saves the run to history and diffs it against
-/// the previous one; re-checking one module after a fix passes false.
+/// the last comparable one; re-checking one module after a fix passes false.
+/// `preview` makes modules that change the machine say what they'd do
+/// instead; `remote_safe` refuses the ones that could drop the session;
+/// `target` is the destination for the Destination test.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn run_modules(
     window: Window,
     app: State<'_, App>,
     selected: Vec<String>,
     record: Option<bool>,
+    preview: Option<bool>,
+    remote_safe: Option<bool>,
+    target: Option<String>,
 ) -> Result<RunOutcome, String> {
+    let target = match target.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => Some(Target::parse(t, &app.profile.network.target_ports)?),
+        None => None,
+    };
     let busy = claim(&app.busy)?;
     app.cancel.store(false, Ordering::SeqCst);
     let profile = app.profile.clone();
     let cancel = app.cancel.clone();
     let profile_name = (app.status.source != "built-in").then(|| app.status.name.clone());
     let record = record.unwrap_or(true);
+    let preview = preview.unwrap_or(false);
+    let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
 
     // Modules do blocking I/O (COM calls, subprocesses, sockets) and some run
     // for many minutes, so keep them off the async runtime's worker threads.
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
+        let os = std::env::consts::OS;
         let chosen: Vec<_> = registry()
             .into_iter()
-            .filter(|m| selected.iter().any(|id| *id == m.info().id))
+            .filter(|m| {
+                let i = m.info();
+                selected.contains(&i.id) && i.platforms.contains(&os)
+            })
             .collect();
         let total = chosen.len();
         let mut results = Vec::with_capacity(total);
@@ -165,7 +200,14 @@ async fn run_modules(
             let forward = move |line: &str| {
                 let _ = win.emit("module-log", serde_json::json!({ "id": id, "line": line }));
             };
-            let ctx = RunContext::new(&forward).with_cancel(&cancel).with_profile(&profile);
+            let mut ctx = RunContext::new(&forward)
+                .with_cancel(&cancel)
+                .with_profile(&profile)
+                .preview(preview)
+                .remote_safe(remote_safe);
+            if let Some(t) = &target {
+                ctx = ctx.with_target(t);
+            }
             let result = module.run(&ctx);
             let _ = window.emit("module-done", &result);
             results.push(result);
@@ -177,9 +219,9 @@ async fn run_modules(
         let (mut saved, mut save_error, mut diff) = (None, None, None);
         if record && !report.results.is_empty() {
             if !cancelled {
-                diff = report::previous(&report.host.hostname, &report.generated).map(|old| report::diff(&old, &report));
+                diff = previous_diff(&report);
             }
-            match report::save(&report) {
+            match report::save(&report, profile.history.keep) {
                 Ok(p) => saved = Some(p.display().to_string()),
                 Err(e) => save_error = Some(e),
             }
@@ -192,6 +234,12 @@ async fn run_modules(
     })
     .await
     .map_err(|e| format!("The run stopped unexpectedly: {e}"))
+}
+
+/// The diff against this machine's last comparable saved run.
+fn previous_diff(report: &Report) -> Option<ReportDiff> {
+    let ids: Vec<String> = report.results.iter().map(|r| r.module_id.clone()).collect();
+    report::previous(&report.host.hostname, &report.generated, &ids).map(|old| report::diff(&old, report))
 }
 
 /// Ask the current run to stop. The module that's running finishes its
@@ -208,12 +256,18 @@ fn cancel_run(app: State<'_, App>) -> bool {
 /// Run one one-click fix. The policy is checked again in the core, whatever
 /// the UI showed, and the attempt is audited either way.
 #[tauri::command]
-async fn run_fix(app: State<'_, App>, id: String, target: Option<String>) -> Result<String, String> {
+async fn run_fix(
+    app: State<'_, App>,
+    id: String,
+    target: Option<String>,
+    remote_safe: Option<bool>,
+) -> Result<String, String> {
     let busy = claim(&app.busy)?;
     let profile = app.profile.clone();
+    let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
-        actions::run(&id, target.as_deref(), &profile)
+        actions::run(&id, target.as_deref(), &profile, remote_safe)
     })
     .await
     .map_err(|e| format!("The fix stopped unexpectedly: {e}"))?
@@ -250,17 +304,32 @@ struct Imported {
 /// run). It's added to the history so the next one from that machine can be
 /// compared against it.
 #[tauri::command]
-async fn import_report(text: String) -> Result<Imported, String> {
+async fn import_report(app: State<'_, App>, text: String) -> Result<Imported, String> {
     let report = report::parse(&text)?;
-    let diff = report::previous(&report.host.hostname, &report.generated).map(|old| report::diff(&old, &report));
-    let saved = report::save(&report).ok().map(|p| p.display().to_string());
+    let diff = previous_diff(&report);
+    let saved = report::save(&report, app.profile.history.keep).ok().map(|p| p.display().to_string());
     Ok(Imported { report, diff, saved })
 }
 
-/// Compare a saved run with the run before it from the same machine.
+/// Compare a saved run with the last comparable run before it from the
+/// same machine.
 #[tauri::command]
 async fn compare_with_previous(report: Report) -> Option<ReportDiff> {
-    report::previous(&report.host.hostname, &report.generated).map(|old| report::diff(&old, &report))
+    previous_diff(&report)
+}
+
+/// Compare any two runs of the same machine (oldest first, whichever order
+/// they're picked in).
+#[tauri::command]
+async fn compare_reports(a: Report, b: Report) -> Result<ReportDiff, String> {
+    report::compare(&a, &b)
+}
+
+/// The plain-text rendering: the ticket summary, or (`logs`) the full
+/// transcript with every module's log.
+#[tauri::command]
+async fn report_text(report: Report, diff: Option<ReportDiff>, logs: Option<bool>) -> String {
+    report::render_text(&report, diff.as_ref(), logs.unwrap_or(false))
 }
 
 #[tauri::command]
@@ -276,6 +345,12 @@ async fn open_history_folder() -> Result<(), String> {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if !args.is_empty() {
+        itriage_core::cli::attach_console();
+        std::process::exit(itriage_core::cli::main(args));
+    }
+
     let loaded = profile::load();
     let app = App {
         profile: Arc::new(loaded.profile),
@@ -289,6 +364,8 @@ fn main() {
         .manage(app)
         .invoke_handler(tauri::generate_handler![
             list_modules,
+            list_presets,
+            check_target,
             get_profile,
             list_fixes,
             get_host_context,
@@ -301,6 +378,8 @@ fn main() {
             load_report,
             import_report,
             compare_with_previous,
+            compare_reports,
+            report_text,
             open_link,
             open_history_folder
         ])

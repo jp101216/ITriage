@@ -39,6 +39,9 @@ pub enum Category {
     Workstation,
     /// Site-profile driven checks: required apps, services and endpoints.
     Site,
+    /// Network-stack repair (the Endpoint Tune-Up network phase).
+    Repair,
+    /// Cleanup and maintenance: temp files, image repair, drives, policy.
     Fixes,
     Updates,
 }
@@ -52,7 +55,8 @@ impl Category {
             Category::Eventlog => "Event log",
             Category::Workstation => "Workstation",
             Category::Site => "Site & clinical",
-            Category::Fixes => "Fixes",
+            Category::Repair => "Network repair",
+            Category::Fixes => "Cleanup & maintenance",
             Category::Updates => "Updates",
         }
     }
@@ -80,6 +84,18 @@ pub struct KbLink {
     pub url: String,
 }
 
+/// A measured number behind a finding (connect time, packet loss, signal),
+/// kept so two runs can be compared value by value, not just by severity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Metric {
+    pub value: f64,
+    /// "ms", "%", "s", "days"…
+    pub unit: String,
+    /// `true` for latency, loss and "% used"; `false` for signal, free space
+    /// and battery health, where a lower number is the worse one.
+    pub higher_is_worse: bool,
+}
+
 /// One line of a report: a labelled value with a severity, plus an optional
 /// second line of detail (an event's message, a package's description…).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +109,8 @@ pub struct Finding {
     pub action: Option<FixRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kb: Option<KbLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metric: Option<Metric>,
 }
 
 impl Finding {
@@ -104,6 +122,7 @@ impl Finding {
             detail: None,
             action: None,
             kb: None,
+            metric: None,
         }
     }
     pub fn ok(label: impl Into<String>, value: impl Into<String>) -> Self {
@@ -132,12 +151,90 @@ impl Finding {
         self.action = Some(action);
         self
     }
+    /// Record the measured number behind this finding, for run-to-run compare.
+    pub fn with_metric(mut self, value: f64, unit: &str, higher_is_worse: bool) -> Self {
+        if value.is_finite() {
+            self.metric = Some(Metric {
+                value,
+                unit: unit.to_string(),
+                higher_is_worse,
+            });
+        }
+        self
+    }
+}
+
+/// A destination the user asked to test: the NetTriage single-target
+/// diagnostic (DNS, route, ping, and a TCP connect per port).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Target {
+    pub host: String,
+    #[serde(default)]
+    pub ports: Vec<u16>,
+}
+
+impl Target {
+    /// Parse what someone typed: `host`, `host:443`, `host 443,445`,
+    /// `[2001:db8::1]:443` or a bare IPv6 address. No ports means `default_ports`.
+    pub fn parse(input: &str, default_ports: &[u16]) -> Result<Target, String> {
+        let input = input.trim();
+        let (host_part, ports_part) = match input.split_once(char::is_whitespace) {
+            Some((h, p)) => (h, Some(p.trim())),
+            None => (input, None),
+        };
+        let (host, inline_ports) = if let Some(rest) = host_part.strip_prefix('[') {
+            let (h, after) = rest.split_once(']').ok_or("An IPv6 address in brackets needs its closing ']'.")?;
+            (h, after.strip_prefix(':'))
+        } else if host_part.matches(':').count() == 1 {
+            let (h, p) = host_part.split_once(':').unwrap_or((host_part, ""));
+            (h, Some(p))
+        } else {
+            (host_part, None)
+        };
+        let ports = match ports_part.or(inline_ports).filter(|p| !p.trim().is_empty()) {
+            Some(text) => parse_ports(text)?,
+            None => default_ports.to_vec(),
+        };
+        let host = host.trim();
+        let valid = !host.is_empty()
+            && host.len() <= 253
+            && !host.starts_with('-')
+            && host.chars().all(|c| c.is_ascii_alphanumeric() || "-._:%".contains(c));
+        if !valid {
+            return Err(format!("`{host}` isn't a host name or IP address."));
+        }
+        Ok(Target { host: host.to_string(), ports })
+    }
+}
+
+fn parse_ports(text: &str) -> Result<Vec<u16>, String> {
+    let mut ports = Vec::new();
+    for part in text.split([',', ' ', ';']).map(str::trim).filter(|p| !p.is_empty()) {
+        match part.parse::<u16>() {
+            Ok(p) if p > 0 => {
+                if !ports.contains(&p) {
+                    ports.push(p);
+                }
+            }
+            _ => {
+                return Err(format!(
+                    "`{part}` isn't a port number (1–65535). Ports go after the host, like fileserver01:445,3389."
+                ))
+            }
+        }
+    }
+    if ports.len() > 16 {
+        return Err("Up to 16 ports at a time.".into());
+    }
+    Ok(ports)
 }
 
 /// What a module produces on a successful run, before timing/error wrapping.
 pub struct Output {
     pub findings: Vec<Finding>,
     pub summary: String,
+    /// The change this module made needs a restart to finish.
+    pub restart_required: bool,
 }
 
 impl Output {
@@ -145,7 +242,12 @@ impl Output {
         Self {
             findings,
             summary: summary.into(),
+            restart_required: false,
         }
+    }
+    pub fn restart_required(mut self, required: bool) -> Self {
+        self.restart_required = required;
+        self
     }
 }
 
@@ -173,6 +275,11 @@ pub struct ModuleInfo {
     /// locked with this reason, and the engine refuses to run it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locked: Option<String>,
+    /// Briefly drops network connectivity (adapter restarts, DHCP renew, policy
+    /// refresh) or restarts the machine, so remote-safe mode locks it.
+    pub disruptive: bool,
+    /// Works on a destination the user types in (host and ports).
+    pub takes_target: bool,
 }
 
 impl ModuleInfo {
@@ -189,6 +296,8 @@ impl ModuleInfo {
             warning: None,
             platforms: vec!["windows", "linux"],
             locked: None,
+            disruptive: false,
+            takes_target: false,
         }
     }
     /// Restrict to one platform (for checks that only make sense there).
@@ -208,6 +317,14 @@ impl ModuleInfo {
         self.warning = Some(text.into());
         self
     }
+    pub fn disruptive(mut self) -> Self {
+        self.disruptive = true;
+        self
+    }
+    pub fn takes_target(mut self) -> Self {
+        self.takes_target = true;
+        self
+    }
 }
 
 /// The outcome of running one module: findings plus timing and any error.
@@ -220,9 +337,39 @@ pub struct ModuleResult {
     pub summary: String,
     pub error: Option<String>,
     pub duration_ms: u128,
+    /// The module's progress lines (the run transcript), so saved and opened
+    /// reports keep them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub log: Vec<String>,
+    /// A change it made needs a restart to finish.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub restart_required: bool,
+    /// Produced by a preview (what-if) run: nothing was changed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub preview: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl ModuleResult {
+    /// A result for a module that didn't run (blocked, or failed to start).
+    pub fn failed(info: &ModuleInfo, error: impl Into<String>) -> Self {
+        Self {
+            module_id: info.id.clone(),
+            title: info.title.clone(),
+            category: info.category,
+            findings: Vec::new(),
+            summary: String::new(),
+            error: Some(error.into()),
+            duration_ms: 0,
+            log: Vec::new(),
+            restart_required: false,
+            preview: false,
+        }
+    }
+
     /// Worst severity across findings, or `Critical` if the module errored.
     /// This is what the frontend turns into the card's status chip.
     pub fn status(&self) -> Severity {
@@ -236,3 +383,36 @@ impl ModuleResult {
             .unwrap_or(Severity::Ok)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const DEFAULTS: [u16; 4] = [443, 80, 445, 3389];
+
+    #[test]
+    fn parses_typed_destinations() {
+        let t = |s: &str| Target::parse(s, &DEFAULTS).unwrap();
+        assert_eq!(t("intranet.example.com"), Target { host: "intranet.example.com".into(), ports: DEFAULTS.to_vec() });
+        assert_eq!(t("fileserver01:445").ports, vec![445]);
+        assert_eq!(t("fileserver01 445, 139 3389").ports, vec![445, 139, 3389]);
+        assert_eq!(t("[2001:db8::1]:443"), Target { host: "2001:db8::1".into(), ports: vec![443] });
+        assert_eq!(t("2001:db8::1").ports, DEFAULTS.to_vec(), "a bare IPv6 address keeps the defaults");
+        assert_eq!(t("10.0.0.5:80,443").ports, vec![80, 443]);
+    }
+
+    #[test]
+    fn rejects_bad_destinations() {
+        for bad in ["", "-oProxyCommand=x", "host;reboot", "host:0", "host:99999", "a b,c"] {
+            assert!(Target::parse(bad, &DEFAULTS).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn findings_keep_metrics_and_skip_nonsense() {
+        let f = Finding::ok("Gateway", "4 ms").with_metric(4.2, "ms", true);
+        assert_eq!(f.metric.as_ref().unwrap().value, 4.2);
+        assert!(Finding::ok("x", "y").with_metric(f64::NAN, "ms", true).metric.is_none());
+    }
+}
+

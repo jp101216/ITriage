@@ -8,11 +8,16 @@
 
 pub mod battery;
 pub mod devices;
+pub mod diskstats;
+pub mod dns;
 pub mod evtxml;
 pub mod journal;
 pub mod net;
+pub mod ping;
 pub mod pkg;
 pub mod printer;
+pub mod route;
+pub mod smbios;
 pub mod sntp;
 pub mod systemd;
 pub mod text;

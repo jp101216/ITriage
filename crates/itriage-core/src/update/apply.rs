@@ -32,12 +32,27 @@ impl TriageModule for InstallUpdates {
     fn execute(&self, ctx: &RunContext) -> Result<Output, String> {
         imp::apply(ctx)
     }
+
+    /// Lists what a real run would install, using the same searches the scan
+    /// does. Needs no admin rights and changes nothing.
+    fn preview(&self, ctx: &RunContext) -> Result<Output, String> {
+        imp::preview(ctx)
+    }
+}
+
+/// "Preview: would install 3 Windows updates and 2 app upgrades. Nothing was changed."
+fn preview_summary(parts: &[String]) -> String {
+    if parts.is_empty() {
+        "Preview: nothing to install. Nothing was changed.".to_string()
+    } else {
+        format!("Preview: would install {}. Nothing was changed.", parts.join(" and "))
+    }
 }
 
 #[cfg(windows)]
 mod imp {
     use super::*;
-    use crate::update::winget;
+    use crate::update::{winget, LIST_MAX};
     use crate::util::{exit_label, plural, require_admin};
     use crate::win::wua::{self, Kind};
 
@@ -117,11 +132,7 @@ mod imp {
 
         // --- 3. Restart state ---
         restart = restart || wua::reboot_pending().unwrap_or(false);
-        findings.push(if restart {
-            Finding::warn("Restart required", "yes")
-        } else {
-            Finding::ok("Restart required", "no")
-        });
+        findings.push(crate::update::firmware::restart_finding(restart));
 
         let mut summary = if installed.is_empty() {
             "Nothing new installed".to_string()
@@ -131,7 +142,72 @@ mod imp {
         if restart {
             summary.push_str("; restart required");
         }
-        Ok(Output::new(summary, findings))
+        Ok(Output::new(summary, findings).restart_required(restart))
+    }
+
+    pub fn preview(ctx: &RunContext) -> Result<Output, String> {
+        let mut findings = Vec::new();
+        let mut parts = Vec::new();
+
+        // The same selection install() makes: important updates, optional ones skipped.
+        ctx.log("Searching Windows Update…");
+        match wua::pending(Kind::Software) {
+            Ok(list) => {
+                let (chosen, optional): (Vec<_>, Vec<_>) = list.into_iter().partition(|p| !p.optional);
+                let mut head = Finding::info(
+                    "Windows Update",
+                    if chosen.is_empty() {
+                        "nothing to install".to_string()
+                    } else {
+                        format!("would install {} update{}", chosen.len(), plural(chosen.len()))
+                    },
+                );
+                if !optional.is_empty() {
+                    head = head.with_detail(format!("{} optional update{} would be skipped", optional.len(), plural(optional.len())));
+                }
+                findings.push(head);
+                for p in chosen.iter().take(LIST_MAX) {
+                    findings.push(Finding::info(p.label(), p.title.clone()));
+                }
+                if chosen.len() > LIST_MAX {
+                    findings.push(Finding::info("More updates", format!("{} more", chosen.len() - LIST_MAX)));
+                }
+                if !chosen.is_empty() {
+                    parts.push(format!("{} Windows update{}", chosen.len(), plural(chosen.len())));
+                }
+            }
+            Err(e) => findings.push(Finding::warn("Windows Update", e)),
+        }
+
+        if winget::available() {
+            ctx.log("Checking winget for app upgrades…");
+            match winget::pending() {
+                Ok(rows) => {
+                    findings.push(Finding::info(
+                        "winget apps",
+                        if rows.is_empty() {
+                            "nothing to upgrade".to_string()
+                        } else {
+                            format!("would upgrade {} app{}", rows.len(), plural(rows.len()))
+                        },
+                    ));
+                    for r in rows.iter().take(LIST_MAX) {
+                        findings.push(Finding::info(format!("{} ({})", r.name, r.id), format!("{} → {}", r.version, r.available)));
+                    }
+                    if rows.len() > LIST_MAX {
+                        findings.push(Finding::info("More apps", format!("{} more", rows.len() - LIST_MAX)));
+                    }
+                    if !rows.is_empty() {
+                        parts.push(format!("{} app upgrade{}", rows.len(), plural(rows.len())));
+                    }
+                }
+                Err(e) => findings.push(Finding::warn("winget apps", e)),
+            }
+        } else {
+            findings.push(Finding::info("winget apps", "winget not found; apps would be skipped"));
+        }
+
+        Ok(Output::new(preview_summary(&parts), findings))
     }
 }
 
@@ -141,7 +217,8 @@ mod imp {
     use crate::parse::pkg::apt_result_line;
     use crate::parse::text::truncate_chars;
     use crate::update::pkgmgr::{reboot_required, PkgMgr};
-    use crate::util::{exit_label, pkexec_error, privileged_shell, stream};
+    use crate::update::LIST_MAX;
+    use crate::util::{exit_label, pkexec_error, plural, privileged_shell, stream};
     use std::time::Duration;
 
     pub fn apply(ctx: &RunContext) -> Result<Output, String> {
@@ -176,8 +253,8 @@ mod imp {
 
         let reboot = reboot_required();
         match &reboot {
-            Some(why) => findings.push(Finding::warn("Reboot required", "yes").with_detail(why.clone())),
-            None => findings.push(Finding::ok("Reboot required", "not flagged")),
+            Some(why) => findings.push(crate::update::firmware::restart_finding(true).with_detail(why.clone())),
+            None => findings.push(Finding::ok("Restart required", "not flagged")),
         }
 
         let mut summary = if ok {
@@ -188,6 +265,52 @@ mod imp {
         if reboot.is_some() {
             summary.push_str("; reboot required");
         }
-        Ok(Output::new(summary, findings))
+        let restart = reboot.is_some();
+        Ok(Output::new(summary, findings).restart_required(restart))
+    }
+
+    pub fn preview(ctx: &RunContext) -> Result<Output, String> {
+        let pm = PkgMgr::detect()
+            .ok_or("No supported package manager found (apt, dnf, pacman, zypper).")?;
+        ctx.log(format!("Checking {} for upgrades…", pm.name()));
+        let list = pm.pending()?;
+        let mut head = Finding::info(
+            format!("{} upgrade", pm.name()),
+            if list.is_empty() {
+                "nothing to upgrade".to_string()
+            } else {
+                format!("would upgrade {} package{}", list.len(), plural(list.len()))
+            },
+        );
+        if let Some(note) = pm.scan_note() {
+            head = head.with_detail(note);
+        }
+        let mut findings = vec![head];
+        for u in list.iter().take(LIST_MAX) {
+            findings.push(Finding::info(u.name.clone(), u.change()));
+        }
+        if list.len() > LIST_MAX {
+            findings.push(Finding::info("More packages", format!("{} more", list.len() - LIST_MAX)));
+        }
+        let parts = if list.is_empty() {
+            Vec::new()
+        } else {
+            vec![format!("{} package upgrade{}", list.len(), plural(list.len()))]
+        };
+        Ok(Output::new(preview_summary(&parts), findings))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preview_summary;
+
+    #[test]
+    fn preview_summaries_say_nothing_changed() {
+        assert_eq!(preview_summary(&[]), "Preview: nothing to install. Nothing was changed.");
+        assert_eq!(
+            preview_summary(&["3 Windows updates".into(), "2 app upgrades".into()]),
+            "Preview: would install 3 Windows updates and 2 app upgrades. Nothing was changed."
+        );
     }
 }

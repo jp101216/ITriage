@@ -30,12 +30,56 @@ fixes = [
 # the app in self-service mode (a kiosk for end users).
 start_in = "self-service"
 technician_view = true
+# Start in remote-safe mode, like Invoke-EndpointTuneUp -RemoteSafe: adapter
+# restarts, DHCP renew, cache purges, policy triggers and restarts stay
+# locked until a technician switches remote-safe off for that session.
+remote_safe = true
 
 [time]
 # The clock is measured against this server (usually a domain controller).
 server = "dc01.example.org"
 # Windows zone name or IANA name ("America/Detroit"); a mismatch is flagged.
 zone = "Eastern Standard Time"
+
+[network]
+# Invoke-NetTriage's built-in public checks: a timed lookup of
+# www.microsoft.com, a TCP connect to 8.8.8.8:53 and the public IP from
+# ifconfig.me. Like -SkipPublicProbes, false turns them off; the probes set
+# below and the endpoints under [[require.endpoint]] still run.
+public_probes = false
+dns_probe = "intranet.example.org"
+tcp_probe = "ehr-gateway.example.org:443"
+# egress_url = ""                       # "" skips the public-IP lookup
+# target_ports = [443, 80, 445, 3389]   # the destination test's default ports
+# tcp_timeout_ms = 1500                 # per TCP check, across all its addresses
+# ping_count = 4
+# ping_timeout_ms = 1000
+
+# Alert levels, as { warn, crit }. These are Invoke-NetTriage's defaults;
+# uncomment a line to change it. Disk free and Wi-Fi signal: lower is worse.
+[thresholds]
+# uptime_days     = { warn = 7,   crit = 14 }
+# cpu_pct         = { warn = 75,  crit = 90 }
+# memory_pct      = { warn = 80,  crit = 90 }
+# disk_free_pct   = { warn = 15,  crit = 10 }
+# disk_latency_ms = { warn = 15,  crit = 30 }
+# wifi_signal_pct = { warn = 70,  crit = 50 }
+# gateway_rtt_ms  = { warn = 20,  crit = 50 }
+# network_rtt_ms  = { warn = 80,  crit = 150 }   # DNS servers and destinations
+# dns_ms          = { warn = 100, crit = 300 }
+# packet_loss_pct = { warn = 1,   crit = 10 }
+
+[privacy]
+# Show REDACTED instead of the serial number in results and exports.
+redact_serial = false
+
+[cleanup]
+# Temp files created or changed more recently than this are kept.
+temp_min_age_hours = 24
+
+[history]
+# Saved runs kept on this PC (0 keeps every run).
+keep = 100
 
 [[require.service]]
 name = "Spooler"

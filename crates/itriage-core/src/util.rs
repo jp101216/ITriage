@@ -341,8 +341,13 @@ fn send_line(tx: &mpsc::Sender<String>, line: &mut Vec<u8>) -> bool {
     if line.is_empty() {
         return true;
     }
-    let s = String::from_utf8_lossy(line).into_owned();
+    // Some Windows tools (sfc, parts of DISM) write UTF-16 when redirected;
+    // dropping the NULs leaves their ASCII readable.
+    let s = String::from_utf8_lossy(line).replace('\0', "");
     line.clear();
+    if s.trim().is_empty() {
+        return true;
+    }
     tx.send(s).is_ok()
 }
 
@@ -359,6 +364,19 @@ pub fn require_admin() -> Result<(), String> {
         Ok(())
     } else {
         Err(ADMIN_REQUIRED.to_string())
+    }
+}
+
+/// Windows: fail fast unless elevated. Linux: modules ask for rights
+/// through pkexec as they need them, so there's nothing to check up front.
+pub fn require_admin_here() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        require_admin()
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(())
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "itriage-core"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Platform-split IT triage + update engine. GUI-agnostic; the Tauri app (or the CLI example) is just a shell over this."
 publish = false
@@ -12,8 +12,10 @@ sysinfo = "0.33"
 toml = "1"
 
 # Native Win32 / COM: Service Control Manager, Event Log, Windows Update Agent,
-# printing, SetupAPI devices, WLAN, IP Helper, certificates, NetAPI, power,
-# token elevation, registry, and ShellExecute (relaunch as admin).
+# printing, SetupAPI devices, WLAN, IP Helper (adapters, routes, ICMP),
+# certificates, NetAPI, power, token elevation, registry, SMBIOS, PDH disk
+# counters, the console session user, WinHTTP proxy settings, the Recycle
+# Bin, ShellExecute (relaunch as admin) and attaching to a console (CLI mode).
 # Pinned to the same major as Tauri's own `windows` dependency so the app only
 # compiles the crate once.
 [target.'cfg(windows)'.dependencies]
@@ -26,14 +28,21 @@ windows = { version = "0.62", features = [
     "Win32_NetworkManagement_NetManagement",
     "Win32_NetworkManagement_Ndis",
     "Win32_NetworkManagement_WiFi",
+    "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_Security_Authorization",
     "Win32_Security_Cryptography",
     "Win32_System_Com",
+    "Win32_System_Console",
     "Win32_System_EventLog",
+    "Win32_System_IO",
+    "Win32_System_Performance",
     "Win32_System_Power",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_Services",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_UpdateAgent",
     "Win32_System_Variant",

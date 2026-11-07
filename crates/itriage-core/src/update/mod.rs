@@ -13,7 +13,6 @@ pub mod apply;
 pub mod firmware;
 pub mod scan;
 
-#[cfg(windows)]
 pub(crate) mod oem;
 #[cfg(windows)]
 pub(crate) mod winget;

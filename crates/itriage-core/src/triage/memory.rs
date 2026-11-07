@@ -13,11 +13,12 @@ impl TriageModule for MemoryUsage {
             "system.memory",
             "Memory usage",
             Category::System,
-            "RAM and swap in use. Warns over 85% used, critical over 95%.",
+            "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both).",
         )
     }
 
-    fn execute(&self, _ctx: &RunContext) -> Result<Output, String> {
+    fn execute(&self, ctx: &RunContext) -> Result<Output, String> {
+        let band = ctx.profile().thresholds.memory_pct;
         let mut sys = System::new();
         sys.refresh_memory();
 
@@ -29,13 +30,7 @@ impl TriageModule for MemoryUsage {
         let available = sys.available_memory();
         let used_pct = used as f64 / total as f64 * 100.0;
 
-        let severity = if used_pct > 95.0 {
-            Severity::Critical
-        } else if used_pct > 85.0 {
-            Severity::Warning
-        } else {
-            Severity::Ok
-        };
+        let severity = band.high(used_pct.round());
 
         let mut findings = vec![Finding::new(
             "RAM",
@@ -47,7 +42,8 @@ impl TriageModule for MemoryUsage {
                 human_bytes(available)
             ),
             severity,
-        )];
+        )
+        .with_metric(used_pct.round(), "%", true)];
 
         let total_swap = sys.total_swap();
         if total_swap > 0 {

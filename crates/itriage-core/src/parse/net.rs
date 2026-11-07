@@ -21,6 +21,21 @@ pub fn auth_name(algorithm: i32) -> &'static str {
     }
 }
 
+/// A DOT11_PHY_TYPE as the Wi-Fi generation people know.
+pub fn radio_name(phy: i32) -> Option<&'static str> {
+    Some(match phy {
+        4 => "802.11a",
+        5 => "802.11b",
+        6 => "802.11g",
+        7 => "Wi-Fi 4 (802.11n)",
+        8 => "Wi-Fi 5 (802.11ac)",
+        9 => "802.11ad",
+        10 => "Wi-Fi 6 (802.11ax)",
+        11 => "Wi-Fi 7 (802.11be)",
+        _ => return None,
+    })
+}
+
 /// Open networks, WEP and first-generation WPA are legacy security.
 pub fn auth_is_weak(algorithm: i32) -> bool {
     matches!(algorithm, 1..=5)
@@ -57,6 +72,72 @@ pub fn vpn_client(description: &str) -> Option<&'static str> {
         .iter()
         .find(|(needles, _)| needles.iter().any(|n| d.contains(n)))
         .map(|(_, name)| *name)
+}
+
+/// Invoke-NetTriage's VPN adapter test: its description pattern
+/// (`Cisco…AnyConnect|Secure Client`, `Zscaler`, `VPN`, `WireGuard`, `Wintun`,
+/// `TAP-Windows`, `OpenVPN`, `GlobalProtect`, `Fortinet`, `FortiClient`,
+/// `SonicWall`), plus every client [`vpn_client`] knows by name.
+pub fn is_vpn_adapter(description: &str) -> bool {
+    let d = description.to_ascii_lowercase();
+    let cisco = d.contains("cisco") && (d.contains("anyconnect") || d.contains("secure client"));
+    cisco
+        || [
+            "anyconnect", "zscaler", "vpn", "wireguard", "wintun", "tap-windows", "openvpn", "globalprotect",
+            "fortinet", "forticlient", "sonicwall",
+        ]
+        .iter()
+        .any(|n| d.contains(n))
+        || vpn_client(description).is_some()
+}
+
+/// Where an interface address came from (Windows' NL_PREFIX_ORIGIN; on Linux,
+/// "dynamic" addresses are leased and the rest were set by hand).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddrOrigin {
+    Other,
+    Manual,
+    WellKnown,
+    Dhcp,
+    RouterAdvertisement,
+    Unknown,
+}
+
+impl AddrOrigin {
+    pub fn from_windows(value: i32) -> Self {
+        match value {
+            0 => AddrOrigin::Other,
+            1 => AddrOrigin::Manual,
+            2 => AddrOrigin::WellKnown,
+            3 => AddrOrigin::Dhcp,
+            4 => AddrOrigin::RouterAdvertisement,
+            _ => AddrOrigin::Unknown,
+        }
+    }
+}
+
+/// Whether resetting the TCP/IP stack is safe: it wipes static addresses,
+/// so Invoke-EndpointTuneUp only resets when every address is DHCP, router
+/// advertisement, well-known or "other".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StackSafety {
+    /// No address was set by hand.
+    Clear,
+    /// This many addresses are static.
+    Static(usize),
+    /// Couldn't tell (no addresses, or an origin we don't recognise).
+    Unknown,
+}
+
+pub fn stack_reset_safety(origins: &[AddrOrigin]) -> StackSafety {
+    let manual = origins.iter().filter(|o| **o == AddrOrigin::Manual).count();
+    if manual > 0 {
+        StackSafety::Static(manual)
+    } else if !origins.is_empty() && origins.iter().all(|o| *o != AddrOrigin::Unknown) {
+        StackSafety::Clear
+    } else {
+        StackSafety::Unknown
+    }
 }
 
 /// Linux interface names used by tunnels: tun0, wg0, tailscale0, ppp0, zt…
@@ -134,6 +215,25 @@ mod tests {
         assert_eq!(vpn_client("Intel(R) Wi-Fi 6E AX211 160MHz"), None);
         assert!(is_tunnel_interface("wg0") && is_tunnel_interface("tailscale0"));
         assert!(!is_tunnel_interface("enp3s0") && !is_tunnel_interface("wlp2s0"));
+    }
+
+    #[test]
+    fn matches_nettriage_vpn_adapters() {
+        assert!(is_vpn_adapter("Cisco AnyConnect Secure Mobility Client Virtual Miniport Adapter for Windows x64"));
+        assert!(is_vpn_adapter("Zscaler Network Adapter 1.0.2.0"));
+        assert!(is_vpn_adapter("Wintun Userspace Tunnel"));
+        assert!(is_vpn_adapter("PANGP Virtual Ethernet Adapter Secure"));
+        assert!(!is_vpn_adapter("Intel(R) Ethernet Connection (17) I219-LM"));
+    }
+
+    #[test]
+    fn stack_reset_needs_every_address_leased() {
+        use AddrOrigin::*;
+        assert_eq!(stack_reset_safety(&[Dhcp, RouterAdvertisement, WellKnown, Other]), StackSafety::Clear);
+        assert_eq!(stack_reset_safety(&[Dhcp, Manual, Manual]), StackSafety::Static(2));
+        assert_eq!(stack_reset_safety(&[Dhcp, Unknown]), StackSafety::Unknown);
+        assert_eq!(stack_reset_safety(&[]), StackSafety::Unknown);
+        assert_eq!(AddrOrigin::from_windows(3), Dhcp);
     }
 
     #[test]

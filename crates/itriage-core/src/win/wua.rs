@@ -33,6 +33,8 @@ impl Kind {
 /// A pending update, as plain data.
 #[derive(Clone, Debug)]
 pub struct Pending {
+    /// The update's identity (a GUID), for installing just this one.
+    pub id: String,
     pub title: String,
     pub kb: Option<String>,
     /// MSRC severity ("Critical", "Important", …) for security updates.
@@ -108,11 +110,12 @@ fn new_session() -> windows::core::Result<IUpdateSession> {
     }
 }
 
-fn search(session: &IUpdateSession, kind: Kind) -> windows::core::Result<IUpdateCollection> {
-    // SAFETY: valid session; criteria is a static, well-formed WUA query.
+fn search(session: &IUpdateSession, criteria: &str) -> windows::core::Result<IUpdateCollection> {
+    // SAFETY: valid session; criteria is a well-formed WUA query built from
+    // constants and a validated GUID.
     unsafe {
         let searcher = session.CreateUpdateSearcher()?;
-        searcher.Search(&BSTR::from(kind.criteria()))?.Updates()
+        searcher.Search(&BSTR::from(criteria))?.Updates()
     }
 }
 
@@ -120,6 +123,7 @@ fn describe(u: &IUpdate) -> windows::core::Result<Pending> {
     // SAFETY: property getters on a live IUpdate.
     unsafe {
         let title = u.Title()?.to_string();
+        let id = u.Identity().and_then(|i| i.UpdateID()).map(|b| b.to_string()).unwrap_or_default();
         let kbs = u.KBArticleIDs()?;
         let kb = if kbs.Count()? > 0 {
             Some(format!("KB{}", kbs.get_Item(0)?))
@@ -139,6 +143,7 @@ fn describe(u: &IUpdate) -> windows::core::Result<Pending> {
             .map(yes)
             .unwrap_or(false);
         Ok(Pending {
+            id,
             title,
             kb,
             msrc,
@@ -157,7 +162,7 @@ fn collection() -> windows::core::Result<IUpdateCollection> {
 pub fn pending(kind: Kind) -> Result<Vec<Pending>, String> {
     let _com = ComGuard::init();
     let session = new_session().map_err(wu("Windows Update unavailable"))?;
-    let found = search(&session, kind).map_err(wu("Windows Update search failed"))?;
+    let found = search(&session, kind.criteria()).map_err(wu("Windows Update search failed"))?;
     let count = unsafe { found.Count() }.map_err(wu("reading search results"))?;
     (0..count)
         .map(|i| {
@@ -184,11 +189,32 @@ pub fn reboot_pending() -> Option<bool> {
 /// the install runs as a single batch, the way Windows Update itself does it,
 /// so servicing-stack ordering is respected.
 pub fn install(kind: Kind, include_optional: bool, ctx: &RunContext) -> Result<InstallReport, String> {
+    install_matching(kind.criteria(), include_optional, ctx)
+}
+
+/// Install one update by its identity (Invoke-UpdateSystem's `-UpdateId`).
+pub fn install_update(id: &str, ctx: &RunContext) -> Result<String, String> {
+    if !crate::actions::valid_update_id(id) {
+        return Err(format!("`{id}` isn't a Windows Update identity."));
+    }
+    let report = install_matching(&format!("UpdateID='{id}' and IsInstalled=0"), true, ctx)?;
+    let Some((p, outcome)) = report.results.first() else {
+        return Ok("That update is no longer offered (it may already be installed).".into());
+    };
+    let restart = if report.reboot_required { " Restart to finish." } else { "" };
+    if outcome.succeeded() {
+        Ok(format!("{}: {}.{restart}", p.label(), outcome.label()))
+    } else {
+        Err(format!("{}: {}", p.label(), outcome.label()))
+    }
+}
+
+fn install_matching(criteria: &str, include_optional: bool, ctx: &RunContext) -> Result<InstallReport, String> {
     let _com = ComGuard::init();
     let session = new_session().map_err(wu("Windows Update unavailable"))?;
 
     ctx.log("Searching Windows Update…");
-    let found = search(&session, kind).map_err(wu("Windows Update search failed"))?;
+    let found = search(&session, criteria).map_err(wu("Windows Update search failed"))?;
     let count = unsafe { found.Count() }.map_err(wu("reading search results"))?;
 
     let mut chosen: Vec<(IUpdate, Pending)> = Vec::new();

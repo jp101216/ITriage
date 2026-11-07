@@ -65,6 +65,9 @@ mod imp {
                     if let Some(m) = &p.msrc {
                         f = f.with_detail(format!("MSRC severity: {m}"));
                     }
+                    if crate::actions::valid_update_id(&p.id) {
+                        f = f.with_action(crate::actions::offer("install-update", Some(&p.id)));
+                    }
                     findings.push(f);
                 }
                 if !important.is_empty() {
@@ -74,10 +77,36 @@ mod imp {
             Err(e) => findings.push(Finding::warn("Windows Update", e)),
         }
 
+        // --- Drivers and firmware published to Windows Update ---
+        ctx.log("Searching Windows Update for drivers…");
+        match wua::pending(Kind::Driver) {
+            Ok(list) => {
+                findings.push(Finding::new(
+                    "Windows Update drivers",
+                    format!("{} offered", list.len()),
+                    if list.is_empty() { Severity::Ok } else { Severity::Info },
+                ));
+                for p in list.iter().take(LIST_MAX) {
+                    let mut f = Finding::info("Driver", p.title.clone());
+                    if crate::actions::valid_update_id(&p.id) {
+                        f = f.with_action(crate::actions::offer("install-update", Some(&p.id)));
+                    }
+                    findings.push(f);
+                }
+                if !list.is_empty() {
+                    parts.push(format!("{} driver update{}", list.len(), plural(list.len())));
+                }
+            }
+            Err(e) => findings.push(Finding::warn("Windows Update drivers", e)),
+        }
+
         // --- Restart state ---
         match wua::reboot_pending() {
             Some(true) => {
-                findings.push(Finding::warn("Restart pending", "yes; restart to finish earlier updates"));
+                findings.push(
+                    Finding::warn("Restart pending", "yes; restart to finish earlier updates")
+                        .with_action(crate::actions::offer("restart-computer", None)),
+                );
                 parts.push("restart pending".into());
             }
             Some(false) => findings.push(Finding::ok("Restart pending", "no")),
@@ -116,16 +145,29 @@ mod imp {
             ));
         }
 
-        // --- Drivers / BIOS: which tool will handle them ---
-        let maker = crate::host::system_manufacturer();
+        // --- Drivers / BIOS: the current BIOS and which tool handles it ---
+        let id = crate::host::identity();
+        findings.push(Finding::info("Current BIOS", id.bios().unwrap_or_else(|| "not reported".into())));
+        let maker = id.manufacturer.clone().or_else(|| id.motherboard());
         let label = match &maker {
             Some(m) => format!("Driver/BIOS tool ({m})"),
             None => "Driver/BIOS tool".to_string(),
         };
-        let finding = match maker.as_deref().and_then(oem::for_manufacturer) {
-            Some(tool) if tool.locate().is_some() => Finding::ok(label, format!("{} is installed", tool.tool)),
-            Some(tool) => Finding::info(label, format!("{} isn't installed; {}", tool.tool, tool.get_it)),
-            None => Finding::info(label, "no OEM tool for this make; driver installs will use Windows Update"),
+        let finding = match oem::route(id) {
+            Some((route, _)) => match (&route.via, route.state()) {
+                (oem::Via::Runner(tool), oem::ToolState::Ready(_)) => Finding::ok(label, format!("{} is installed", tool.tool)),
+                (oem::Via::Runner(_), oem::ToolState::Installed(name)) => Finding::ok(label, format!("{name} is installed (open it to apply updates)")),
+                (oem::Via::Runner(tool), _) => {
+                    let mut f = Finding::info(label, format!("{} isn't installed; {}", route.name, tool.get_it));
+                    if let Some(w) = route.winget_id {
+                        f = f.with_action(crate::actions::offer("install-oem-tool", Some(w)));
+                    }
+                    f
+                }
+                (oem::Via::WindowsUpdate, _) => Finding::info(label, "firmware arrives through Windows Update"),
+                (oem::Via::Manual, _) => Finding::info(label, format!("use {} (from the Store or the vendor's site)", route.name)),
+            },
+            None => Finding::info(label, "not a recognised make; driver installs use Windows Update, the BIOS comes from the board maker"),
         };
         findings.push(finding);
 
@@ -210,7 +252,11 @@ mod imp {
 
         // --- Reboot state ---
         if let Some(why) = reboot_required() {
-            findings.push(Finding::warn("Reboot required", "yes").with_detail(why));
+            findings.push(
+                Finding::warn("Reboot required", "yes")
+                    .with_detail(why)
+                    .with_action(crate::actions::offer("restart-computer", None)),
+            );
             parts.push("reboot required".into());
         }
 
