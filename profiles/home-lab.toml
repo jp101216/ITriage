@@ -1,0 +1,41 @@
+# Example site profile: a home lab. The hosts are placeholders for your own.
+#
+# Use it per-user (~/.config/itriage/profile.toml, or %APPDATA%\itriage\profile.toml
+# on Windows), or point ITRIAGE_PROFILE at it to try it out.
+
+name = "Home lab"
+description = "Workstations and servers on the lab network"
+
+[policy]
+# Your own gear: every module and every fix is allowed.
+allow_changes = true
+allow_installs = true
+
+[time]
+# Your router or a local NTP server works too.
+server = "pool.ntp.org"
+
+[[require.service]]
+# A systemd unit on Linux; on Windows use the service name (OpenSSH Server is "sshd").
+name = "sshd"
+label = "SSH server"
+
+[[require.endpoint]]
+label = "NAS (SMB)"
+host = "nas.lan"
+port = 445
+
+[[require.endpoint]]
+label = "Proxmox web UI"
+host = "pve.lan"
+port = 8006
+
+[[require.endpoint]]
+label = "Pi-hole DNS"
+host = "pihole.lan"
+port = 53
+
+[[require.endpoint]]
+label = "Internet (HTTPS)"
+host = "example.com"
+port = 443

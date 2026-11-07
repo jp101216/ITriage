@@ -5,9 +5,34 @@ use crate::parse::evtxml::{parse_system, EvtSystem};
 use std::collections::{HashMap, HashSet};
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::System::EventLog::{
-    EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtNext, EvtOpenPublisherMetadata, EvtQuery,
-    EvtQueryChannelPath, EvtQueryReverseDirection, EvtRender, EvtRenderEventXml, EVT_HANDLE,
+    DeregisterEventSource, EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtNext,
+    EvtOpenPublisherMetadata, EvtQuery, EvtQueryChannelPath, EvtQueryReverseDirection, EvtRender,
+    EvtRenderEventXml, RegisterEventSourceW, ReportEventW, EVENTLOG_INFORMATION_TYPE,
+    EVENTLOG_WARNING_TYPE, EVT_HANDLE,
 };
+
+/// Write one event to the Application log under `source` (the audit trail).
+/// Registers the source first when running elevated, so messages render
+/// cleanly; unregistered sources still log, just with Event Viewer's
+/// "description cannot be found" preamble.
+pub fn report(source: &str, id: u32, ok: bool, message: &str) {
+    if crate::host::is_elevated() {
+        super::registry::ensure_event_source(source);
+    }
+    let name = HSTRING::from(source);
+    let text = HSTRING::from(message);
+    // SAFETY: the handle is deregistered on every path; the string array
+    // points at `text`, which outlives the call.
+    unsafe {
+        let Ok(handle) = RegisterEventSourceW(PCWSTR::null(), &name) else {
+            return;
+        };
+        let strings = [PCWSTR(text.as_ptr())];
+        let kind = if ok { EVENTLOG_INFORMATION_TYPE } else { EVENTLOG_WARNING_TYPE };
+        let _ = ReportEventW(handle, kind, 0, id, None, 0, Some(&strings), None);
+        let _ = DeregisterEventSource(handle);
+    }
+}
 
 pub struct RawEvent {
     pub system: EvtSystem,

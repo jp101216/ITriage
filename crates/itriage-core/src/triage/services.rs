@@ -93,6 +93,9 @@ mod imp {
                 // e.g. "The process terminated unexpectedly. (os error 1067)"
                 finding = finding.with_detail(std::io::Error::from_raw_os_error(s.exit_code as i32).to_string());
             }
+            if crate::actions::valid_service_name(&s.name) {
+                finding = finding.with_action(crate::actions::offer("start-service", Some(&s.name)));
+            }
             problems.push(finding);
         }
 
@@ -161,10 +164,12 @@ mod imp {
             Finding::ok("Running services", running.to_string()),
         ];
         for u in &failed {
-            findings.push(
-                Finding::warn(u.unit.clone(), format!("{} ({})", u.active, u.sub))
-                    .with_detail(u.description.clone()),
-            );
+            let mut f = Finding::warn(u.unit.clone(), format!("{} ({})", u.active, u.sub))
+                .with_detail(u.description.clone());
+            if crate::actions::valid_service_name(&u.unit) {
+                f = f.with_action(crate::actions::offer("start-service", Some(&u.unit)));
+            }
+            findings.push(f);
         }
 
         let summary = if failed.is_empty() {

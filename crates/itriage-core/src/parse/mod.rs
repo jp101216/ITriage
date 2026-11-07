@@ -6,10 +6,16 @@
 //! unit-tested on any host. The OS-specific code stays thin: call the tool or
 //! API, hand the text to a parser here.
 
+pub mod battery;
+pub mod devices;
 pub mod evtxml;
 pub mod journal;
+pub mod net;
 pub mod pkg;
+pub mod printer;
+pub mod sntp;
 pub mod systemd;
 pub mod text;
 pub mod time;
+pub mod version;
 pub mod winget;

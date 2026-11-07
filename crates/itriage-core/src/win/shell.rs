@@ -1,8 +1,21 @@
-//! Relaunch this executable elevated, through the standard UAC prompt.
+//! ShellExecute: relaunch elevated through the UAC prompt, and open a URL or
+//! folder with its default handler.
 
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+/// Open a URL in the default browser, or a folder in Explorer.
+pub fn open(target: &str) -> Result<(), String> {
+    let target = HSTRING::from(target);
+    // SAFETY: valid NUL-terminated wide strings that outlive the call.
+    let result = unsafe { ShellExecuteW(None, w!("open"), &target, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+    if result.0 as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!("Windows couldn't open it (ShellExecute {})", result.0 as isize))
+    }
+}
 
 pub fn relaunch_elevated() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("can't locate itriage.exe: {e}"))?;

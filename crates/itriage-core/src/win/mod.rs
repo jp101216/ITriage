@@ -5,12 +5,19 @@
 //! return plain Rust data. Interpretation (what counts as a problem, how to
 //! word it) lives in the triage/update modules, and text parsing in `parse`.
 
+pub mod adapters;
+pub mod apps;
+pub mod certs;
 pub mod com;
+pub mod devices;
+pub mod domain;
 pub mod eventlog;
+pub mod printing;
 pub mod registry;
 pub mod scm;
 pub mod shell;
 pub mod token;
+pub mod wlan;
 pub mod wua;
 
 /// "context: message (0x80070005)" for a windows-rs error.

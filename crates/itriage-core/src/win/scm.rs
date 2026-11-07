@@ -1,16 +1,121 @@
 //! Service Control Manager: enumerate Win32 services with their state, exit
 //! code, start mode and whether they're trigger-started.
 
+use std::time::{Duration, Instant};
 use windows::core::{HSTRING, PCWSTR};
-use windows::Win32::Foundation::ERROR_MORE_DATA;
-use windows::Win32::System::Services::{
-    CloseServiceHandle, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW, QueryServiceConfig2W,
-    QueryServiceConfigW, ENUM_SERVICE_STATUS_PROCESSW, QUERY_SERVICE_CONFIGW, SC_ENUM_PROCESS_INFO,
-    SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_ENUMERATE_SERVICE, SERVICE_AUTO_START,
-    SERVICE_CONFIG_DELAYED_AUTO_START_INFO, SERVICE_CONFIG_TRIGGER_INFO, SERVICE_DELAYED_AUTO_START_INFO,
-    SERVICE_DEMAND_START, SERVICE_DISABLED, SERVICE_QUERY_CONFIG, SERVICE_RUNNING, SERVICE_STATE_ALL,
-    SERVICE_STATUS_PROCESS, SERVICE_TRIGGER_INFO, SERVICE_WIN32,
+use windows::Win32::Foundation::{
+    ERROR_MORE_DATA, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE,
 };
+use windows::Win32::System::Services::{
+    CloseServiceHandle, ControlService, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW,
+    QueryServiceConfig2W, QueryServiceConfigW, QueryServiceStatus, StartServiceW, ENUM_SERVICE_STATUS_PROCESSW,
+    QUERY_SERVICE_CONFIGW, SC_ENUM_PROCESS_INFO, SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_ENUMERATE_SERVICE,
+    SERVICE_AUTO_START, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, SERVICE_CONFIG_TRIGGER_INFO,
+    SERVICE_CONTROL_STOP, SERVICE_DELAYED_AUTO_START_INFO, SERVICE_DEMAND_START, SERVICE_DISABLED,
+    SERVICE_PAUSED, SERVICE_QUERY_CONFIG, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START,
+    SERVICE_START_PENDING, SERVICE_STATE_ALL, SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE,
+    SERVICE_STATUS_PROCESS, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TRIGGER_INFO,
+    SERVICE_WIN32,
+};
+
+/// One service's current state, for targeted checks.
+#[derive(Clone, Debug)]
+pub struct State {
+    pub running: bool,
+    pub state: &'static str,
+    pub start: StartMode,
+}
+
+fn state_name(s: SERVICE_STATUS_CURRENT_STATE) -> &'static str {
+    match s {
+        x if x == SERVICE_RUNNING => "running",
+        x if x == SERVICE_STOPPED => "stopped",
+        x if x == SERVICE_START_PENDING => "starting",
+        x if x == SERVICE_STOP_PENDING => "stopping",
+        x if x == SERVICE_PAUSED => "paused",
+        _ => "changing state",
+    }
+}
+
+/// Open one service with `access`. `Ok(None)` when it isn't installed.
+unsafe fn open(name: &str, access: u32) -> Result<Option<(ScHandle, ScHandle)>, String> {
+    let scm = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT)
+        .map_err(|e| super::err("can't open the Service Control Manager", &e))?;
+    let scm = ScHandle(scm);
+    match OpenServiceW(scm.0, &HSTRING::from(name), access) {
+        Ok(svc) => Ok(Some((scm, ScHandle(svc)))),
+        Err(e) if e.code() == ERROR_SERVICE_DOES_NOT_EXIST.to_hresult() => Ok(None),
+        Err(e) => Err(super::err(&format!("can't open service {name}"), &e)),
+    }
+}
+
+/// State and start mode of one service; `Ok(None)` if it isn't installed.
+pub fn query(name: &str) -> Result<Option<State>, String> {
+    // SAFETY: handles are wrapped and closed on drop.
+    unsafe {
+        let Some((scm, svc)) = open(name, SERVICE_QUERY_STATUS)? else {
+            return Ok(None);
+        };
+        let mut status = SERVICE_STATUS::default();
+        QueryServiceStatus(svc.0, &mut status).map_err(|e| super::err(&format!("can't query {name}"), &e))?;
+        let (start, _) = start_mode(scm.0, name);
+        Ok(Some(State {
+            running: status.dwCurrentState == SERVICE_RUNNING,
+            state: state_name(status.dwCurrentState),
+            start,
+        }))
+    }
+}
+
+/// Start a service and wait (up to `timeout`) until it's running.
+pub fn start(name: &str, timeout: Duration) -> Result<(), String> {
+    // SAFETY: handles are wrapped and closed on drop.
+    unsafe {
+        let (_scm, svc) = open(name, SERVICE_START | SERVICE_QUERY_STATUS)?
+            .ok_or_else(|| format!("service {name} isn't installed"))?;
+        if let Err(e) = StartServiceW(svc.0, None) {
+            if e.code() != ERROR_SERVICE_ALREADY_RUNNING.to_hresult() {
+                return Err(super::err(&format!("can't start {name}"), &e));
+            }
+        }
+        wait(&svc, name, SERVICE_RUNNING, timeout)
+    }
+}
+
+/// Stop a service and wait (up to `timeout`) until it has stopped.
+pub fn stop(name: &str, timeout: Duration) -> Result<(), String> {
+    // SAFETY: handles are wrapped and closed on drop.
+    unsafe {
+        let (_scm, svc) = open(name, SERVICE_STOP | SERVICE_QUERY_STATUS)?
+            .ok_or_else(|| format!("service {name} isn't installed"))?;
+        let mut status = SERVICE_STATUS::default();
+        if let Err(e) = ControlService(svc.0, SERVICE_CONTROL_STOP, &mut status) {
+            if e.code() != ERROR_SERVICE_NOT_ACTIVE.to_hresult() {
+                return Err(super::err(&format!("can't stop {name}"), &e));
+            }
+        }
+        wait(&svc, name, SERVICE_STOPPED, timeout)
+    }
+}
+
+unsafe fn wait(svc: &ScHandle, name: &str, want: SERVICE_STATUS_CURRENT_STATE, timeout: Duration) -> Result<(), String> {
+    let started = Instant::now();
+    loop {
+        let mut status = SERVICE_STATUS::default();
+        QueryServiceStatus(svc.0, &mut status).map_err(|e| super::err(&format!("can't query {name}"), &e))?;
+        if status.dwCurrentState == want {
+            return Ok(());
+        }
+        if started.elapsed() > timeout {
+            return Err(format!(
+                "{name} is still {} after {} s",
+                state_name(status.dwCurrentState),
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartMode {

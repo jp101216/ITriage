@@ -1,28 +1,39 @@
 //! Headless runner for itriage-core. Useful on boxes without a desktop, over
-//! SSH, and for exercising modules while developing.
+//! SSH or a remote shell, and for exercising modules while developing.
 //!
 //!   cargo run -p itriage-core --example triage -- --list
 //!   cargo run -p itriage-core --example triage                  # every read-only module
-//!   cargo run -p itriage-core --example triage -- proc.services eventlog.errors
-//!   cargo run -p itriage-core --example triage -- --json update.scan
+//!   cargo run -p itriage-core --example triage -- proc.services desk.printers
+//!   cargo run -p itriage-core --example triage -- --json > report.json
 //!
-//! Mutating modules only run when named explicitly.
+//! `--json` prints a full report (the same format the app saves to its
+//! history), so a run on a remote machine can be opened and compared in the
+//! app with "Open report". The site profile is found the same way the app
+//! finds it; set ITRIAGE_PROFILE=<file> to try one. Mutating modules only run
+//! when named explicitly, and the profile's policy still applies to them.
 
-use itriage_core::{host_context, registry, RunContext};
+use itriage_core::{host_context, profile, registry, report::Report, RunContext};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let json = args.iter().any(|a| a == "--json");
+    let loaded = profile::load();
 
     if args.iter().any(|a| a == "--list") {
         for m in registry() {
             let i = m.info();
             let mut tags = Vec::new();
             if i.mutating {
-                tags.push("mutating");
+                tags.push("mutating".to_string());
             }
             if i.requires_admin {
-                tags.push("admin");
+                tags.push("admin".to_string());
+            }
+            if !i.platforms.contains(&std::env::consts::OS) {
+                tags.push(format!("{} only", i.platforms.join("/")));
+            }
+            if loaded.profile.block_reason(&i).is_some() {
+                tags.push("blocked by profile".to_string());
             }
             let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
             println!("{:<18} {}{tags}", i.id, i.title);
@@ -36,7 +47,7 @@ fn main() {
         .filter(|m| {
             let i = m.info();
             if ids.is_empty() {
-                !i.mutating
+                !i.mutating && i.platforms.contains(&std::env::consts::OS)
             } else {
                 ids.contains(&i.id)
             }
@@ -48,15 +59,21 @@ fn main() {
     }
 
     let host = host_context();
+    let status = &loaded.status;
     eprintln!(
-        "itriage · {} · {} · {}",
+        "itriage · {} · {} · {} · profile: {} ({})",
         host.hostname,
         host.os,
-        if host.elevated { "elevated" } else { "standard user" }
+        if host.elevated { "elevated" } else { "standard user" },
+        status.name,
+        status.source
     );
+    if let Some(e) = &status.error {
+        eprintln!("profile problem: {e}");
+    }
 
     let log = |line: &str| eprintln!("    · {line}");
-    let ctx = RunContext::new(&log);
+    let ctx = RunContext::new(&log).with_profile(&loaded.profile);
     let mut results = Vec::new();
     for m in &modules {
         eprintln!("▶ {}", m.info().title);
@@ -64,7 +81,9 @@ fn main() {
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&results).expect("results serialize"));
+        let profile_name = (status.source != "built-in").then(|| status.name.clone());
+        let report = Report::new(host, profile_name, results, false);
+        println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
         return;
     }
 
@@ -83,6 +102,12 @@ fn main() {
             println!("    {:<9} {}: {}", format!("{:?}", f.severity).to_lowercase(), f.label, f.value);
             if let Some(d) = &f.detail {
                 println!("              {d}");
+            }
+            if let Some(a) = &f.action {
+                println!("              fix available: {}", a.label);
+            }
+            if let Some(kb) = &f.kb {
+                println!("              KB: {} <{}>", kb.title, kb.url);
             }
         }
         println!();

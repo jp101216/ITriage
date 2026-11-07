@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -55,6 +55,16 @@ jobs:
           cargo run -q -p itriage-core --example triage
           cargo run -q -p itriage-core --example triage -- --json > smoke-${{ runner.os }}.json
 
+      # The example clinical profile: policy locks, site requirements (which
+      # fail on a runner, as they should) and the workstation checks.
+      - name: Smoke-run with the example site profile
+        shell: bash
+        env:
+          ITRIAGE_PROFILE: profiles/clinical-workstation.example.toml
+        run: |
+          cargo run -q -p itriage-core --example triage -- --list
+          cargo run -q -p itriage-core --example triage -- desk.time desk.printers desk.devices desk.wifi desk.battery site.apps site.checks
+
       - name: Upload smoke report
         if: always()
         uses: actions/upload-artifact@v7
@@ -63,6 +73,8 @@ jobs:
           path: smoke-${{ runner.os }}.json
           if-no-files-found: ignore
 
+  # Every push gets installers (branch builds too, so a feature can be tried
+  # on a real machine before it's merged); pull requests reuse the push build.
   bundle:
     name: Installers (${{ matrix.os }})
     needs: check

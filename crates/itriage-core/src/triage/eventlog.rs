@@ -8,7 +8,9 @@
 
 use crate::model::{Category, Finding, ModuleInfo, Output, Severity};
 use crate::module::{RunContext, TriageModule};
-use crate::parse::text::{first_line, truncate_chars};
+#[cfg(not(windows))]
+use crate::parse::text::first_line;
+use crate::parse::text::{collapse_whitespace, truncate_chars};
 use crate::util::{ago, now_epoch, plural};
 
 /// How far back to look.
@@ -87,7 +89,7 @@ fn report(mut groups: Vec<Group>, mut notes: Vec<Finding>) -> Output {
             let mut detail = g
                 .message
                 .as_deref()
-                .map(|m| truncate_chars(first_line(m), 220))
+                .map(|m| truncate_chars(&collapse_whitespace(m), 220))
                 .unwrap_or_default();
             if let Some(note) = g.note {
                 detail = if detail.is_empty() { note.to_string() } else { format!("{detail} ({note})") };
