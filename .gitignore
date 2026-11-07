@@ -1,0 +1,14 @@
+# Rust build output
+/target
+**/target
+
+# Tauri generated files
+/src-tauri/gen
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Local scratch
+*.log
+smoke-*.json

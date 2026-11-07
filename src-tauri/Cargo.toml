@@ -1,0 +1,16 @@
+[package]
+name = "itriage"
+version = "0.3.0"
+edition = "2021"
+description = "IT triage & update tool — Tauri desktop shell"
+publish = false
+default-run = "itriage"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+itriage-core = { path = "../crates/itriage-core" }

@@ -1,0 +1,12 @@
+# Workspace root. The engine (crates/itriage-core) is GUI-agnostic; src-tauri
+# is the desktop shell. A future CLI would be a third member here, depending on
+# the same core.
+[workspace]
+members = ["src-tauri", "crates/itriage-core"]
+resolver = "2"
+
+[profile.release]
+# Smaller, faster-to-ship binaries for the portfolio build.
+opt-level = "s"
+lto = true
+strip = true

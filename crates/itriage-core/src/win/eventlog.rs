@@ -1,0 +1,134 @@
+//! Windows Event Log through the Vista+ `Evt*` API: query a channel for recent
+//! Critical/Error events, render each one as XML, and format messages.
+
+use crate::parse::evtxml::{parse_system, EvtSystem};
+use std::collections::{HashMap, HashSet};
+use windows::core::{HSTRING, PCWSTR};
+use windows::Win32::System::EventLog::{
+    EvtClose, EvtFormatMessage, EvtFormatMessageEvent, EvtNext, EvtOpenPublisherMetadata, EvtQuery,
+    EvtQueryChannelPath, EvtQueryReverseDirection, EvtRender, EvtRenderEventXml, EVT_HANDLE,
+};
+
+pub struct RawEvent {
+    pub system: EvtSystem,
+    /// The formatted message, filled in only for the newest event of each
+    /// (provider, event id). Formatting is the expensive part, and older
+    /// repeats of the same event would only be counted anyway.
+    pub message: Option<String>,
+}
+
+struct Handle(EVT_HANDLE);
+
+impl Drop for Handle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: we own the handle and close it exactly once.
+            unsafe {
+                let _ = EvtClose(self.0);
+            }
+        }
+    }
+}
+
+/// Critical (level 1) and Error (level 2) events from `channel` in the last
+/// `hours`, newest first, at most `max` of them.
+pub fn recent_errors(channel: &str, hours: u32, max: usize) -> Result<Vec<RawEvent>, String> {
+    let query = format!(
+        "*[System[(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) <= {}]]]",
+        u64::from(hours) * 3_600_000
+    );
+    let path = HSTRING::from(channel);
+    let query = HSTRING::from(query);
+    let flags = EvtQueryChannelPath.0 | EvtQueryReverseDirection.0;
+    // SAFETY: valid wide strings; the result-set handle is wrapped for closing.
+    let results = unsafe { EvtQuery(None, &path, &query, flags) }
+        .map_err(|e| super::err(&format!("can't read the {channel} log"), &e))?;
+    let results = Handle(results);
+
+    let mut publishers: HashMap<String, Option<Handle>> = HashMap::new();
+    let mut seen: HashSet<(String, u32)> = HashSet::new();
+    let mut events = Vec::new();
+    let mut batch = [0isize; 64]; // raw EVT_HANDLE values
+
+    while events.len() < max {
+        let mut returned = 0u32;
+        // Fails with ERROR_NO_MORE_ITEMS at the end of the result set.
+        if unsafe { EvtNext(results.0, &mut batch, 2_000, 0, &mut returned) }.is_err() || returned == 0 {
+            break;
+        }
+        for &raw in &batch[..returned as usize] {
+            let event = Handle(EVT_HANDLE(raw)); // closed at the end of this iteration
+            let Some(xml) = (unsafe { render_xml(event.0) }) else {
+                continue;
+            };
+            let Some(system) = parse_system(&xml) else {
+                continue;
+            };
+            let first = seen.insert((system.provider.clone(), system.event_id));
+            let message = if first {
+                unsafe { format_message(&mut publishers, &system.provider, event.0) }
+            } else {
+                None
+            };
+            events.push(RawEvent { system, message });
+        }
+    }
+    Ok(events)
+}
+
+unsafe fn render_xml(event: EVT_HANDLE) -> Option<String> {
+    let mut used = 0u32;
+    let mut properties = 0u32;
+    // Sizing call: fails with ERROR_INSUFFICIENT_BUFFER and reports bytes needed.
+    let _ = EvtRender(None, event, EvtRenderEventXml.0, 0, None, &mut used, &mut properties);
+    if used == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; (used as usize).div_ceil(2) + 1];
+    EvtRender(
+        None,
+        event,
+        EvtRenderEventXml.0,
+        (buf.len() * 2) as u32,
+        Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+        &mut used,
+        &mut properties,
+    )
+    .ok()?;
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+unsafe fn format_message(
+    publishers: &mut HashMap<String, Option<Handle>>,
+    provider: &str,
+    event: EVT_HANDLE,
+) -> Option<String> {
+    let metadata = publishers.entry(provider.to_string()).or_insert_with(|| {
+        let name = HSTRING::from(provider);
+        EvtOpenPublisherMetadata(None, &name, PCWSTR::null(), 0, 0)
+            .ok()
+            .map(Handle)
+    });
+    let metadata = metadata.as_ref()?.0;
+
+    let mut used = 0u32; // in characters, for EvtFormatMessage
+    let _ = EvtFormatMessage(Some(metadata), Some(event), 0, None, EvtFormatMessageEvent.0, None, &mut used);
+    if used == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; used as usize];
+    EvtFormatMessage(
+        Some(metadata),
+        Some(event),
+        0,
+        None,
+        EvtFormatMessageEvent.0,
+        Some(&mut buf),
+        &mut used,
+    )
+    .ok()?;
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let text = String::from_utf16_lossy(&buf[..len]).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
