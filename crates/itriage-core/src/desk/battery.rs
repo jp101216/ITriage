@@ -141,7 +141,8 @@ mod imp {
     fn read_report(path: &std::path::Path) -> Option<String> {
         let bytes = std::fs::read(path).ok()?;
         if bytes.starts_with(&[0xFF, 0xFE]) {
-            let wide: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+            let (pairs, _) = bytes[2..].as_chunks::<2>();
+            let wide: Vec<u16> = pairs.iter().map(|&p| u16::from_le_bytes(p)).collect();
             Some(String::from_utf16_lossy(&wide))
         } else {
             Some(String::from_utf8_lossy(&bytes).into_owned())
