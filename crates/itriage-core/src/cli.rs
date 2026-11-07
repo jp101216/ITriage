@@ -1,0 +1,435 @@
+//! The command line: the same engine without the window, for remote shells,
+//! scheduled tasks and RMM tools. `itriage.exe` (or `itriage` on Linux)
+//! switches to it whenever it's given arguments.
+//!
+//! Exit codes follow the PowerShell toolkit: 0 finished (problems found still
+//! count as finished), 1 nothing could run or bad arguments, 2 incomplete (a
+//! module couldn't run, a change partly failed, or the run was cancelled),
+//! and 3010 when changes need a restart (3 on Linux).
+
+use crate::model::Target;
+use crate::model::ModuleInfo;
+use crate::module::{preset, registry, RunContext, PRESETS};
+use crate::profile::{self, Profile};
+use crate::report::{self, Report};
+use std::path::PathBuf;
+
+pub const USAGE: &str = "\
+itriage: IT triage and updates
+
+USAGE
+  itriage [OPTIONS] [MODULE...]
+
+  With no modules, every read-only check runs. Modules that change the
+  machine run only when named (or picked by a preset), and the site
+  profile's policy still applies to them.
+
+SELECTING
+  --list                 List modules and presets, then exit
+  --preset NAME          triage (Invoke-NetTriage), tuneup (Invoke-EndpointTuneUp)
+                         or updates (Invoke-UpdateSystem)
+  --target HOST[:PORTS]  Test one destination (adds the Destination test);
+                         e.g. --target fileserver01:445,3389
+  --ports LIST           Ports for --target (default 443,80,445,3389)
+
+SAFETY
+  --what-if              Preview: modules that change the machine say what
+                         they would do and change nothing
+  --remote-safe          Refuse anything that could drop a remote session or
+                         restart the PC (--no-remote-safe overrides the profile)
+  --redact-serial        Show REDACTED instead of the serial number
+
+OUTPUT
+  --json                 Print the full JSON report instead of text
+  --log                  Include each module's transcript in the text
+  --out PATH             Also write the JSON report to PATH (and PATH.txt)
+  --no-history           Don't save this run in the history folder
+  --quiet                No progress lines on stderr
+
+OTHER COMMANDS
+  --fix ID [TARGET]      Run one one-click fix (restart-spooler, flush-dns,
+                         restart-computer, cancel-restart, start-service NAME…)
+  --compare OLD NEW      Compare two saved reports from the same computer
+  -h, --help             Show this help
+
+EXIT CODES
+  0     finished (including diagnostics that found problems)
+  1     nothing could run, bad arguments, or --out couldn't be written
+  2     incomplete: a module couldn't run, a change failed, or cancelled
+  3010  changes finished and need a restart (3 on Linux)
+";
+
+#[derive(Debug, Default)]
+struct Args {
+    list: bool,
+    help: bool,
+    json: bool,
+    logs: bool,
+    quiet: bool,
+    no_history: bool,
+    what_if: bool,
+    remote_safe: Option<bool>,
+    redact_serial: bool,
+    presets: Vec<String>,
+    target: Option<String>,
+    ports: Option<String>,
+    out: Option<PathBuf>,
+    fix: Option<(String, Option<String>)>,
+    compare: Option<(PathBuf, PathBuf)>,
+    modules: Vec<String>,
+}
+
+fn parse(argv: &[String]) -> Result<Args, String> {
+    let mut a = Args::default();
+    let mut it = argv.iter().peekable();
+    let value = |it: &mut std::iter::Peekable<std::slice::Iter<String>>, flag: &str| -> Result<String, String> {
+        it.next().cloned().ok_or_else(|| format!("{flag} needs a value"))
+    };
+    while let Some(arg) = it.next() {
+        // --flag=value works too.
+        let (flag, inline) = match arg.split_once('=') {
+            Some((f, v)) if f.starts_with("--") => (f.to_string(), Some(v.to_string())),
+            _ => (arg.clone(), None),
+        };
+        let mut take = |name: &str| -> Result<String, String> {
+            match &inline {
+                Some(v) => Ok(v.clone()),
+                None => value(&mut it, name),
+            }
+        };
+        match flag.as_str() {
+            "-h" | "--help" | "/?" => a.help = true,
+            "--list" => a.list = true,
+            "--json" => a.json = true,
+            "--text" => a.json = false,
+            "--log" | "--logs" => a.logs = true,
+            "--quiet" | "-q" => a.quiet = true,
+            "--no-history" => a.no_history = true,
+            "--what-if" | "--whatif" | "--dry-run" => a.what_if = true,
+            "--remote-safe" => a.remote_safe = Some(true),
+            "--no-remote-safe" => a.remote_safe = Some(false),
+            "--redact-serial" => a.redact_serial = true,
+            "--preset" => a.presets.push(take("--preset")?),
+            "--target" => a.target = Some(take("--target")?),
+            "--ports" => a.ports = Some(take("--ports")?),
+            "--out" => a.out = Some(PathBuf::from(take("--out")?)),
+            "--fix" => {
+                let id = take("--fix")?;
+                let target = it.next_if(|n| !n.starts_with("--")).cloned();
+                a.fix = Some((id, target));
+            }
+            "--compare" => {
+                let old = take("--compare")?;
+                let new = value(&mut it, "--compare")?;
+                a.compare = Some((PathBuf::from(old), PathBuf::from(new)));
+            }
+            f if f.starts_with('-') => return Err(format!("unknown option {f} (try --help)")),
+            _ => a.modules.push(arg.clone()),
+        }
+    }
+    Ok(a)
+}
+
+/// Run the command line. Returns the process exit code.
+pub fn main(argv: Vec<String>) -> i32 {
+    let args = match parse(&argv) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("itriage: {e}");
+            return 1;
+        }
+    };
+    if args.help {
+        print!("{USAGE}");
+        return 0;
+    }
+    let loaded = profile::load();
+    let mut profile = loaded.profile.clone();
+    if args.redact_serial {
+        profile.privacy.redact_serial = true;
+    }
+    let remote_safe = args.remote_safe.unwrap_or(profile.policy.remote_safe);
+
+    if args.list {
+        list(&profile, remote_safe);
+        return 0;
+    }
+    if let Some((old, new)) = &args.compare {
+        return compare(old, new, args.json);
+    }
+    if let Some((id, target)) = &args.fix {
+        return match crate::actions::run(id, target.as_deref(), &profile, remote_safe) {
+            Ok(msg) => {
+                println!("{msg}");
+                0
+            }
+            Err(e) => {
+                eprintln!("itriage: {e}");
+                1
+            }
+        };
+    }
+
+    // --- What to run ---
+    let target = match &args.target {
+        Some(t) => {
+            let mut text = t.clone();
+            if let Some(p) = &args.ports {
+                text = format!("{t} {p}");
+            }
+            match Target::parse(&text, &profile.network.target_ports) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("itriage: {e}");
+                    return 1;
+                }
+            }
+        }
+        None => None,
+    };
+    let mut wanted: Vec<String> = args.modules.clone();
+    for name in &args.presets {
+        match preset(name) {
+            Some(p) => wanted.extend(p.modules.iter().map(|m| m.to_string())),
+            None => {
+                eprintln!(
+                    "itriage: unknown preset `{name}` (one of: {})",
+                    PRESETS.iter().map(|p| p.id).collect::<Vec<_>>().join(", ")
+                );
+                return 1;
+            }
+        }
+    }
+    if target.is_some() && !wanted.iter().any(|m| m == "net.target") {
+        wanted.push("net.target".into());
+    }
+    let explicit = !wanted.is_empty();
+    let os = std::env::consts::OS;
+    let all = registry();
+    let unknown: Vec<&String> = wanted.iter().filter(|w| !all.iter().any(|m| m.info().id == **w)).collect();
+    let modules: Vec<_> = all
+        .into_iter()
+        .filter(|m| {
+            let i = m.info();
+            let here = i.platforms.contains(&os);
+            if explicit {
+                if wanted.contains(&i.id) && !here && !args.quiet {
+                    eprintln!("skipping {} ({} only)", i.id, i.platforms.join("/"));
+                }
+                wanted.contains(&i.id) && here
+            } else {
+                !i.mutating && here && (!i.takes_target || target.is_some())
+            }
+        })
+        .collect();
+    if !unknown.is_empty() {
+        eprintln!(
+            "itriage: unknown module{} {} (try --list)",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
+        );
+        return 1;
+    }
+    if modules.is_empty() {
+        eprintln!("itriage: nothing to run (try --list)");
+        return 1;
+    }
+
+    // --- Run ---
+    let host = crate::host_context();
+    let status = &loaded.status;
+    if !args.quiet {
+        eprintln!(
+            "itriage · {} · {} · {} · profile: {} ({}){}{}",
+            host.hostname,
+            host.os,
+            if host.elevated { "elevated" } else { "standard user" },
+            status.name,
+            status.source,
+            if args.what_if { " · PREVIEW" } else { "" },
+            if remote_safe { " · REMOTE-SAFE" } else { "" },
+        );
+        if let Some(e) = &status.error {
+            eprintln!("profile problem: {e}");
+        }
+    }
+    let quiet = args.quiet;
+    let log = move |line: &str| {
+        if !quiet {
+            eprintln!("    · {line}");
+        }
+    };
+    let mut ctx = RunContext::new(&log)
+        .with_profile(&profile)
+        .preview(args.what_if)
+        .remote_safe(remote_safe);
+    if let Some(t) = &target {
+        ctx = ctx.with_target(t);
+    }
+    let mut results = Vec::new();
+    for m in &modules {
+        if !args.quiet {
+            eprintln!("▶ {}", m.info().title);
+        }
+        results.push(m.run(&ctx));
+    }
+    crate::audit::run_finished(&results, false);
+
+    let profile_name = (status.source != "built-in").then(|| status.name.clone());
+    let report = Report::new(host, profile_name, results, false);
+    let ids: Vec<String> = report.results.iter().map(|r| r.module_id.clone()).collect();
+    let diff = report::previous(&report.host.hostname, &report.generated, &ids).map(|old| report::diff(&old, &report));
+    let mut code = report.exit_code.unwrap_or(1);
+
+    if !args.no_history {
+        match report::save(&report, profile.history.keep) {
+            Ok(p) if !args.quiet => eprintln!("saved: {}", p.display()),
+            Ok(_) => {}
+            Err(e) => eprintln!("itriage: couldn't save to history: {e}"),
+        }
+    }
+    if let Some(out) = &args.out {
+        let json = serde_json::to_string_pretty(&report).expect("report serializes");
+        let text = report::render_text(&report, diff.as_ref(), true);
+        let txt = out.with_extension("txt");
+        let written = std::fs::write(out, json).and_then(|_| if txt != *out { std::fs::write(&txt, text) } else { Ok(()) });
+        match written {
+            Ok(()) if !args.quiet => eprintln!("written: {} and {}", out.display(), txt.display()),
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("itriage: couldn't write {}: {e}", out.display());
+                code = 1;
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
+    } else {
+        println!("{}", report::render_text(&report, diff.as_ref(), args.logs));
+    }
+    code
+}
+
+fn list(profile: &Profile, remote_safe: bool) {
+    let os = std::env::consts::OS;
+    for m in registry() {
+        let i: ModuleInfo = m.info();
+        let mut tags = Vec::new();
+        if i.mutating {
+            tags.push("changes the machine".to_string());
+        }
+        if i.requires_admin {
+            tags.push("admin".to_string());
+        }
+        if i.disruptive {
+            tags.push(if remote_safe { "locked by remote-safe".into() } else { "can drop the session".to_string() });
+        }
+        if i.takes_target {
+            tags.push("needs --target".to_string());
+        }
+        if !i.platforms.contains(&os) {
+            tags.push(format!("{} only", i.platforms.join("/")));
+        }
+        if profile.block_reason(&i).is_some() {
+            tags.push("blocked by profile".to_string());
+        }
+        let tags = if tags.is_empty() { String::new() } else { format!("  [{}]", tags.join(", ")) };
+        println!("{:<18} {}{tags}", i.id, i.title);
+    }
+    println!();
+    println!("Presets:");
+    for p in PRESETS {
+        println!("  --preset {:<8} {} ({}): {}", p.id, p.title, p.script, p.modules.join(" "));
+    }
+}
+
+fn compare(old: &std::path::Path, new: &std::path::Path, json: bool) -> i32 {
+    let load = |p: &std::path::Path| report::load(p);
+    let (a, b) = match (load(old), load(new)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("itriage: {e}");
+            return 1;
+        }
+    };
+    match report::compare(&a, &b) {
+        Ok(d) if json => {
+            println!("{}", serde_json::to_string_pretty(&d).expect("diff serializes"));
+            0
+        }
+        Ok(d) => {
+            println!("{}", report::render_diff(&d, &a.host.hostname));
+            0
+        }
+        Err(e) => {
+            eprintln!("itriage: {e}");
+            1
+        }
+    }
+}
+
+/// Windows release builds are GUI programs, which start without a console.
+/// When one is run from a command prompt with arguments, write to that
+/// prompt's console (unless output is already redirected to a file or pipe).
+#[cfg(windows)]
+pub fn attach_console() {
+    use windows::Win32::System::Console::{AttachConsole, GetStdHandle, ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE};
+    // SAFETY: plain Win32 calls; failure just means there's no console to use.
+    unsafe {
+        let redirected = GetStdHandle(STD_OUTPUT_HANDLE).is_ok_and(|h| !h.is_invalid() && !h.0.is_null());
+        if !redirected {
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn attach_console() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Args {
+        parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn parses_the_command_line() {
+        let a = args(&["--preset", "triage", "--target=fileserver01:445", "--what-if", "--json", "desk.time"]);
+        assert_eq!(a.presets, vec!["triage"]);
+        assert_eq!(a.target.as_deref(), Some("fileserver01:445"));
+        assert!(a.what_if && a.json);
+        assert_eq!(a.modules, vec!["desk.time"]);
+        let f = args(&["--fix", "start-service", "Spooler"]);
+        assert_eq!(f.fix, Some(("start-service".into(), Some("Spooler".into()))));
+        let f = args(&["--fix", "flush-dns", "--quiet"]);
+        assert_eq!(f.fix, Some(("flush-dns".into(), None)));
+        assert!(f.quiet);
+        let c = args(&["--compare", "a.json", "b.json"]);
+        assert_eq!(c.compare.unwrap().1, PathBuf::from("b.json"));
+        assert_eq!(args(&["--no-remote-safe"]).remote_safe, Some(false));
+        assert!(parse(&["--bogus".to_string()]).is_err());
+        assert!(parse(&["--target".to_string()]).is_err());
+    }
+
+    #[test]
+    fn bad_input_exits_1() {
+        let run = |a: &[&str]| main(a.iter().map(|s| s.to_string()).collect());
+        assert_eq!(run(&["--help"]), 0);
+        assert_eq!(run(&["--no-such-flag"]), 1);
+        assert_eq!(run(&["--quiet", "--no-history", "no.such.module"]), 1);
+        assert_eq!(run(&["--quiet", "--no-history", "--preset", "nope"]), 1);
+        assert_eq!(run(&["--quiet", "--no-history", "--target", "bad host;x"]), 1);
+        assert_eq!(run(&["--compare", "missing-a.json", "missing-b.json"]), 1);
+    }
+
+    #[test]
+    fn previews_change_nothing_and_finish() {
+        let code = main(
+            ["--quiet", "--no-history", "--what-if", "fix.temp", "fix.dns"].iter().map(|s| s.to_string()).collect(),
+        );
+        assert_eq!(code, 0, "a preview of mutating modules finishes cleanly");
+    }
+}

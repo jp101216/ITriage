@@ -25,6 +25,12 @@ pub struct Profile {
     pub description: String,
     pub policy: Policy,
     pub time: TimeSettings,
+    pub network: NetworkSettings,
+    pub thresholds: Thresholds,
+    pub privacy: Privacy,
+    pub updates: UpdateSettings,
+    pub cleanup: CleanupSettings,
+    pub history: HistorySettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
 }
@@ -44,6 +50,10 @@ pub struct Policy {
     pub start_in: Mode,
     /// `false` keeps the app in self-service mode (a kiosk for end users).
     pub technician_view: bool,
+    /// Start in remote-safe mode: anything that could drop a remote session
+    /// (adapter restarts, DHCP renew, cache purges, policy refreshes) or
+    /// restart the PC is locked. Technicians can still switch it off.
+    pub remote_safe: bool,
 }
 
 impl Default for Policy {
@@ -54,6 +64,7 @@ impl Default for Policy {
             fixes: None,
             start_in: Mode::Technician,
             technician_view: true,
+            remote_safe: false,
         }
     }
 }
@@ -75,6 +86,204 @@ pub struct TimeSettings {
     /// Expected time zone: a Windows zone name ("Eastern Standard Time") or an
     /// IANA one ("America/Detroit"). A mismatch is flagged.
     pub zone: Option<String>,
+}
+
+/// The public-IP lookup Invoke-NetTriage uses (api.ipify.org is its fallback).
+pub const DEFAULT_EGRESS_URL: &str = "https://ifconfig.me/ip";
+
+/// The network checks' built-in probes and timings (the NetTriage defaults).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkSettings {
+    /// The built-in public checks: the DNS name lookup, the outbound TCP probe
+    /// and the public-IP lookup. Turn off on locked-down egress; the profile's
+    /// own endpoints and an explicit `dns_probe` still run.
+    pub public_probes: bool,
+    /// Name resolved (and timed) by the DNS check.
+    pub dns_probe: Option<String>,
+    /// `host:port` for the outbound TCP probe.
+    pub tcp_probe: Option<String>,
+    /// URL that answers with this machine's public IP as plain text. Empty
+    /// skips the lookup (NetTriage's `-SkipExternalIP`).
+    pub egress_url: String,
+    /// Ports the destination test tries when none are given.
+    pub target_ports: Vec<u16>,
+    /// Time budget for one TCP check, shared by every address a name resolves to.
+    pub tcp_timeout_ms: u64,
+    /// ICMP echoes per latency probe.
+    pub ping_count: u32,
+    /// Timeout for each echo.
+    pub ping_timeout_ms: u64,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        Self {
+            public_probes: true,
+            dns_probe: None,
+            tcp_probe: None,
+            egress_url: DEFAULT_EGRESS_URL.into(),
+            target_ports: vec![443, 80, 445, 3389],
+            tcp_timeout_ms: 1500,
+            ping_count: 4,
+            ping_timeout_ms: 1000,
+        }
+    }
+}
+
+impl NetworkSettings {
+    /// The name to time, if any: an explicit one always runs; the public
+    /// default only with public probes on.
+    pub fn dns_probe_name(&self) -> Option<String> {
+        self.dns_probe
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.public_probes.then(|| "www.microsoft.com".to_string()))
+    }
+    /// The public-IP lookup services, if the lookup runs at all.
+    pub fn egress_urls(&self) -> Vec<String> {
+        if self.public_probes {
+            crate::net::egress_urls(&self.egress_url)
+        } else {
+            Vec::new()
+        }
+    }
+    pub fn tcp_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.tcp_timeout_ms.clamp(100, 60_000))
+    }
+    pub fn ping_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.ping_timeout_ms.clamp(100, 60_000))
+    }
+    /// The outbound TCP probe, if any (same rule as the DNS probe).
+    pub fn tcp_probe_target(&self) -> Option<(String, u16)> {
+        let spec = self
+            .tcp_probe
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.public_probes.then(|| "8.8.8.8:53".to_string()))?;
+        let (host, port) = spec.trim().rsplit_once(':')?;
+        Some((host.trim_matches(['[', ']']).to_string(), port.parse().ok()?))
+    }
+}
+
+/// A warning and a critical level for one measurement.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Band {
+    pub warn: f64,
+    pub crit: f64,
+}
+
+impl Band {
+    const fn new(warn: f64, crit: f64) -> Self {
+        Self { warn, crit }
+    }
+    /// Grade a value where higher is worse (latency, load, loss).
+    pub fn high(&self, value: f64) -> Severity {
+        if value >= self.crit {
+            Severity::Critical
+        } else if value >= self.warn {
+            Severity::Warning
+        } else {
+            Severity::Ok
+        }
+    }
+    /// Grade a value where lower is worse (free space, signal).
+    pub fn low(&self, value: f64) -> Severity {
+        if value <= self.crit {
+            Severity::Critical
+        } else if value <= self.warn {
+            Severity::Warning
+        } else {
+            Severity::Ok
+        }
+    }
+}
+
+/// Alert levels. The defaults are Invoke-NetTriage's.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Thresholds {
+    pub uptime_days: Band,
+    pub cpu_pct: Band,
+    pub memory_pct: Band,
+    /// Lower is worse.
+    pub disk_free_pct: Band,
+    pub disk_latency_ms: Band,
+    /// Lower is worse.
+    pub wifi_signal_pct: Band,
+    pub gateway_rtt_ms: Band,
+    /// DNS servers and destinations beyond the local network.
+    pub network_rtt_ms: Band,
+    pub dns_ms: Band,
+    pub packet_loss_pct: Band,
+}
+
+impl Default for Thresholds {
+    fn default() -> Self {
+        Self {
+            uptime_days: Band::new(7.0, 14.0),
+            cpu_pct: Band::new(75.0, 90.0),
+            memory_pct: Band::new(80.0, 90.0),
+            disk_free_pct: Band::new(15.0, 10.0),
+            disk_latency_ms: Band::new(15.0, 30.0),
+            wifi_signal_pct: Band::new(70.0, 50.0),
+            gateway_rtt_ms: Band::new(20.0, 50.0),
+            network_rtt_ms: Band::new(80.0, 150.0),
+            dns_ms: Band::new(100.0, 300.0),
+            packet_loss_pct: Band::new(1.0, 10.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Privacy {
+    /// Replace the machine serial number with "REDACTED" in results.
+    pub redact_serial: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// When Windows Update drivers install alongside the OEM tool.
+    pub windows_update_drivers: DriverSource,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DriverSource {
+    /// Only when there's no OEM tool, so the two don't keep replacing each
+    /// other's drivers.
+    #[default]
+    Auto,
+    /// Always, after the OEM tool (what Invoke-UpdateSystem does).
+    Always,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CleanupSettings {
+    /// Temp files and folders created or changed more recently than this are kept.
+    pub temp_min_age_hours: u32,
+}
+
+impl Default for CleanupSettings {
+    fn default() -> Self {
+        Self { temp_min_age_hours: 24 }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HistorySettings {
+    /// Saved runs kept in the history folder; 0 keeps them all.
+    pub keep: usize,
+}
+
+impl Default for HistorySettings {
+    fn default() -> Self {
+        Self { keep: 100 }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -403,6 +612,9 @@ mod tests {
             summary: String::new(),
             error: None,
             duration_ms: 0,
+            log: Vec::new(),
+            restart_required: false,
+            preview: false,
         };
         p.annotate(&mut r);
         assert!(r.findings[0].action.is_some());
@@ -415,5 +627,43 @@ mod tests {
     fn rejects_bad_toml_with_a_readable_error() {
         let err = Profile::from_toml("[policy]\nallow_changes = \"maybe\"").unwrap_err();
         assert!(err.contains("allow_changes") || err.contains("bool"), "{err}");
+    }
+
+    #[test]
+    fn thresholds_default_to_nettriage_and_can_be_overridden() {
+        let p = Profile::from_toml("[thresholds]\nwifi_signal_pct = { warn = 60.0, crit = 40.0 }").unwrap();
+        let t = &p.thresholds;
+        assert_eq!(t.cpu_pct, Band::new(75.0, 90.0));
+        assert_eq!(t.disk_free_pct.low(12.0), Severity::Warning);
+        assert_eq!(t.disk_free_pct.low(10.0), Severity::Critical);
+        assert_eq!(t.gateway_rtt_ms.high(19.9), Severity::Ok);
+        assert_eq!(t.gateway_rtt_ms.high(20.0), Severity::Warning);
+        assert_eq!(t.wifi_signal_pct.low(55.0), Severity::Warning, "overridden band");
+    }
+
+    #[test]
+    fn shipped_example_profiles_parse() {
+        let clinical = Profile::from_toml(include_str!("../../../profiles/clinical-workstation.example.toml")).unwrap();
+        assert!(clinical.policy.remote_safe && !clinical.network.public_probes);
+        assert_eq!(clinical.network.tcp_probe_target(), Some(("ehr-gateway.example.org".into(), 443)));
+        assert_eq!(clinical.thresholds.wifi_signal_pct, Band::new(70.0, 50.0), "commented bands keep the defaults");
+        let lab = Profile::from_toml(include_str!("../../../profiles/home-lab.toml")).unwrap();
+        assert_eq!(lab.updates.windows_update_drivers, DriverSource::Always);
+        assert_eq!(lab.network.target_ports, vec![22, 443, 445, 8006]);
+        assert_eq!(lab.history.keep, 0);
+        let ints = Profile::from_toml("[thresholds]\nuptime_days = { warn = 3, crit = 5 }").unwrap();
+        assert_eq!(ints.thresholds.uptime_days, Band::new(3.0, 5.0), "whole numbers work in bands");
+    }
+
+    #[test]
+    fn public_probes_can_be_switched_off() {
+        let open = Profile::default();
+        assert_eq!(open.network.dns_probe_name().as_deref(), Some("www.microsoft.com"));
+        assert_eq!(open.network.tcp_probe_target(), Some(("8.8.8.8".into(), 53)));
+        let locked = Profile::from_toml("[network]\npublic_probes = false\ndns_probe = \"intranet.example.org\"").unwrap();
+        assert_eq!(locked.network.dns_probe_name().as_deref(), Some("intranet.example.org"));
+        assert_eq!(locked.network.tcp_probe_target(), None);
+        let v6 = Profile::from_toml("[network]\ntcp_probe = \"[2001:db8::1]:443\"").unwrap();
+        assert_eq!(v6.network.tcp_probe_target(), Some(("2001:db8::1".into(), 443)));
     }
 }

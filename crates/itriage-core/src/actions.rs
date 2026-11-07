@@ -1,10 +1,12 @@
 //! One-click fixes offered on findings ("Restart Print Spooler").
 //!
 //! Every fix is a fixed, built-in procedure. A site profile can only switch
-//! fixes off (its `fixes` allowlist), never define new commands, and the one
-//! fix that takes a target (`start-service`) validates the service name before
-//! using it. Each attempt is checked against the policy again at run time,
-//! whatever the UI showed, and audited whether it succeeds or not.
+//! fixes off (its `fixes` allowlist), never define new commands. The fixes
+//! that take a target validate it before using it: a service name, an OEM
+//! tool from the built-in list, or a Windows Update identity (a GUID). Each
+//! attempt is checked against the policy (and remote-safe mode, for fixes
+//! that could drop a session or restart the PC) again at run time, whatever
+//! the UI showed, and audited whether it succeeds or not.
 
 use crate::model::FixRef;
 use crate::profile::Profile;
@@ -14,8 +16,12 @@ pub struct FixSpec {
     pub label: &'static str,
     /// What the confirmation dialog says the fix does.
     pub description: &'static str,
-    /// Takes a target (a service name).
+    /// Takes a target (a service name, an OEM tool's winget id, an update id).
     pub targeted: bool,
+    /// Drops a remote session or restarts the PC: remote-safe mode blocks it.
+    pub disruptive: bool,
+    /// Installs software: the policy's `allow_installs` must be on too.
+    pub install: bool,
 }
 
 pub const FIXES: &[FixSpec] = &[
@@ -24,36 +30,80 @@ pub const FIXES: &[FixSpec] = &[
         label: "Restart Print Spooler",
         description: "Restarts the print service (Print Spooler or CUPS). A job that is printing right now starts over.",
         targeted: false,
+        disruptive: false,
+        install: false,
     },
     FixSpec {
         id: "clear-print-queue",
         label: "Clear print queue",
         description: "Stops the print service, deletes every waiting print job, and starts it again. People will need to print those documents again.",
         targeted: false,
+        disruptive: false,
+        install: false,
     },
     FixSpec {
         id: "resync-time",
         label: "Resync clock",
         description: "Tells the time service to synchronise with its time source now.",
         targeted: false,
+        disruptive: false,
+        install: false,
     },
     FixSpec {
         id: "gpupdate",
         label: "Refresh Group Policy",
-        description: "Runs gpupdate /force to reapply computer and user policy. It can take a minute.",
+        description: "Runs gpupdate /force to reapply computer and user policy. It can take a minute, and network policies can blip connections.",
         targeted: false,
+        disruptive: true,
+        install: false,
     },
     FixSpec {
         id: "start-service",
         label: "Start service",
         description: "Starts the stopped service.",
         targeted: true,
+        disruptive: false,
+        install: false,
     },
     FixSpec {
         id: "flush-dns",
         label: "Flush DNS cache",
         description: "Clears cached DNS lookups so names are looked up fresh.",
         targeted: false,
+        disruptive: false,
+        install: false,
+    },
+    FixSpec {
+        id: "restart-computer",
+        label: "Restart in 60 s",
+        description: "Restarts this PC in 60 seconds. The signed-in user is warned to save their work, and Cancel restart stops it.",
+        targeted: false,
+        disruptive: true,
+        install: false,
+    },
+    FixSpec {
+        id: "cancel-restart",
+        label: "Cancel restart",
+        description: "Cancels a scheduled restart.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+    },
+    FixSpec {
+        id: "install-oem-tool",
+        label: "Install the OEM tool",
+        description: "Installs the manufacturer's driver and BIOS tool with winget, so driver and firmware updates can go through it.",
+        targeted: true,
+        disruptive: false,
+        install: true,
+    },
+    FixSpec {
+        id: "install-update",
+        label: "Install this update",
+        description: "Downloads and installs this one update from Windows Update. A restart may be needed afterwards.",
+        targeted: true,
+        disruptive: false,
+        install: true,
     },
 ];
 
@@ -63,7 +113,11 @@ pub fn spec(id: &str) -> Option<&'static FixSpec> {
 
 /// Does this fix need administrator/root rights on this OS?
 pub fn requires_admin(id: &str) -> bool {
-    !matches!(id, "gpupdate" | "flush-dns")
+    if cfg!(windows) {
+        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart")
+    } else {
+        !matches!(id, "gpupdate" | "flush-dns")
+    }
 }
 
 /// The button a module attaches to a finding. Panics on an unknown id, which
@@ -72,6 +126,9 @@ pub fn offer(id: &str, target: Option<&str>) -> FixRef {
     let spec = spec(id).unwrap_or_else(|| panic!("unknown fix id {id}"));
     let label = match target {
         Some(t) if id == "start-service" => format!("Start {t}"),
+        Some(t) if id == "install-oem-tool" => crate::update::oem::tool_name(t)
+            .map(|n| format!("Install {n}"))
+            .unwrap_or_else(|| spec.label.to_string()),
         _ => spec.label.to_string(),
     };
     FixRef {
@@ -79,6 +136,32 @@ pub fn offer(id: &str, target: Option<&str>) -> FixRef {
         label,
         target: target.map(str::to_string),
         requires_admin: requires_admin(id),
+    }
+}
+
+/// A Windows Update identity: `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+pub fn valid_update_id(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups.iter().zip([8, 4, 4, 4, 12]).all(|(g, n)| g.len() == n && g.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// Check a fix's target for what that fix takes.
+fn validate_target(id: &str, target: &str) -> Result<(), String> {
+    let ok = match id {
+        "start-service" => valid_service_name(target),
+        "install-oem-tool" => crate::update::oem::tool_name(target).is_some(),
+        "install-update" => valid_update_id(target),
+        _ => true,
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err(match id {
+            "install-oem-tool" => format!("`{target}` isn't one of the OEM tools itriage installs."),
+            "install-update" => format!("`{target}` isn't a Windows Update identity."),
+            _ => format!("`{target}` isn't a valid service name."),
+        })
     }
 }
 
@@ -92,20 +175,28 @@ pub fn valid_service_name(name: &str) -> bool {
 }
 
 /// Run a fix: check it exists, validate the target, re-check the site
-/// policy, run it, and audit the outcome. Blocking; may take a minute.
-pub fn run(id: &str, target: Option<&str>, profile: &Profile) -> Result<String, String> {
+/// policy and remote-safe mode, run it, and audit the outcome. Blocking; an
+/// update install can take many minutes.
+pub fn run(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool) -> Result<String, String> {
     let spec = spec(id).ok_or_else(|| format!("Unknown fix `{id}`."))?;
     if spec.targeted && target.is_none() {
         return Err(format!("The {} fix needs a target.", spec.label));
     }
     let target = if spec.targeted { target } else { None };
     if let Some(t) = target {
-        if !valid_service_name(t) {
-            return Err(format!("`{t}` isn't a valid service name."));
-        }
+        validate_target(id, t)?;
     }
-    if !profile.fix_allowed(id, target) {
-        let outcome = Err("Blocked by site policy: this fix isn't allowed on this machine.".to_string());
+    let blocked = if !profile.fix_allowed(id, target) {
+        Some("Blocked by site policy: this fix isn't allowed on this machine.")
+    } else if spec.install && !profile.policy.allow_installs {
+        Some("Blocked by site policy: software is deployed centrally here.")
+    } else if spec.disruptive && remote_safe {
+        Some("Remote-safe mode is on: this could drop the remote session or restart the PC.")
+    } else {
+        None
+    };
+    if let Some(why) = blocked {
+        let outcome = Err(why.to_string());
         crate::audit::fix_ran(id, target, &outcome);
         return outcome;
     }
@@ -190,6 +281,16 @@ mod imp {
                 Ok(format!("{name} started."))
             }
             "flush-dns" => crate::fixes::dns::flush().map(|(_, said)| said),
+            "restart-computer" => crate::fixes::maintenance::schedule_restart().map(|s| format!("Restart {s}.")),
+            "cancel-restart" => crate::fixes::maintenance::cancel_restart(),
+            "install-oem-tool" => {
+                require_admin()?;
+                crate::update::oem::install_tool(target.ok_or("No tool named.")?, &crate::module::RunContext::silent())
+            }
+            "install-update" => {
+                require_admin()?;
+                crate::win::wua::install_update(target.ok_or("No update named.")?, &crate::module::RunContext::silent())
+            }
             other => Err(format!("Fix `{other}` isn't available on Windows.")),
         }
     }
@@ -232,7 +333,10 @@ mod imp {
                 root("systemctl", &["start", "--", unit]).map(|_| format!("{unit} started."))
             }
             "flush-dns" => crate::fixes::dns::flush().map(|(_, said)| said),
+            "restart-computer" => crate::fixes::maintenance::schedule_restart().map(|s| format!("Restart {s}.")),
+            "cancel-restart" => crate::fixes::maintenance::cancel_restart(),
             "gpupdate" => Err("Group Policy is a Windows feature.".into()),
+            "install-oem-tool" | "install-update" => Err("That's a Windows Update / winget fix; on Linux, use Install OS & app updates.".into()),
             other => Err(format!("Fix `{other}` isn't available on Linux.")),
         }
     }
@@ -265,7 +369,28 @@ mod tests {
             assert_eq!(r.id, f.id);
         }
         assert_eq!(offer("start-service", Some("W32Time")).label, "Start W32Time");
+        assert_eq!(offer("install-oem-tool", Some("Dell.CommandUpdate")).label, "Install Dell Command | Update");
         assert!(!offer("gpupdate", None).requires_admin);
+    }
+
+    #[test]
+    fn validates_update_ids_and_tools() {
+        assert!(valid_update_id("c9cbc7a0-29e0-4f93-9e37-7d8d6c0f5b2a"));
+        assert!(!valid_update_id("c9cbc7a0-29e0-4f93-9e37"));
+        assert!(!valid_update_id("c9cbc7a0-29e0-4f93-9e37-7d8d6c0f5b2'"));
+        assert!(validate_target("install-oem-tool", "HP.ImageAssistant").is_ok());
+        assert!(validate_target("install-oem-tool", "Evil.Package").is_err());
+    }
+
+    #[test]
+    fn remote_safe_and_install_policy_block_fixes() {
+        let open = Profile::default();
+        assert!(run("restart-computer", None, &open, true).unwrap_err().contains("Remote-safe"));
+        assert!(run("gpupdate", None, &open, true).unwrap_err().contains("Remote-safe"));
+        let mut central = Profile::default();
+        central.policy.allow_installs = false;
+        let err = run("install-update", Some("c9cbc7a0-29e0-4f93-9e37-7d8d6c0f5b2a"), &central, false).unwrap_err();
+        assert!(err.contains("centrally"), "{err}");
     }
 
     #[test]
@@ -282,10 +407,10 @@ mod tests {
     #[test]
     fn refuses_unknown_bad_and_blocked_fixes() {
         let open = Profile::default();
-        assert!(run("format-disk", None, &open).unwrap_err().contains("Unknown"));
-        assert!(run("start-service", None, &open).unwrap_err().contains("target"));
-        assert!(run("start-service", Some("x;y"), &open).unwrap_err().contains("valid"));
+        assert!(run("format-disk", None, &open, false).unwrap_err().contains("Unknown"));
+        assert!(run("start-service", None, &open, false).unwrap_err().contains("target"));
+        assert!(run("start-service", Some("x;y"), &open, false).unwrap_err().contains("valid"));
         let locked = Profile::fail_closed();
-        assert!(run("flush-dns", None, &locked).unwrap_err().contains("policy"));
+        assert!(run("flush-dns", None, &locked, false).unwrap_err().contains("policy"));
     }
 }

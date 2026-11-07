@@ -50,13 +50,27 @@ jobs:
         run: cargo test --workspace
 
       # Runs every read-only module for real on the runner. On windows-latest
-      # this is what exercises the native SCM, Event Log, token, registry and
-      # WUA code paths. Findings never fail the job; a crash does.
+      # this is what exercises the native SCM, Event Log, token, registry, IP
+      # Helper, WinHTTP, PDH, SMBIOS and WUA code paths. Findings never fail
+      # the job, and neither does exit code 2 (a check that can't run on a
+      # runner); a crash or exit 1 does. The second run diffs against the
+      # first, so the history and compare code runs too.
       - name: Smoke-run read-only modules
         shell: bash
         run: |
-          cargo run -q -p itriage-core --example triage
-          cargo run -q -p itriage-core --example triage -- --json > smoke-${{ runner.os }}.json
+          smoke() { set +e; "$@"; local code=$?; set -e; case $code in 0|2) ;; *) echo "::error::exit code $code from: $*"; return 1 ;; esac; }
+          smoke cargo run -q -p itriage-core --example triage
+          smoke cargo run -q -p itriage-core --example triage -- --json > smoke-${{ runner.os }}.json
+          smoke cargo run -q -p itriage-core --example triage -- --preset triage --target github.com:443,80 --no-history
+
+      # The changing presets in preview (what-if): every module that would
+      # change the machine says what it would do and changes nothing.
+      - name: Smoke-run previews
+        shell: bash
+        run: |
+          smoke() { set +e; "$@"; local code=$?; set -e; case $code in 0|2) ;; *) echo "::error::exit code $code from: $*"; return 1 ;; esac; }
+          smoke cargo run -q -p itriage-core --example triage -- --preset tuneup --what-if --no-history
+          smoke cargo run -q -p itriage-core --example triage -- update.apply update.firmware fix.recycle fix.repair fix.restart --what-if --no-history
 
       # The example clinical profile: policy locks, site requirements (which
       # fail on a runner, as they should) and the workstation checks.
@@ -65,8 +79,9 @@ jobs:
         env:
           ITRIAGE_PROFILE: profiles/clinical-workstation.example.toml
         run: |
+          smoke() { set +e; "$@"; local code=$?; set -e; case $code in 0|2) ;; *) echo "::error::exit code $code from: $*"; return 1 ;; esac; }
           cargo run -q -p itriage-core --example triage -- --list
-          cargo run -q -p itriage-core --example triage -- desk.time desk.printers desk.devices desk.wifi desk.battery site.apps site.checks
+          smoke cargo run -q -p itriage-core --example triage -- desk.time desk.printers desk.devices desk.wifi desk.battery site.apps site.checks
 
       - name: Upload smoke report
         if: always()

@@ -15,6 +15,21 @@ allow_installs = true
 # Your router or a local NTP server works too.
 server = "pool.ntp.org"
 
+[network]
+# Time a lookup of a lab name as well; the public checks stay on.
+dns_probe = "pve.lan"
+# Ports the destination test tries when you don't give any.
+target_ports = [22, 443, 445, 8006]
+
+[updates]
+# Also install Windows Update drivers after the manufacturer's tool, as
+# Invoke-UpdateSystem does. The default ("auto") uses them only when there's
+# no manufacturer tool, so the two don't keep replacing each other's drivers.
+windows_update_drivers = "always"
+
+[history]
+keep = 0   # keep every run
+
 [[require.service]]
 # A systemd unit on Linux; on Windows use the service name (OpenSSH Server is "sshd").
 name = "sshd"

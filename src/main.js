@@ -1,4 +1,4 @@
-/* itriage frontend logic — v0.4.
+/* itriage frontend logic — v0.5.
  *
  * Two views over the same engine:
  *   • Technician: the red HUD console. Module rail, streaming report, one-click
@@ -18,7 +18,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.4";
+  const VERSION = "v0.5";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -58,6 +58,15 @@
     okc: sv('<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.5 2.5L16 9.5"/>'),
     xc: sv('<circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/>'),
     swap: sv('<path d="M7 7h12l-3-3M17 17H5l3 3"/>'),
+    gauge: sv('<path d="M4 17a8 8 0 1 1 16 0"/><path d="M12 17l4.5-5"/><circle cx="12" cy="17" r="1.4" fill="currentColor" stroke="none"/>'),
+    globe: sv('<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/>'),
+    aim: sv('<circle cx="11" cy="11" r="6"/><path d="M11 3v3M11 16v3M3 11h3M16 11h3M15.5 15.5 21 21"/>'),
+    layers: sv('<path d="M12 3 3 8l9 5 9-5z"/><path d="M3 13l9 5 9-5"/>'),
+    nic: sv('<rect x="3" y="7" width="18" height="10" rx="1.5"/><path d="M7 11v2M10 11v2M13 11v2M16 11v2"/>'),
+    sliders: sv('<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'),
+    wrench: sv('<path d="M15 4a5 5 0 0 0-4.6 6.9L4 17.3V20h2.7l6.4-6.4A5 5 0 0 0 20 9l-3 3-3-1-1-3z"/>'),
+    power: sv('<path d="M12 3v8M7 6.3a8 8 0 1 0 10 0"/>'),
+    eye: sv('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
     nodes:
       '<svg viewBox="0 0 92 26" fill="none" stroke="currentColor" stroke-width="1.2">' +
       '<path d="M46 13 62 4M46 13 70 15M46 13 58 23M46 13 30 6M46 13 26 19M62 4 84 7M70 15 84 7M70 15 86 20" opacity=".7"/>' +
@@ -75,52 +84,81 @@
   /* --------- module catalogue (mirrors itriage-core::registry) ------ *
    * Drives the browser preview and the very first paint. In the Tauri app
    * the list then comes live from Rust (with OS-specific descriptions and
-   * the site policy's locks). */
+   * the site policy's and remote-safe mode's locks). */
   const mod = (id, title, category, description, extra) =>
     Object.assign(
-      { id, title, category, description, mutating: false, requires_admin: false, platforms: ["windows", "linux"] },
+      { id, title, category, description, mutating: false, requires_admin: false, platforms: ["windows", "linux"], disruptive: false, takes_target: false },
       extra || {}
     );
   const WIN = { platforms: ["windows"] };
+  const CHANGE = (warning, extra) => Object.assign({ mutating: true, warning }, extra || {});
+  const ADMIN = { requires_admin: true };
+  const DROP = { requires_admin: true, disruptive: true };
   const CATALOGUE = [
-    mod("system.info", "System information", "system", "OS, kernel, hostname, uptime, CPU and total memory."),
-    mod("system.disk", "Disk usage", "system", "Free vs. total space per volume. Warns under 10% free, critical under 5%."),
-    mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns over 85% used, critical over 95%."),
-    mod("proc.top", "Top processes", "processes", "The biggest memory users plus any CPU hogs. Flags anything pinning a core or holding a quarter of RAM."),
+    mod("system.info", "System information", "system", "OS, CPU and memory, make and model, serial number, BIOS version, who is signed in, uptime (warns past 7 days) and any pending restart."),
+    mod("system.disk", "Disk space & latency", "system", "Free vs. total space per volume (warns under 15% free) and disk latency with queue length (warns at 15 ms)."),
+    mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both)."),
+    mod("proc.top", "Top processes", "processes", "Overall CPU load (warns at 75%), the busiest processes right now, and the biggest memory users. Flags anything pinning a core or holding a quarter of RAM."),
     mod("proc.services", "Services", "processes", "Automatic services that aren't running, with exit codes. Skips trigger-start services that stop by design."),
-    mod("net.connectivity", "Network connectivity", "network", "Interface IPs, DNS resolution, and an outbound TCP reachability test."),
+    mod("net.connectivity", "Network connectivity", "network", "Adapters and addresses, the route in use with its gateway and DNS servers, a timed DNS lookup, an outbound TCP test and the public IP."),
+    mod("net.latency", "Latency & packet loss", "network", "Round trip and packet loss to the gateway and the first DNS server over ICMP. Warns at 20 ms or 1% loss to the gateway."),
+    mod("net.proxy", "Proxy settings", "network", "The machine-wide WinHTTP proxy, and the signed-in user's proxy, PAC script or auto-detect setting."),
+    mod("net.target", "Destination test", "network", "DNS, a TCP connect on each port, the route the PC picks, and ping, for one host you type in (ports default to 443, 80, 445, 3389).", { takes_target: true }),
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
     mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, plus devices the site profile requires."),
-    mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength, security (802.1X or not), link rate, and any VPN tunnel."),
+    mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
     mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN) and when they expire. Warns 14 days out.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),
     mod("site.apps", "Required & clinical apps", "site", "Apps the site profile requires (with minimum versions), plus which clinical clients are installed: Citrix, Imprivata, Epic, Dragon, VPN, EDR."),
-    mod("site.checks", "Site services & endpoints", "site", "Services the site profile requires are running, and the servers it lists (EHR, file, print, license) answer."),
-    mod("fix.temp", "Clear temp files", "fixes", "Deletes the contents of the user temp directory. Skips files in use.", {
-      mutating: true,
-      warning: "Permanently deletes everything in your temp folder that isn't currently in use.",
-    }),
-    mod("fix.dns", "Flush DNS cache", "fixes", "Clears the OS DNS resolver cache (ipconfig / resolvectl).", {
-      mutating: true,
-      warning: "Clears cached DNS lookups. The next few page loads may be a little slower.",
-    }),
-    mod("update.scan", "Available updates", "updates", "Pending Windows Update patches, winget app upgrades, restart state, and the OEM driver/BIOS tool. Installs nothing."),
-    mod("update.apply", "Install OS & app updates", "updates", "Installs pending Windows Update patches (security & quality) and upgrades winget apps. Optional/preview updates are skipped.", {
-      mutating: true,
-      requires_admin: true,
-      warning: "Installs every pending Windows update and app upgrade. This can take 30+ minutes, apps being upgraded may close, and a restart is usually needed afterwards.",
-    }),
-    mod("update.firmware", "Install drivers & firmware", "updates", "Drivers, BIOS and firmware through the OEM tool (Dell, HP, Lenovo), or Windows Update drivers when there isn't one.", {
-      mutating: true,
-      requires_admin: true,
-      warning: "May flash BIOS/firmware. Keep laptops on AC power and don't power off until it finishes. A restart is usually needed; BitLocker may ask for its recovery key if it isn't suspended first.",
-    }),
+    mod("site.checks", "Site services & endpoints", "site", "Services the site profile requires are running, and the servers it lists (EHR, file, print, license) answer, with connect times."),
+    mod("fix.dns", "Flush & re-register DNS", "repair", "Flushes the DNS resolver cache (ipconfig /flushdns) and re-registers this PC's DNS records (ipconfig /registerdns).",
+      CHANGE("Clears cached DNS lookups, so the next few page loads may be a little slower.")),
+    mod("fix.netcache", "Purge ARP & NetBIOS caches", "repair", "Purges the ARP cache (netsh interface ip delete arpcache) and the NetBIOS name cache (nbtstat -R / -RR).",
+      CHANGE("Forgets every cached neighbour address; connections pause for a moment while they're looked up again.", DROP)),
+    mod("fix.tcp", "TCP autotuning & NIC power", "repair", "Sets TCP receive autotuning back to normal and turns off the adapters' sleep settings (DeviceSleepOnDisconnect, SelectiveSuspend).",
+      CHANGE("Changes TCP and adapter power settings. The adapter settings apply the next time each adapter restarts.", Object.assign({}, DROP, WIN))),
+    mod("fix.netstack", "Reset network stack", "repair", "Resets the Winsock catalog and the TCP/IP stack (IPv4 and IPv6). Applies after a restart. Refused when any address is static.",
+      CHANGE("Resets Winsock and TCP/IP to defaults. Static IP settings would be lost (itriage refuses if it finds any), and a restart is needed.", Object.assign({}, DROP, WIN))),
+    mod("fix.adapters", "Restart adapters & renew DHCP", "repair", "Restarts every physical network adapter that's up, waits for each to come back, then renews DHCP (ipconfig /release, /renew).",
+      CHANGE("Every network connection drops for up to a minute. A remote session will disconnect and should reconnect on its own.", DROP)),
+    mod("fix.temp", "Clear temp files", "fixes", "Deletes temp files older than a day from every user profile and C:\\Windows\\Temp (only your own without admin). Skips files in use.",
+      CHANGE("Permanently deletes temp files older than a day. Files in use are skipped.")),
+    mod("fix.recycle", "Empty Recycle Bin", "fixes", "Permanently deletes what's in the Recycle Bin (the Trash on Linux) for the account itriage runs as.",
+      CHANGE("Permanently deletes files the user may still expect to recover. Ask them first.")),
+    mod("fix.repair", "Clean up & check system files", "fixes", "DISM component-store cleanup, then System File Checker (sfc /scannow). Takes 15–45 minutes; use when corruption is suspected or space is critical.",
+      CHANGE("Runs DISM and SFC, which take 15–45 minutes and keep the disk busy. Don't restart until they finish.", Object.assign({}, ADMIN, WIN))),
+    mod("fix.optimize", "Optimize system drive", "fixes", "Optimises the system drive: TRIM on an SSD, defragmentation on a hard disk (defrag /O).",
+      CHANGE("Keeps the disk busy for a few minutes (longer on a hard disk).", ADMIN)),
+    mod("fix.gpupdate", "Refresh Group Policy", "fixes", "Reapplies computer and user Group Policy (gpupdate /force).",
+      CHANGE("Reapplies every policy. Network and proxy policies can blip connections while they apply.", Object.assign({ disruptive: true }, WIN))),
+    mod("fix.sccm", "Run Configuration Manager actions", "fixes", "Triggers the SCCM/MECM client's machine policy, application deployment and hardware inventory cycles, if the client is installed.",
+      CHANGE("Asks the Configuration Manager client to fetch policy and evaluate deployments now; software it's told to install may start installing.", Object.assign({}, DROP, WIN))),
+    mod("update.scan", "Available updates", "updates", "Pending Windows Update patches and drivers, winget app upgrades, restart state, the current BIOS and the OEM driver/BIOS tool. Installs nothing."),
+    mod("update.apply", "Install OS & app updates", "updates", "Installs pending Windows Update patches (security & quality) and upgrades winget apps. Optional/preview updates are skipped.",
+      CHANGE("Installs every pending Windows update and app upgrade. This can take 30+ minutes, apps being upgraded may close, and a restart is usually needed afterwards.", ADMIN)),
+    mod("update.firmware", "Install drivers & firmware", "updates", "Drivers, BIOS and firmware through the manufacturer's tool (Dell, HP, Lenovo), and Windows Update drivers. Won't run on battery.",
+      CHANGE("May flash BIOS/firmware. Keep laptops on AC power and don't power off until it finishes. A restart is usually needed; BitLocker may ask for its recovery key if it isn't suspended first.", ADMIN)),
+    mod("fix.restart", "Restart the PC", "fixes", "Restarts in 60 seconds, warning the signed-in user to save their work. Runs last in a sequence; Cancel restart stops it.",
+      CHANGE("The PC restarts one minute after this runs. Unsaved work is lost if the user doesn't save it.", DROP)),
   ];
 
-  const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "site", "fixes", "updates"];
+  /** Ready-made selections (mirrors itriage-core::module::PRESETS). */
+  const PRESET_CATALOGUE = [
+    { id: "triage", title: "Slowness triage", script: "Invoke-NetTriage",
+      description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, the site's servers, and a destination if you give one. Changes nothing.",
+      modules: ["system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency", "net.proxy", "net.target", "desk.wifi", "site.checks"] },
+    { id: "tuneup", title: "Tune-up", script: "Invoke-EndpointTuneUp",
+      description: "DNS, address caches, TCP and adapter power, network stack and adapters, temp files, drive optimisation, Group Policy and Configuration Manager. Recycle Bin, system file repair and restart stay opt-in.",
+      modules: ["fix.dns", "fix.netcache", "fix.tcp", "fix.netstack", "fix.adapters", "fix.temp", "fix.optimize", "fix.gpupdate", "fix.sccm"] },
+    { id: "updates", title: "Drivers & firmware", script: "Invoke-UpdateSystem",
+      description: "Identity and BIOS, what's pending, then drivers, BIOS and firmware through the manufacturer's tool and Windows Update.",
+      modules: ["system.info", "update.scan", "update.firmware"] },
+  ];
+
+  const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "site", "repair", "fixes", "updates"];
   const CAT_LABEL = {
     system: "System",
     processes: "Processes & services",
@@ -128,49 +166,63 @@
     eventlog: "Event log",
     workstation: "Workstation",
     site: "Site & clinical",
-    fixes: "Fixes",
+    repair: "Network repair",
+    fixes: "Cleanup & maintenance",
     updates: "Updates",
   };
   /** Short HUD codes shown next to each module title. */
   const CODES = {
-    "system.info": "SYS-INF", "system.disk": "DSK-USE", "system.memory": "MEM-USE",
+    "system.info": "SYS-INF", "system.disk": "DSK-LAT", "system.memory": "MEM-USE",
     "proc.top": "PROC-TOP", "proc.services": "SVC-HLT", "net.connectivity": "NET-CON",
+    "net.latency": "NET-LAT", "net.proxy": "NET-PRX", "net.target": "NET-DST",
     "eventlog.errors": "EVT-ERR", "desk.time": "CLK-SYN", "desk.domain": "DOM-GPO",
     "desk.printers": "PRN-QUE", "desk.devices": "DEV-MGR", "desk.wifi": "WLAN-VPN",
     "desk.certs": "CRT-EXP", "desk.battery": "BAT-HLT", "site.apps": "APP-REQ",
-    "site.checks": "SITE-CHK", "fix.temp": "FIX-TMP", "fix.dns": "FIX-DNS",
-    "update.scan": "UPD-SCN", "update.apply": "UPD-INS", "update.firmware": "UPD-FRM",
+    "site.checks": "SITE-CHK", "fix.dns": "FIX-DNS", "fix.netcache": "FIX-ARP", "fix.tcp": "FIX-TCP",
+    "fix.netstack": "FIX-STK", "fix.adapters": "FIX-NIC", "fix.temp": "FIX-TMP", "fix.recycle": "FIX-BIN",
+    "fix.repair": "FIX-SFC", "fix.optimize": "FIX-OPT", "fix.gpupdate": "FIX-GPO", "fix.sccm": "FIX-CCM",
+    "update.scan": "UPD-SCN", "update.apply": "UPD-INS", "update.firmware": "UPD-FRM", "fix.restart": "SYS-RST",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
   const STATIC_GLYPH = {
-    "net.connectivity": I.nodes, "proc.services": I.rack, "eventlog.errors": I.alert,
+    "net.connectivity": I.nodes, "net.latency": I.gauge, "net.proxy": I.globe, "net.target": I.aim,
+    "proc.services": I.rack, "eventlog.errors": I.alert,
     "desk.time": I.clock, "desk.domain": I.domain, "desk.printers": I.printer, "desk.devices": I.plug,
     "desk.wifi": I.wifi, "desk.certs": I.cert, "desk.battery": I.battery,
     "site.apps": I.apps, "site.checks": I.target,
-    "fix.temp": I.trash, "fix.dns": I.refresh, "update.scan": I.radar,
-    "update.apply": I.download, "update.firmware": I.chip,
+    "fix.dns": I.refresh, "fix.netcache": I.swap, "fix.tcp": I.sliders, "fix.netstack": I.layers, "fix.adapters": I.nic,
+    "fix.temp": I.trash, "fix.recycle": I.trash, "fix.repair": I.wrench, "fix.optimize": I.bolt,
+    "fix.gpupdate": I.domain, "fix.sccm": I.apps, "fix.restart": I.power,
+    "update.scan": I.radar, "update.apply": I.download, "update.firmware": I.chip,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
   const FIX_CATALOGUE = [
-    { id: "restart-spooler", label: "Restart Print Spooler", requires_admin: true,
+    { id: "restart-spooler", label: "Restart Print Spooler", requires_admin: true, disruptive: false,
       description: "Restarts the print service (Print Spooler or CUPS). A job that is printing right now starts over." },
-    { id: "clear-print-queue", label: "Clear print queue", requires_admin: true,
+    { id: "clear-print-queue", label: "Clear print queue", requires_admin: true, disruptive: false,
       description: "Stops the print service, deletes every waiting print job, and starts it again. People will need to print those documents again." },
-    { id: "resync-time", label: "Resync clock", requires_admin: true,
+    { id: "resync-time", label: "Resync clock", requires_admin: true, disruptive: false,
       description: "Tells the time service to synchronise with its time source now." },
-    { id: "gpupdate", label: "Refresh Group Policy", requires_admin: false,
-      description: "Runs gpupdate /force to reapply computer and user policy. It can take a minute." },
-    { id: "start-service", label: "Start service", requires_admin: true, description: "Starts the stopped service." },
-    { id: "flush-dns", label: "Flush DNS cache", requires_admin: false,
+    { id: "gpupdate", label: "Refresh Group Policy", requires_admin: false, disruptive: true,
+      description: "Runs gpupdate /force to reapply computer and user policy. It can take a minute, and network policies can blip connections." },
+    { id: "start-service", label: "Start service", requires_admin: true, disruptive: false, description: "Starts the stopped service." },
+    { id: "flush-dns", label: "Flush DNS cache", requires_admin: false, disruptive: false,
       description: "Clears cached DNS lookups so names are looked up fresh." },
+    { id: "restart-computer", label: "Restart in 60 s", requires_admin: false, disruptive: true,
+      description: "Restarts this PC in 60 seconds. The signed-in user is warned to save their work, and Cancel restart stops it." },
+    { id: "cancel-restart", label: "Cancel restart", requires_admin: false, disruptive: false, description: "Cancels a scheduled restart." },
+    { id: "install-oem-tool", label: "Install the OEM tool", requires_admin: true, disruptive: false,
+      description: "Installs the manufacturer's driver and BIOS tool with winget, so driver and firmware updates can go through it." },
+    { id: "install-update", label: "Install this update", requires_admin: true, disruptive: false,
+      description: "Downloads and installs this one update from Windows Update. A restart may be needed afterwards." },
   ];
 
   /** Self-service: the checks it runs, in plain words. */
   const SS_TITLES = {
     "system.info": "This computer", "system.disk": "Storage space", "system.memory": "Memory",
-    "net.connectivity": "Internet & network", "desk.time": "Clock", "desk.domain": "Sign-in & policies",
+    "net.connectivity": "Internet & network", "net.latency": "Network speed", "desk.time": "Clock", "desk.domain": "Sign-in & policies",
     "desk.printers": "Printers", "desk.devices": "Devices", "desk.wifi": "Wi-Fi & VPN",
     "desk.battery": "Battery", "site.apps": "Required apps", "site.checks": "Work systems",
   };
@@ -185,6 +237,8 @@
   /* --------------------- sample data for the preview ---------------- */
   const ADMIN_REQUIRED =
     'Administrator rights required. Use "Relaunch as admin" in the header (or right-click itriage → Run as administrator).';
+  const REMOTE_SAFE_REASON =
+    "Remote-safe mode is on: this could drop the remote session or restart the PC. Switch remote-safe off to run it.";
   const MOCK_HOST = {
     hostname: "WS-FLINT-07",
     os: "Windows 11 Pro 24H2",
@@ -193,56 +247,70 @@
     can_relaunch_elevated: true,
     elevation_note: "Install modules need administrator rights. Use Relaunch as admin.",
   };
-  const MOCK_FIXES = ["restart-spooler", "clear-print-queue", "resync-time", "gpupdate", "flush-dns", "start-service:Spooler", "start-service:W32Time"];
+  const MOCK_FIXES = ["restart-spooler", "clear-print-queue", "resync-time", "gpupdate", "flush-dns", "start-service:Spooler", "start-service:W32Time",
+    "restart-computer", "cancel-restart", "install-oem-tool", "install-update"];
   const MOCK_PROFILE = {
     source: "managed",
     path: "C:\\ProgramData\\itriage\\profile.toml",
     error: null,
     name: "Clinical workstation (example)",
     description: "Shared nursing-unit PC: badge-tap sign-in, virtual desktop, label printer",
-    policy: { allow_changes: true, allow_installs: false, fixes: MOCK_FIXES, start_in: "technician", technician_view: true },
+    policy: { allow_changes: true, allow_installs: true, fixes: MOCK_FIXES, start_in: "technician", technician_view: true, remote_safe: false },
     requirements: 8,
     kb_rules: 3,
   };
-  const A = (id, target) => {
+  const A = (id, target, label) => {
     const spec = FIX_CATALOGUE.find((f) => f.id === id);
-    const a = { id, label: id === "start-service" && target ? `Start ${target}` : spec.label, requires_admin: spec.requires_admin };
+    const a = { id, label: label || (id === "start-service" && target ? `Start ${target}` : spec.label), requires_admin: spec.requires_admin };
     if (target) a.target = target;
     return a;
   };
   const K = (title, url) => ({ title, url });
+  const M = (value, unit, worse) => ({ value, unit, higher_is_worse: worse !== false });
   const F = (label, value, severity, detail, extra) => {
     const f = { label, value, severity: severity || "info" };
     if (detail) f.detail = detail;
     return Object.assign(f, extra || {});
   };
-  const R = (module_id, title, category, summary, duration_ms, findings) => ({
-    module_id, title, category, findings, summary, error: null, duration_ms,
-  });
+  const R = (module_id, title, category, summary, duration_ms, findings, extra) =>
+    Object.assign({ module_id, title, category, findings, summary, error: null, duration_ms }, extra || {});
   const KB_QUEUE = K("Clear a stuck print queue", "https://kb.example.org/printing/stuck-queue");
   const KB_TIME = K("Clock drift and sign-in failures", "https://kb.example.org/windows/time-sync");
   const KB_WIFI = K("Report a Wi-Fi dead spot", "https://kb.example.org/network/wifi-coverage");
   const CU_TITLE = "2026-11 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems";
   const NET_TITLE = "2026-11 Cumulative Update for .NET Framework 3.5 and 4.8.1 for Windows 11, version 24H2";
   const DEF_TITLE = "Security Intelligence Update for Microsoft Defender Antivirus";
+  const DRV_TITLE = "Intel Corporation - Net - 23.80.0.6";
+  const UID = { cu: "8c1e5a71-2f0b-4b7e-9d0a-3c5f6e7a8b91", net: "1f4d2c3b-6a7e-4f80-8b9c-0d1e2f3a4b5c", def: "e2b9c4d1-7f3a-4e6b-a5c8-9d0f1e2a3b4c", drv: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d" };
+  const RESTART_MSG = "IT maintenance is complete. This PC will restart in 1 minute - please save your work.";
   const MOCK_RESULTS = {
-    "system.info": R("system.info", "System information", "system", "WS-FLINT-07, up 3d 7h 12m", 41, [
+    "system.info": R("system.info", "System information", "system", "WS-FLINT-07, up 15d 4h 12m; restart pending", 41, [
       F("Hostname", "WS-FLINT-07"), F("OS", "Windows 11 Pro 24H2 (build 26100.2314)"), F("Kernel", "26100"),
       F("Architecture", "x86_64"), F("CPU", "Intel(R) Core(TM) Ultra 7 165U (14 logical cores)"),
-      F("Total memory", "16.0 GB"), F("Uptime", "3d 7h 12m"), F("Manufacturer", "Dell Inc."),
+      F("Total memory", "16.0 GB"),
+      F("Model", "Dell Inc. Latitude 7450", "info", "Latitude · Notebook"),
+      F("Serial number", "7FHXW37"),
+      F("BIOS", "1.21.0 · released 2026-05-14", "info", "Dell Inc."),
+      F("Motherboard", "Dell Inc. 0K0X5C"),
+      F("Signed-in user", "CORP\\jparker"),
+      F("Uptime", "15d 4h 12m", "warning", "Up 15.2 days: consider a restart.", { metric: M(15.2, "days") }),
+      F("Restart pending", "yes: Windows Update", "warning", null, { action: A("restart-computer") }),
     ]),
-    "system.disk": R("system.disk", "Disk usage", "system", "Low free space on at least one volume.", 18, [
-      F("C:\\", "7.2 GB free of 476.9 GB (98% used) · NTFS", "critical"),
-      F("D:\\", "812.4 GB free of 1.8 TB (56% used) · NTFS", "ok"),
+    "system.disk": R("system.disk", "Disk space & latency", "system", "Critically low free space · disk latency 23 ms", 1018, [
+      F("C:\\", "7.2 GB free of 476.9 GB (98% used) · NTFS", "critical", null, { metric: M(2, "% free", false) }),
+      F("D:\\", "812.4 GB free of 1.8 TB (56% used) · NTFS", "ok", null, { metric: M(44, "% free", false) }),
+      F("Disk latency", "23.4 ms per transfer · queue 1.8", "warning",
+        "Slow storage makes everything feel slow: check for a failing drive, full disk, or heavy background I/O (indexing, scans, updates).", { metric: M(23.4, "ms") }),
     ]),
     "system.memory": R("system.memory", "Memory usage", "system", "62% RAM in use", 6, [
-      F("RAM", "9.9 GB used of 16.0 GB (62%), 6.1 GB available", "ok"),
+      F("RAM", "9.9 GB used of 16.0 GB (62%), 6.1 GB available", "ok", null, { metric: M(62, "%") }),
       F("Swap / page file", "1.2 GB used of 9.0 GB (13%)", "ok"),
     ]),
-    "proc.top": R("proc.top", "Top processes", "processes", "214 processes running · 1 using heavy CPU or memory", 214, [
-      F("MsMpEng.exe (pid 2680)", "640.0 MB RAM · 87.5% CPU", "warning"),
-      F("CDViewer.exe (pid 8124)", "2.1 GB RAM · 3.4% CPU"),
-      F("chrome.exe (pid 4410)", "1.4 GB RAM · 1.1% CPU"),
+    "proc.top": R("proc.top", "Top processes", "processes", "CPU 87% · 214 processes running · 1 using heavy CPU or memory", 1012, [
+      F("CPU load", "87%", "warning", "Busiest: MsMpEng (31%), CDViewer (9%), chrome (4%)", { metric: M(87, "%") }),
+      F("MsMpEng.exe (pid 2680)", "640.0 MB RAM · 31.2% CPU", "warning"),
+      F("CDViewer.exe (pid 8124)", "2.1 GB RAM · 9.4% CPU"),
+      F("chrome.exe (pid 4410)", "1.4 GB RAM · 4.1% CPU"),
       F("Teams.exe (pid 9332)", "402.0 MB RAM · 0.9% CPU"),
       F("explorer.exe (pid 5120)", "188.0 MB RAM · 0.2% CPU"),
     ]),
@@ -252,10 +320,25 @@
       F("Windows Search (WSearch)", "stopped · Automatic (delayed)", "info"),
       F("Stopped by design (skipped)", "41 trigger-start/per-user, 3 self-stopping updaters"),
     ]),
-    "net.connectivity": R("net.connectivity", "Network connectivity", "network", "Connectivity OK.", 3140, [
-      F("Interface Wi-Fi", "10.20.33.118/22, fe80::1a2b/64"),
-      F("DNS resolution (example.com)", "resolved", "ok"),
-      F("Outbound TCP (1.1.1.1:443)", "reachable", "ok"),
+    "net.connectivity": R("net.connectivity", "Network connectivity", "network", "Connectivity OK", 1840, [
+      F("Interface Wi-Fi", "10.20.33.118/22, fe80::1a2b:3c4d/64", "info", "Intel(R) Wi-Fi 6E AX211 160MHz"),
+      F("Default route", "via 10.20.32.1 on Wi-Fi (from 10.20.33.118)", "ok"),
+      F("DNS servers", "10.20.0.53, 10.20.0.54"),
+      F("DNS lookup (www.microsoft.com)", "resolved in 23 ms · 4 addresses", "ok", null, { metric: M(23, "ms") }),
+      F("DNS server 10.20.0.53", "answers in 11 ms", "ok", null, { metric: M(11, "ms") }),
+      F("DNS server 10.20.0.54", "answers in 14 ms", "ok", null, { metric: M(14, "ms") }),
+      F("Outbound TCP (8.8.8.8:53)", "connected in 19 ms", "ok", null, { metric: M(19, "ms") }),
+      F("Public IP", "203.0.113.47"),
+    ]),
+    "net.latency": R("net.latency", "Latency & packet loss", "network", "Gateway 38 ms, 0% loss · dns server 12 ms, 0% loss", 4120, [
+      F("Gateway 10.20.32.1 round trip", "avg 38 ms (min 4 ms / max 121 ms)", "warning", null, { metric: M(38, "ms") }),
+      F("Gateway 10.20.32.1 packet loss", "0% (4 of 4 replies)", "ok", null, { metric: M(0, "%") }),
+      F("DNS server 10.20.0.53 round trip", "avg 12 ms (min 9 ms / max 16 ms)", "ok", null, { metric: M(12, "ms") }),
+      F("DNS server 10.20.0.53 packet loss", "0% (4 of 4 replies)", "ok", null, { metric: M(0, "%") }),
+    ]),
+    "net.proxy": R("net.proxy", "Proxy settings", "network", "User via PAC", 28, [
+      F("WinHTTP proxy (machine)", "Direct (no proxy)"),
+      F("User proxy (CORP\\jparker)", "PAC: http://pac.example.org/proxy.pac", "info", "auto-detect is also on"),
     ]),
     "eventlog.errors": R("eventlog.errors", "Recent errors", "eventlog", "1 critical, 11 errors in the last 24h (4 sources)", 380, [
       F("Kernel-Power 41 · System", "1× · last 5h ago", "critical",
@@ -295,12 +378,16 @@
       F("Cameras", "Integrated Webcam"),
       F("Smart card readers", "Microsoft Usbccid Smartcard Reader (WUDF)"),
     ]),
-    "desk.wifi": R("desk.wifi", "Wi-Fi & VPN", "workstation", "Wi-Fi Clinical-Secure, signal weak", 35, [
+    "desk.wifi": R("desk.wifi", "Wi-Fi & VPN", "workstation", "Wi-Fi Clinical-Secure, signal weak · VPN: Client running - tunnel unverified - Zscaler", 35, [
       F("Network", "Clinical-Secure", "ok", "Intel(R) Wi-Fi 6E AX211 160MHz"),
-      F("Signal", "34% · weak", "warning", "Weak signal drops remote sessions as the device moves. Note where it happens for the network team.", { kb: KB_WIFI }),
+      F("Signal", "34% · weak", "critical", "Weak signal drops remote sessions as the device moves. Note where it happens for the network team.",
+        { kb: KB_WIFI, metric: M(34, "%", false) }),
       F("Security", "WPA2-Enterprise · 802.1X", "ok"),
-      F("Link rate", "144 Mbps"),
+      F("Radio", "Wi-Fi 6 (802.11ax) · channel 149"),
+      F("Link rate", "receive 144 Mbps · send 86 Mbps"),
       F("VPN (Cisco Secure Client)", "installed, not connected", "info", "Ethernet 3 · Cisco AnyConnect Secure Mobility Client Virtual Miniport Adapter for Windows x64"),
+      F("VPN (Zscaler)", "client running, tunnel unverified", "info",
+        "The client is running but no tunnel adapter is up: a cloud-proxy client (Zscaler) works this way, a full-tunnel VPN shouldn't."),
     ]),
     "desk.certs": R("desk.certs", "Machine certificates", "workstation", "1 machine certificate expired or expiring within 14 days", 12, [
       F("WS-FLINT-07.corp.example.org", "expires in 9 days · 2026-11-15", "warning", "Issued by Example Issuing CA 2 · has a private key"),
@@ -317,32 +404,82 @@
       F("Dictation", "Dragon Medical One 2024.1"),
       F("Endpoint security", "CrowdStrike Windows Sensor 7.18.18604.0"),
     ]),
-    "site.checks": R("site.checks", "Site services & endpoints", "site", "3 of 4 site requirements met", 3020, [
+    "site.checks": R("site.checks", "Site services & endpoints", "site", "3 of 4 site requirements met", 1520, [
       F("Print Spooler", "running", "ok"),
       F("Windows Time", "running", "ok"),
-      F("EHR gateway", "ehr-gateway.example.org:443 reachable · 18 ms", "ok"),
-      F("Print server", "print01.example.org:445 unreachable (timed out)", "critical"),
+      F("EHR gateway", "ehr-gateway.example.org:443 reachable · 18 ms", "ok", "connected to 10.40.2.15", { metric: M(18, "ms") }),
+      F("Print server", "print01.example.org:445 unreachable (10.40.8.20 timed out)", "critical"),
     ]),
-    "fix.temp": R("fix.temp", "Clear temp files", "fixes", "Freed 1.8 GB (342 removed, 7 skipped)", 820, [
-      F("Temp directory", "C:\\Users\\jparker\\AppData\\Local\\Temp"),
-      F("Entries removed", "342", "ok"), F("Space freed", "1.8 GB"),
-      F("Entries skipped (in use / locked)", "7"),
-    ]),
-    "fix.dns": R("fix.dns", "Flush DNS cache", "fixes", "DNS resolver cache flushed.", 240, [
+    "fix.dns": R("fix.dns", "Flush & re-register DNS", "repair", "DNS cache flushed and records re-registered", 1240, [
       F("ipconfig /flushdns", "Successfully flushed the DNS Resolver Cache.", "ok"),
+      F("ipconfig /registerdns", "Registration of the DNS resource records for all adapters of this computer has been initiated.", "ok"),
     ]),
-    "update.scan": R("update.scan", "Available updates", "updates", "3 Windows updates · restart pending · 4 app upgrades", 41_380, [
+    "fix.netcache": R("fix.netcache", "Purge ARP & NetBIOS caches", "repair", "ARP and NetBIOS caches purged", 2210, [
+      F("ARP cache", "Ok.", "ok"),
+      F("NetBIOS name cache (purge)", "Successful purge and preload of the NBT Remote Cache Name Table.", "ok"),
+      F("NetBIOS names (re-register)", "The NETBIOS names registered by this computer have been refreshed.", "ok"),
+    ]),
+    "fix.tcp": R("fix.tcp", "TCP autotuning & NIC power", "repair", "TCP autotuning normal; NIC sleep settings off (3 steps)", 6120, [
+      F("TCP receive autotuning", "Ok.", "ok"),
+      F("Wi-Fi", "DeviceSleepOnDisconnect, SelectiveSuspend turned off (applies at the next adapter restart)", "ok"),
+      F("Ethernet", "sleep settings were already off", "ok"),
+    ]),
+    "fix.netstack": R("fix.netstack", "Reset network stack", "repair", "Network stack reset; restart to apply", 7410, [
+      F("Static address check", "every address is from DHCP or autoconfiguration", "ok"),
+      F("netsh winsock reset", "Sucessfully reset the Winsock Catalog. You must restart the computer in order to complete the reset.", "ok"),
+      F("netsh int ip reset", "Restart the computer to complete this action.", "ok"),
+      F("netsh int ipv6 reset", "Restart the computer to complete this action.", "ok"),
+    ], { restart_required: true }),
+    "fix.adapters": R("fix.adapters", "Restart adapters & renew DHCP", "repair", "Adapters restarted and addresses renewed", 21_400, [
+      F("Wi-Fi", "restarted and back up", "ok"),
+      F("DHCP release", "exit 1: An error occurred while releasing interface Loopback Pseudo-Interface 1 : The system cannot find the file specified.", "warning"),
+      F("DHCP renew", "Wireless LAN adapter Wi-Fi: Connection-specific DNS Suffix  . : corp.example.org", "ok"),
+      F("Wi-Fi now", "10.20.33.140/22, fe80::1a2b:3c4d/64"),
+    ]),
+    "fix.temp": R("fix.temp", "Clear temp files", "fixes", "Freed 2.3 GB from 4 temp folders (5214 files removed)", 9820, [
+      F("C:\\Windows\\Temp", "deleted 1204 files (412.0 MB) · 88 recent kept · 3 in use", "ok"),
+      F("C:\\Users\\jparker\\AppData\\Local\\Temp", "deleted 3880 files (1.8 GB) and 42 empty folders · 340 recent kept · 7 in use", "ok"),
+      F("C:\\Users\\nurse.station\\AppData\\Local\\Temp", "deleted 130 files (96.4 MB) · 12 recent kept", "ok"),
+      F("C:\\Users\\Default\\AppData\\Local\\Temp", "deleted 0 files (0 B)", "ok"),
+      F("Free space (C:\\)", "7.2 GB → 9.5 GB"),
+    ]),
+    "fix.recycle": R("fix.recycle", "Empty Recycle Bin", "fixes", "Freed 640.2 MB from the Recycle Bin", 1210, [
+      F("Recycle Bin", "emptied: 37 items (640.2 MB)", "ok"),
+    ]),
+    "fix.repair": R("fix.repair", "Clean up & check system files", "fixes", "Component store cleaned; system files checked", 1_820_000, [
+      F("DISM component-store cleanup", "The operation completed successfully.", "ok"),
+      F("System File Checker", "Windows Resource Protection did not find any integrity violations.", "ok"),
+    ]),
+    "fix.optimize": R("fix.optimize", "Optimize system drive", "fixes", "C: optimised", 48_000, [
+      F("Optimize C:", "Retrim: 100% complete.", "ok"),
+    ]),
+    "fix.gpupdate": R("fix.gpupdate", "Refresh Group Policy", "fixes", "Group Policy refreshed", 14_200, [
+      F("gpupdate /force", "User Policy update has completed successfully.", "ok"),
+    ]),
+    "fix.sccm": R("fix.sccm", "Run Configuration Manager actions", "fixes", "Triggered 3 Configuration Manager actions", 3100, [
+      F("Machine policy retrieval & evaluation", "triggered", "ok"),
+      F("Application deployment evaluation", "triggered", "ok"),
+      F("Hardware inventory", "triggered", "ok"),
+    ]),
+    "fix.restart": R("fix.restart", "Restart the PC", "fixes", "Restarting in 60 seconds", 120, [
+      F("Restart", "scheduled in 60 seconds; the signed-in user was warned", "warning", null, { action: A("cancel-restart") }),
+    ]),
+    "update.scan": R("update.scan", "Available updates", "updates", "3 Windows updates · 1 driver update · restart pending · 4 app upgrades", 41_380, [
       F("Windows Update", "3 important · 1 optional", "warning"),
-      F("KB5070001", CU_TITLE, "critical", "MSRC severity: Critical"),
-      F("KB5070002", NET_TITLE, "warning", "MSRC severity: Important"),
-      F("KB2267602", DEF_TITLE),
-      F("Restart pending", "yes; restart to finish earlier updates", "warning"),
+      F("KB5070001", CU_TITLE, "critical", "MSRC severity: Critical", { action: A("install-update", UID.cu) }),
+      F("KB5070002", NET_TITLE, "warning", "MSRC severity: Important", { action: A("install-update", UID.net) }),
+      F("KB2267602", DEF_TITLE, "info", null, { action: A("install-update", UID.def) }),
+      F("Windows Update drivers", "1 offered", "info"),
+      F("Driver", DRV_TITLE, "info", null, { action: A("install-update", UID.drv) }),
+      F("Restart pending", "yes; restart to finish earlier updates", "warning", null, { action: A("restart-computer") }),
       F("winget apps", "4 upgradable", "warning"),
       F("Google Chrome (Google.Chrome)", "130.0.6723.92 → 131.0.6778.70"),
       F("Mozilla Firefox (Mozilla.Firefox)", "131.0.3 → 132.0.1"),
       F("7-Zip 23.01 (x64) (7zip.7zip)", "23.01 → 24.08"),
       F("Microsoft Visual Studio Code (Microsoft.VisualStudioCode)", "1.94.2 → 1.95.1"),
-      F("Driver/BIOS tool (Dell Inc.)", "Dell Command | Update is installed", "ok"),
+      F("Current BIOS", "1.21.0 · released 2026-05-14"),
+      F("Driver/BIOS tool (Dell Inc.)", "Dell Command | Update isn't installed; install Dell Command | Update from Dell's support site to get BIOS and firmware updates", "info",
+        null, { action: A("install-oem-tool", "Dell.CommandUpdate", "Install Dell Command | Update") }),
     ]),
     "update.apply": R("update.apply", "Install OS & app updates", "updates", "Installed 3 Windows updates and 4 app upgrades; restart required", 1_412_000, [
       F("Windows Update", "3 installed, 0 failed", "ok"),
@@ -350,26 +487,70 @@
       F("KB5070002", "installed", "ok", NET_TITLE),
       F("KB2267602", "installed", "ok", DEF_TITLE),
       F("winget apps", "4 upgraded, 0 failed", "ok"),
-      F("Restart required", "yes", "warning"),
-    ]),
+      F("Restart required", "yes", "warning", null, { action: A("restart-computer") }),
+    ], { restart_required: true }),
     "update.firmware": R("update.firmware", "Install drivers & firmware", "updates", "Dell Command | Update: updates applied; restart required", 486_000, [
-      F("Manufacturer", "Dell Inc."),
+      F("Model", "Dell Inc. Latitude 7450"),
+      F("Current BIOS", "1.21.0 · released 2026-05-14"),
+      F("Motherboard", "Dell Inc. 0K0X5C"),
+      F("Power", "on AC power", "ok"),
+      F("OEM tool (Dell Command | Update)", "Dell Command | Update is installed", "ok", "C:\\Program Files\\Dell\\CommandUpdate\\dcu-cli.exe · matched on the manufacturer"),
       F("Dell Command | Update", "updates applied; restart required (exit 1)", "warning", "Logs and reports: C:\\ProgramData\\itriage"),
-    ]),
+      F("Windows Update drivers", "skipped: the OEM tool handles drivers"),
+      F("Restart required", "yes", "warning", null, { action: A("restart-computer") }),
+    ], { restart_required: true }),
+  };
+  /** What each module that changes the machine says in a preview. */
+  const MOCK_PREVIEW = {
+    "fix.dns": ["would flush the DNS cache", [["Would run", "ipconfig /flushdns"], ["Would skip", "ipconfig /registerdns (needs administrator rights)"]]],
+    "fix.netcache": ["would purge the address caches", [["Would run", "netsh interface ip delete arpcache"], ["Would run", "nbtstat -R"], ["Would run", "nbtstat -RR"]]],
+    "fix.tcp": ["would normalise TCP and adapter power settings", [["Would run", "netsh int tcp set global autotuninglevel=normal"],
+      ["Wi-Fi", "would turn off DeviceSleepOnDisconnect, SelectiveSuspend"], ["Ethernet", "sleep settings already off"]]],
+    "fix.netstack": ["would reset Winsock and TCP/IP; a restart would be needed", [["Static address check", "every address is from DHCP or autoconfiguration", "ok"],
+      ["Would run", "netsh winsock reset"], ["Would run", "netsh int ip reset"], ["Would run", "netsh int ipv6 reset"]]],
+    "fix.adapters": ["would restart these adapters and renew DHCP", [["Would restart Wi-Fi", "10.20.33.118/22, fe80::1a2b:3c4d/64"],
+      ["Would run", "ipconfig /release"], ["Would run", "ipconfig /renew"]]],
+    "fix.temp": ["would delete 5214 files (2.3 GB) from 4 folders", [["C:\\Windows\\Temp", "would delete 1204 files (412.0 MB) · 88 recent kept"],
+      ["C:\\Users\\jparker\\AppData\\Local\\Temp", "would delete 3880 files (1.8 GB) · 340 recent kept"],
+      ["C:\\Users\\nurse.station\\AppData\\Local\\Temp", "would delete 130 files (96.4 MB) · 12 recent kept"],
+      ["C:\\Users\\Default\\AppData\\Local\\Temp", "would delete 0 files (0 B)"]]],
+    "fix.recycle": ["nothing was deleted", [["Would delete", "37 items (640.2 MB)"]]],
+    "fix.repair": ["would clean the component store and check system files (15–45 minutes)",
+      [["Would run", "dism /Online /Cleanup-Image /StartComponentCleanup /NoRestart"], ["Would run", "sfc /scannow"]]],
+    "fix.optimize": ["would optimise the system drive", [["Would run", "defrag C: /O /U"]]],
+    "fix.gpupdate": ["would reapply Group Policy", [["Would run", "gpupdate /force"]]],
+    "fix.sccm": ["would trigger the client's policy, deployment and inventory cycles", [["Configuration Manager client", "running", "ok"],
+      ["Would run", "Machine policy retrieval & evaluation"], ["Would run", "Application deployment evaluation"], ["Would run", "Hardware inventory"]]],
+    "fix.restart": ["would restart in 60 seconds", [["Would tell the user", RESTART_MSG]]],
+    "update.apply": ["would install 3 Windows updates and 4 app upgrades", [["Windows Update", "would install 3 updates"], ["KB5070001", CU_TITLE],
+      ["KB5070002", NET_TITLE], ["KB2267602", DEF_TITLE], ["winget apps", "would upgrade 4 apps"],
+      ["Google Chrome (Google.Chrome)", "130.0.6723.92 → 131.0.6778.70"], ["Mozilla Firefox (Mozilla.Firefox)", "131.0.3 → 132.0.1"],
+      ["7-Zip 23.01 (x64) (7zip.7zip)", "23.01 → 24.08"], ["Microsoft Visual Studio Code (Microsoft.VisualStudioCode)", "1.94.2 → 1.95.1"]]],
+    "update.firmware": ["nothing was installed", [["Model", "Dell Inc. Latitude 7450"], ["Current BIOS", "1.21.0 · released 2026-05-14"], ["Power", "on AC power", "ok"],
+      ["OEM tool (Dell Command | Update)", "Dell Command | Update is installed and will run", "ok"],
+      ["Would run", "C:\\Program Files\\Dell\\CommandUpdate\\dcu-cli.exe /applyUpdates -silent -reboot=disable"]]],
   };
   const MOCK_LOGS = {
+    "system.disk": ["Measuring disk latency for a second…"],
+    "net.connectivity": ["Reading network adapters…", "Resolving www.microsoft.com…", "Asking 2 DNS server(s) directly…", "Connecting to 8.8.8.8:53…", "Looking up the public IP…"],
+    "net.latency": ["Pinging 10.20.32.1 and 10.20.0.53 (4 echoes each)…"],
     "eventlog.errors": ["Reading the System log…", "Reading the Application log…"],
     "desk.time": ["Measuring the clock against DC01 (SNTP, UDP 123)…"],
     "desk.battery": ["Running powercfg /batteryreport…"],
     "site.apps": ["Reading the installed-programs list…"],
     "site.checks": ["Checking 2 endpoint(s)…"],
-    "fix.temp": ["Clearing C:\\Users\\jparker\\AppData\\Local\\Temp"],
-    "update.scan": ["Searching Windows Update…", "Checking winget for app upgrades…"],
+    "fix.dns": ["› ipconfig /registerdns", "Registration of the DNS resource records for all adapters of this computer has been initiated."],
+    "fix.netstack": ["› netsh winsock reset", "Sucessfully reset the Winsock Catalog.", "› netsh int ip reset", "Resetting Interface, OK!", "› netsh int ipv6 reset"],
+    "fix.adapters": ["Before: Wi-Fi: 10.20.33.118/22", "Restarting physical adapters; the connection will drop for a moment…", "› ipconfig /release", "› ipconfig /renew", "After: Wi-Fi: 10.20.33.140/22"],
+    "fix.temp": ["Clearing C:\\Windows\\Temp", "Clearing C:\\Users\\jparker\\AppData\\Local\\Temp", "Clearing C:\\Users\\nurse.station\\AppData\\Local\\Temp", "Clearing C:\\Users\\Default\\AppData\\Local\\Temp"],
+    "update.scan": ["Searching Windows Update…", "Searching Windows Update for drivers…", "Checking winget for app upgrades…"],
+    "update.firmware": ["Running Dell Command | Update…", "Checking for updates...", "Installing: Intel Wi-Fi 6E AX211 driver (1 of 2)", "Installing: Dell BIOS 1.22.0 (2 of 2)"],
   };
   /** What a finding looks like once its fix has worked (preview only). */
   const FIXED_VALUE = {
     "clear-print-queue": "ready", "restart-spooler": "running", "resync-time": "4 ms slow",
     gpupdate: "applied just now", "start-service": "running", "flush-dns": "resolved",
+    "install-update": "installed", "install-oem-tool": "Dell Command | Update is installed",
   };
   const FIX_MESSAGES = {
     "restart-spooler": () => "Print Spooler restarted.",
@@ -378,15 +559,32 @@
     gpupdate: () => "Group Policy refreshed.",
     "start-service": (t) => `${t} started.`,
     "flush-dns": () => "Successfully flushed the DNS Resolver Cache.",
+    "restart-computer": () => "Restart scheduled in 60 seconds; the signed-in user was warned.",
+    "cancel-restart": () => "Restart cancelled.",
+    "install-oem-tool": () => "Dell Command | Update installed. Run Install drivers & firmware to use it.",
+    "install-update": () => "KB5070001: installed. Restart to finish.",
   };
   const MOCK_DIFF = {
     against: "2026-11-05T19:02:11Z",
     changes: [
-      { module_id: "desk.printers", module: "Printers & print queue", label: "Ward 4 LaserJet (default)", kind: "new", before: "ok", after: "warning", value: "in an error state · 3 jobs stuck" },
-      { module_id: "desk.time", module: "Clock & time sync", label: "Offset vs DC01", kind: "new", before: "ok", after: "warning", value: "41.6 s slow" },
-      { module_id: "system.disk", module: "Disk usage", label: "C:\\", kind: "changed", before: "warning", after: "critical", value: "7.2 GB free of 476.9 GB (98% used) · NTFS" },
+      { module_id: "desk.printers", module: "Printers & print queue", label: "Ward 4 LaserJet (default)", kind: "new", before: "ok", after: "warning", value: "in an error state · 3 jobs stuck", was: "ready" },
+      { module_id: "desk.time", module: "Clock & time sync", label: "Offset vs DC01", kind: "new", before: "ok", after: "warning", value: "41.6 s slow", was: "412 ms slow" },
+      { module_id: "system.disk", module: "Disk space & latency", label: "C:\\", kind: "changed", before: "warning", after: "critical", value: "7.2 GB free of 476.9 GB (98% used) · NTFS", was: "38.1 GB free of 476.9 GB (92% used) · NTFS" },
+      { module_id: "desk.wifi", module: "Wi-Fi & VPN", label: "Signal", kind: "changed", before: "warning", after: "critical", value: "34% · weak", was: "61% · good" },
+      { module_id: "site.apps", module: "Required & clinical apps", label: "Citrix Workspace", kind: "ongoing", before: "warning", after: "warning", value: "23.11.1.45 · needs 24.2 or later" },
       { module_id: "proc.services", module: "Services", label: "Print Spooler (Spooler)", kind: "resolved", before: "critical", after: null, value: "stopped · exit 1067 · Automatic" },
     ],
+    metrics: [
+      { module_id: "net.latency", module: "Latency & packet loss", label: "Gateway 10.20.32.1 round trip", unit: "ms", before: 12, after: 38, delta: 26, trend: "worse" },
+      { module_id: "desk.wifi", module: "Wi-Fi & VPN", label: "Signal", unit: "%", before: 61, after: 34, delta: -27, trend: "worse" },
+      { module_id: "system.disk", module: "Disk space & latency", label: "C:\\", unit: "% free", before: 8, after: 2, delta: -6, trend: "worse" },
+      { module_id: "system.disk", module: "Disk space & latency", label: "Disk latency", unit: "ms", before: 31.2, after: 23.4, delta: -7.8, trend: "better" },
+      { module_id: "net.connectivity", module: "Network connectivity", label: "DNS lookup (www.microsoft.com)", unit: "ms", before: 25, after: 23, delta: -2, trend: "same" },
+      { module_id: "site.checks", module: "Site services & endpoints", label: "EHR gateway", unit: "ms", before: 21, after: 18, delta: -3, trend: "same" },
+    ],
+    added: [],
+    removed: [],
+    gaps: [],
   };
   const HIST_DIR = "C:\\Users\\jparker\\AppData\\Local\\itriage\\history\\";
   const MOCK_HISTORY = [
@@ -397,7 +595,7 @@
   ];
 
   /* --------------------------- state ------------------------------- */
-  const STORE_KEY = "itriage.selection.v3";
+  const STORE_KEY = "itriage.selection.v4";
   const HISTORY = 90; // telemetry samples kept (one per second)
   let catalogue = CATALOGUE;
   let fixCatalogue = FIX_CATALOGUE;
@@ -421,6 +619,15 @@
   const hist = { cpu: [], mem: [], net: [], disk: [] };
   let tele = null;
   let teleBusy = false;
+  let presets = PRESET_CATALOGUE;
+  /** Preview (what-if): modules that change the machine only say what they'd do. */
+  let previewMode = false;
+  /** Remote-safe: anything that could drop the session or restart the PC is locked. */
+  let remoteSafe = false;
+  let destination = loadDest();
+  let metricIndex = new Map();
+  /** "scheduled" once a restart has been scheduled in this session. */
+  let restartState = null;
 
   const mockSample = isTauri ? null : mockTelemetry();
   const api = isTauri ? realApi() : mockApi();
@@ -449,6 +656,8 @@
         <span class="brk">${VERSION}</span>
         ${isTauri ? "" : '<span class="tag preview">PREVIEW · SAMPLE DATA</span>'}
         <button class="tag profile" id="profileTag" type="button" title="Site profile"><span id="profileIcon">${I.shield}</span><span id="profileName">PROFILE —</span></button>
+        <span class="tag mode-tag pv" id="tagPreview" hidden title="Preview (what-if) is on: nothing will be changed">${I.eye}PREVIEW</span>
+        <span class="tag mode-tag safe" id="tagSafe" hidden title="Remote-safe is on: nothing that drops the session or restarts the PC can run">${I.shield}REMOTE-SAFE</span>
         <button class="bk-btn xs view-switch" id="toSelf" type="button" title="The simple view end users see">${I.swap}Self-service view</button>
       </div>
       <dl class="stats">
@@ -469,8 +678,15 @@
           <button class="bk-btn hot" id="allChecks" type="button" title="Selects every read-only check. Modules that change the system stay off.">All checks</button>
           <button class="bk-btn" id="none" type="button">Clear</button>
         </div>
+        <div class="presets" id="presets" role="group" aria-label="Presets"></div>
         <div class="modules" id="modules"></div>
         <div class="run-dock">
+          <div class="run-opts">
+            <label class="opt" title="Modules that change the machine only say what they would do. Nothing is changed.">
+              <input type="checkbox" id="optPreview"><span class="sw" aria-hidden="true"></span><span class="ol">PREVIEW<small>WHAT-IF</small></span></label>
+            <label class="opt" title="Locks anything that could drop a remote session or restart the PC.">
+              <input type="checkbox" id="optSafe"><span class="sw" aria-hidden="true"></span><span class="ol">REMOTE-SAFE<small>KEEP SESSION</small></span></label>
+          </div>
           <button class="run-btn" id="run" type="button"><span class="plate"><span id="runIcon">${I.play}</span><span id="runLabel">RUN DIAGNOSTIC SEQUENCE</span><span id="runk">[00]</span></span></button>
           <div class="micro"><span>ITRIAGE // DIAGNOSTIC CORE ${VERSION}</span><span id="microPlat"></span></div>
         </div>
@@ -486,7 +702,8 @@
             <div class="menu-wrap">
               <button class="bk-btn sm hot" id="exportBtn" type="button" aria-haspopup="menu" aria-expanded="false" disabled>Export</button>
               <div class="menu" id="exportMenu" role="menu" hidden>
-                <button type="button" role="menuitem" data-fmt="plain">${I.term}<span>Ticket text<small>Plain text · ServiceNow, email, work notes</small></span></button>
+                <button type="button" role="menuitem" data-fmt="plain">${I.term}<span>Ticket text<small>Plain text · key findings first · ServiceNow, email, work notes</small></span></button>
+                <button type="button" role="menuitem" data-fmt="transcript">${I.copy}<span>Full transcript<small>Every module's log too · for an escalation</small></span></button>
                 <button type="button" role="menuitem" data-fmt="rich">${I.export}<span>Rich text<small>Formatted table · TeamDynamix, Outlook</small></span></button>
                 <button type="button" role="menuitem" data-fmt="md">${I.book}<span>Markdown<small>Teams, GitHub, wikis</small></span></button>
                 <button type="button" role="menuitem" data-fmt="json">${I.download}<span>JSON report<small>Re-open in itriage, or attach to the ticket</small></span></button>
@@ -518,9 +735,13 @@
 
   el("allChecks").onclick = () => {
     if (running) return;
-    catalogue.forEach((m) => { if (!m.mutating && !m.locked) selected.add(m.id); });
+    catalogue.forEach((m) => {
+      if (!m.mutating && !m.locked && (!m.takes_target || destination.trim())) selected.add(m.id);
+    });
     syncRows();
   };
+  el("optPreview").onchange = (e) => setPreview(e.target.checked);
+  el("optSafe").onchange = (e) => setRemoteSafe(e.target.checked);
   el("none").onclick = () => { if (!running) { selected.clear(); syncRows(); } };
   runBtn.onclick = () => (running ? requestCancel() : onRun());
   el("historyBtn").onclick = openHistory;
@@ -540,6 +761,7 @@
   if (mockSample) for (let i = 0; i < HISTORY; i++) ingest(mockSample());
   renderHost();
   renderProfile();
+  renderPresets();
   renderModules();
   syncRows();
   setPhase("ready");
@@ -552,21 +774,102 @@
   window.addEventListener("resize", () => requestAnimationFrame(paintTelemetry));
 
   async function boot() {
+    try { profile = await api.getProfile(); } catch (_) { /* no profile info */ }
+    remoteSafe = !!(profile && profile.policy && profile.policy.remote_safe);
+    el("optSafe").checked = remoteSafe;
+    el("tagSafe").hidden = !remoteSafe;
     try {
-      const list = await api.listModules();
+      const list = await api.listModules(remoteSafe);
       if (Array.isArray(list) && list.length) catalogue = list;
     } catch (_) { /* keep the bundled catalogue */ }
     try { fixCatalogue = (await api.listFixes()) || fixCatalogue; } catch (_) { /* keep the bundled list */ }
-    try { profile = await api.getProfile(); } catch (_) { /* no profile info */ }
-    const usable = new Set(catalogue.filter((m) => !m.locked).map((m) => m.id));
-    [...selected].forEach((id) => { if (!usable.has(id)) selected.delete(id); });
+    try { presets = (await api.listPresets()) || presets; } catch (_) { /* keep the bundled presets */ }
+    dropLocked();
     try { host = await api.hostContext(); } catch (_) { /* stats stay minimal */ }
     renderHost();
     renderProfile();
+    renderPresets();
     renderModules(); // re-render so WIN/LIN chips and locks reflect this host
     syncRows();
     const pol = profile && profile.policy;
     if (pol && (pol.technician_view === false || pol.start_in === "self-service")) setMode("self");
+  }
+
+  /** Drop selections the catalogue no longer offers (locked, or not on this OS). */
+  function dropLocked() {
+    const usable = new Set(catalogue.filter((m) => !m.locked).map((m) => m.id));
+    [...selected].forEach((id) => { if (!usable.has(id)) selected.delete(id); });
+  }
+
+  /* ------------------------ presets & modes ------------------------- */
+  function renderPresets() {
+    const box = el("presets");
+    box.innerHTML = '<span class="pl">PRESETS</span>' + presets
+      .map((p) => `<button class="preset" type="button" data-p="${esc(p.id)}" title="${esc(p.script + ": " + p.description)}">${esc(p.title)}</button>`)
+      .join("");
+    box.querySelectorAll("[data-p]").forEach((b) => { b.onclick = () => applyPreset(b.dataset.p); });
+  }
+
+  function applyPreset(id) {
+    if (running) return;
+    const p = presets.find((x) => x.id === id);
+    if (!p) return;
+    selected.clear();
+    let locked = 0;
+    p.modules.forEach((mid) => {
+      const m = catalogue.find((x) => x.id === mid);
+      if (!m) return; // not on this OS
+      if (m.locked) { locked++; return; }
+      if (m.takes_target && !destination.trim()) return;
+      selected.add(mid);
+    });
+    syncRows();
+    const changes = [...selected].some((mid) => (catalogue.find((x) => x.id === mid) || {}).mutating);
+    toast(`${p.title} (${p.script}): ${selected.size} selected` +
+      (locked ? ` · ${locked} locked` : "") +
+      (changes && !previewMode ? " · turn on PREVIEW to see the changes first" : ""));
+  }
+
+  function setPreview(on) {
+    previewMode = !!on;
+    el("tagPreview").hidden = !previewMode;
+    document.body.classList.toggle("previewing", previewMode);
+    syncRows();
+  }
+
+  async function setRemoteSafe(on) {
+    remoteSafe = !!on;
+    el("tagSafe").hidden = !remoteSafe;
+    try {
+      const list = await api.listModules(remoteSafe);
+      if (Array.isArray(list) && list.length) catalogue = list;
+    } catch (_) { /* keep the current list */ }
+    dropLocked();
+    renderModules();
+    syncRows();
+    toast(remoteSafe
+      ? "Remote-safe on: anything that could drop the session or restart the PC is locked"
+      : "Remote-safe off: network repairs and restarts can run");
+  }
+
+  function idleLabel() {
+    return previewMode ? "RUN PREVIEW (WHAT-IF)" : "RUN DIAGNOSTIC SEQUENCE";
+  }
+
+  async function validateDest(input) {
+    const err = input.parentElement.querySelector(".dest-err");
+    if (!destination.trim()) { err.hidden = true; return false; }
+    try {
+      await api.checkTarget(destination);
+      err.hidden = true;
+      input.classList.remove("bad");
+      return true;
+    } catch (e) {
+      err.textContent = errText(e);
+      err.hidden = false;
+      input.classList.add("bad");
+      return false;
+    }
   }
 
   /* ------------------------- view switch --------------------------- */
@@ -877,7 +1180,12 @@
         const badges =
           (m.locked ? `<span class="badge lock" title="${esc(m.locked)}">${I.lock}LOCKED</span>` : "") +
           (m.mutating && !m.locked ? '<span class="badge mut">CHANGES SYSTEM</span>' : "") +
+          (m.disruptive && !m.locked ? '<span class="badge drop" title="Can drop network connections or restart the PC; remote-safe mode locks it">DISRUPTIVE</span>' : "") +
           (m.requires_admin && !m.locked ? '<span class="badge admin">ADMIN</span>' : "");
+        const dest = m.takes_target && !m.locked
+          ? `<span class="dest-wrap"><input class="dest" type="text" spellcheck="false" autocomplete="off" aria-label="Destination to test"
+               placeholder="host or IP, ports optional (fileserver01:445,3389)" value="${esc(destination)}"><span class="dest-err" hidden></span></span>`
+          : "";
         const live = LIVE_GLYPH[m.id];
         const glyph = live ? `<canvas data-mini="${live}"></canvas>` : STATIC_GLYPH[m.id] || "";
         html += `
@@ -891,6 +1199,7 @@
                 <span class="chips">${plats}${badges}</span>
               </span>
               <span class="d">${esc(m.locked || m.description)}</span>
+              ${dest}
             </span>
             <span class="glyph" aria-hidden="true">${glyph}</span>
           </div>`;
@@ -912,6 +1221,17 @@
       row.addEventListener("keydown", (e) => {
         if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); }
       });
+      const input = row.querySelector("input.dest");
+      if (input) {
+        ["click", "keydown", "mousedown"].forEach((ev) => input.addEventListener(ev, (e) => e.stopPropagation()));
+        input.addEventListener("input", () => {
+          destination = input.value;
+          saveDest();
+          input.classList.remove("bad");
+          if (destination.trim() && !selected.has(id) && !running) { selected.add(id); syncRows(); }
+        });
+        input.addEventListener("change", () => validateDest(input));
+      }
     });
     paintTelemetry(); // fresh canvases need a frame
   }
@@ -924,7 +1244,10 @@
     });
     const n = selected.size;
     countEl.textContent = n;
-    if (!running) runK.textContent = `[${pad2(n)}]`;
+    if (!running) {
+      runK.textContent = `[${pad2(n)}]`;
+      runLabel.textContent = idleLabel();
+    }
     runBtn.disabled = running ? cancelRequested : n === 0;
     saveSelection();
   }
@@ -934,8 +1257,17 @@
     if (running || selected.size === 0) return;
     const chosen = catalogue.filter((m) => selected.has(m.id) && !m.locked);
     if (!chosen.length) return;
+    if (chosen.some((m) => m.takes_target)) {
+      const input = modulesEl.querySelector("input.dest");
+      if (!destination.trim()) {
+        toast("Type a destination for the Destination test first");
+        if (input) input.focus();
+        return;
+      }
+      if (input && !(await validateDest(input))) { input.focus(); return; }
+    }
     const mutating = chosen.filter((m) => m.mutating);
-    if (mutating.length && !(await confirmRun(mutating))) return;
+    if (mutating.length && !previewMode && !(await confirmRun(mutating))) return;
     await startRun(chosen.map((m) => m.id));
   }
 
@@ -967,7 +1299,7 @@
     runK.textContent = `[00/${pad2(total)}]`;
     exportBtn.disabled = true;
     setPhase("running");
-    statusText.textContent = "Running sequence";
+    statusText.textContent = previewMode ? "Running preview: nothing will be changed" : "Running sequence";
     resultsEl.innerHTML = "";
     if (!isTauri) {
       const note = document.createElement("div");
@@ -989,6 +1321,9 @@
 
     try {
       const outcome = await api.run(ids, {
+        preview: previewMode,
+        remoteSafe,
+        target: destination.trim() || null,
         onStart: ({ id, title, index, total: n }) => {
           setProgress(index / Math.max(n, 1));
           if (!cancelRequested) statusText.textContent = `Running · ${index + 1}/${n}`;
@@ -1019,15 +1354,17 @@
       el("toSelf").disabled = false;
       runBtn.classList.remove("running");
       runIcon.innerHTML = I.play;
-      runLabel.textContent = "RUN DIAGNOSTIC SEQUENCE";
+      runLabel.textContent = idleLabel();
       liveCards.forEach((card) => card.remove());
       liveCards.clear();
       syncRows();
       setDiff(live.diff);
-      if (live.diff) {
-        resultsEl.insertBefore(diffBanner(live.diff), resultsEl.querySelector(".card"));
-        applyBadges();
-      }
+      const first = resultsEl.querySelector(".card");
+      const banners = topBanners(live.results, live.diff, "Since last run", true);
+      banners.forEach((b) => resultsEl.insertBefore(b, first));
+      if (live.diff) applyBadges();
+      // A restart or preview notice needs reading before the cards, so bring it into view.
+      if (banners.some((b) => b.matches(".banner.restart, .banner.preview"))) resultsEl.scrollTo({ top: 0, behavior: "smooth" });
       statusText.textContent = runSummary(live.results, cancelled, total);
       exportBtn.disabled = live.results.length === 0;
       setProgress(1);
@@ -1043,7 +1380,10 @@
     }
     const worst = worstOf(results);
     const word = setPhase("done", worst);
-    return `${word} · ${n} module${n === 1 ? "" : "s"}` + (worst ? ` · worst: ${worst}` : "");
+    const notes = [];
+    if (results.some((r) => r.preview)) notes.push("preview, nothing changed");
+    if (results.some((r) => r.restart_required && !r.preview)) notes.push("restart needed");
+    return `${word} · ${n} module${n === 1 ? "" : "s"}` + (worst ? ` · worst: ${worst}` : "") + notes.map((t) => " · " + t).join("");
   }
 
   function setProgress(fraction) {
@@ -1119,7 +1459,7 @@
   function buildCard(res, opts) {
     const o = opts || {};
     const sev = statusOf(res);
-    const lines = logs.get(res.module_id) || [];
+    const lines = logs.get(res.module_id) || res.log || [];
     const card = document.createElement("div");
     card.className = `card sev-${sev} open`;
     card.dataset.mod = res.module_id;
@@ -1137,6 +1477,8 @@
     card.innerHTML = `
       <div class="card-head" role="button" tabindex="0" aria-expanded="true">
         <span class="chip sev-${sev}">${res.error ? "failed" : sev}</span>
+        ${res.preview ? '<span class="chip pv" title="Preview: nothing was changed">preview</span>' : ""}
+        ${res.restart_required && !res.preview ? '<span class="chip rs" title="A restart is needed to finish this">restart</span>' : ""}
         <span class="meta"><span class="ct">${esc(res.title)}</span>
           <span class="cs">${esc(res.error ? "Couldn't run" : res.summary)}</span></span>
         <span class="dur">${fmtMs(res.duration_ms)}</span>
@@ -1169,6 +1511,9 @@
     // A re-check after a fix can move a finding on; only badge what still holds.
     const c = changeFor(res.module_id, f.label);
     const change = c && c.after === f.severity ? c : null;
+    const mc = metricFor(res.module_id, f.label);
+    // After a fix re-checks a finding its value moves on, so only tag what still holds.
+    const delta = mc && mc.trend !== "same" && f.metric && f.metric.value === mc.after ? deltaHtml(mc) : "";
     const admin = f.action && f.action.requires_admin && host && !host.elevated;
     const fix = f.action && liveCard
       ? `<button class="fix-btn" type="button" data-fix="${i}" title="${esc(fixDescription(f.action))}">${I.bolt}${esc(f.action.label)}${admin ? '<span class="adm">ADMIN</span>' : ""}</button>`
@@ -1177,7 +1522,7 @@
     const fx = fix || kb ? `<div class="fx">${fix}${kb}<span class="fix-slot"></span></div>` : "";
     return `
       <div class="fr" data-label="${esc(f.label)}"><span class="fdot sev-${esc(f.severity)}"></span>
-        <span class="fl">${esc(f.label)}${change ? badgeHtml(change) : ""}</span>
+        <span class="fl">${esc(f.label)}${change ? badgeHtml(change) : ""}${delta}</span>
         <span class="fv">${esc(f.value)}</span>
         ${f.detail ? `<span class="fd">${esc(f.detail)}</span>` : ""}
         ${fx}
@@ -1201,8 +1546,9 @@
       <div class="empty">
         ${I.radarBig}
         <h3>AWAITING SEQUENCE</h3>
-        <p>Select modules on the left, then run the diagnostic sequence. Results stream in as each module finishes.
-           Every run is saved to History, and the next run on this machine shows what changed.</p>
+        <p>Select modules on the left (or a preset), then run the sequence. Results stream in as each module finishes.
+           Turn on PREVIEW to see what the repair and update modules would change first. Every run is saved to History
+           with its log, and the next run on this machine shows what changed.</p>
       </div>`;
   }
 
@@ -1218,7 +1564,7 @@
       showEmpty();
       return;
     }
-    if (live.diff) resultsEl.appendChild(diffBanner(live.diff));
+    topBanners(live.results, live.diff, "Since last run", true).forEach((b) => resultsEl.appendChild(b));
     live.results.forEach((r) => {
       resultsEl.appendChild(buildCard(r, { live: true }));
       lastSev.set(r.module_id, statusOf(r));
@@ -1241,7 +1587,7 @@
     slot.innerHTML = '<span class="fix-note busy"><span class="spin"></span>Running fix…</span>';
     let message = null;
     try {
-      message = await api.runFix(f.action.id, f.action.target || null);
+      message = await api.runFix(f.action.id, f.action.target || null, remoteSafe);
       slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span><span class="fix-note busy">Re-checking…</span>`;
     } catch (e) {
       slot.innerHTML = `<span class="fix-note err">${I.xc}${esc(errText(e))}</span>`;
@@ -1251,7 +1597,9 @@
     }
     if (message != null) {
       toast(message);
-      await recheck(res.module_id, message);
+      if (f.action.id === "restart-computer") restartState = "scheduled";
+      if (f.action.id === "cancel-restart") restartState = null;
+      if (!["restart-computer", "cancel-restart"].includes(f.action.id)) await recheck(res.module_id, message);
     }
   }
 
@@ -1263,7 +1611,7 @@
   async function recheck(moduleId, note) {
     let res;
     try {
-      res = await api.recheck(moduleId);
+      res = await api.recheck(moduleId, { remoteSafe, target: destination.trim() || null });
     } catch (e) {
       toast("Re-check failed: " + errText(e));
       return null;
@@ -1297,6 +1645,12 @@
              ${host.can_relaunch_elevated ? '<button class="bk-btn xs" data-x="relaunch" type="button">Relaunch as admin</button>' : ""}</div></div>`
         : `<div class="notebox">${I.shield}<p>Needs root: you'll be asked for your password.</p></div>`;
     }
+    const spec = fixCatalogue.find((x) => x.id === action.id) || {};
+    if (spec.disruptive && remoteSafe) {
+      notice += `<div class="warnbox">${I.shield}<div><p><b>Remote-safe mode is on.</b> This fix could drop the session or restart the PC, so it will be refused. Switch REMOTE-SAFE off first.</p></div></div>`;
+    } else if (spec.disruptive) {
+      notice += `<div class="notebox">${I.warn}<p>This can drop a remote session or restart the PC.</p></div>`;
+    }
     const log = host && host.platform === "linux" ? "syslog" : "the Windows Application event log";
     return modal({
       title: `${I.bolt} ${esc(action.label)}`,
@@ -1319,9 +1673,20 @@
   /* -------------------------- compare ---------------------------- */
   function setDiff(diff) {
     diffIndex = new Map((diff ? diff.changes : []).map((c) => [c.module_id + "\n" + c.label, c]));
+    metricIndex = new Map((diff && diff.metrics ? diff.metrics : []).map((m) => [m.module_id + "\n" + m.label, m]));
   }
   function changeFor(moduleId, label) {
     return diffIndex.get(moduleId + "\n" + label);
+  }
+  function metricFor(moduleId, label) {
+    return metricIndex.get(moduleId + "\n" + label);
+  }
+  /** "38 ms", "34%", "2% free", "15.2 days" (mirrors report::metric_text). */
+  function metricText(value, unit) {
+    const v = Math.abs(value - Math.round(value)) < 0.05 ? String(Math.round(value)) : value.toFixed(1);
+    if (unit === "%") return `${v}%`;
+    if (unit === "% free") return `${v}% free`;
+    return unit ? `${v} ${unit}` : v;
   }
   function badgeHtml(c) {
     if (c.kind === "new") return '<span class="dbadge new" title="Not a problem last run">NEW</span>';
@@ -1330,56 +1695,177 @@
         ? '<span class="dbadge worse" title="Worse than last run">WORSE</span>'
         : '<span class="dbadge better" title="Better than last run">BETTER</span>';
     }
+    if (c.kind === "ongoing") return '<span class="dbadge still" title="A problem last run too">STILL</span>';
     if (c.kind === "resolved" && c.after) return '<span class="dbadge better" title="A problem last run">BETTER</span>';
     return "";
   }
+  function deltaHtml(mc) {
+    return `<span class="mdelta ${esc(mc.trend)}" title="Was ${esc(metricText(mc.before, mc.unit))} last run">${mc.delta > 0 ? "+" : ""}${esc(metricText(mc.delta, mc.unit))}</span>`;
+  }
+  /** Badge the cards already on screen once the comparison arrives. */
   function applyBadges() {
     resultsEl.querySelectorAll(".card[data-mod]").forEach((card) => {
       card.querySelectorAll(".fr[data-label]").forEach((row) => {
-        const c = changeFor(card.dataset.mod, row.dataset.label);
         const fl = row.querySelector(".fl");
-        if (c && fl && !fl.querySelector(".dbadge")) fl.insertAdjacentHTML("beforeend", badgeHtml(c));
+        if (!fl) return;
+        const c = changeFor(card.dataset.mod, row.dataset.label);
+        if (c && !fl.querySelector(".dbadge")) fl.insertAdjacentHTML("beforeend", badgeHtml(c));
+        const mc = metricFor(card.dataset.mod, row.dataset.label);
+        if (mc && mc.trend !== "same" && !fl.querySelector(".mdelta")) fl.insertAdjacentHTML("beforeend", deltaHtml(mc));
       });
     });
   }
 
-  function diffBanner(diff) {
+  const KIND_WORD = { new: "new", resolved: "resolved", changed: "changed", ongoing: "still failing" };
+
+  /** The banners above the cards: restart needed, preview, and what changed. */
+  function topBanners(results, diff, label, liveRun) {
+    return [liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  }
+
+  function diffBanner(diff, label) {
     const box = document.createElement("div");
     box.className = "banner diff";
-    const total = diff.new_issues + diff.resolved + diff.changed;
-    const counts = total
-      ? [
-          diff.new_issues ? `<span class="count new">${diff.new_issues} new</span>` : "",
-          diff.resolved ? `<span class="count resolved">${diff.resolved} resolved</span>` : "",
-          diff.changed ? `<span class="count changed">${diff.changed} changed</span>` : "",
-        ].join("")
-      : '<span class="count none">no change in problems</span>';
+    const metrics = diff.metrics || [];
+    const better = metrics.filter((m) => m.trend === "better").length;
+    const worse = metrics.filter((m) => m.trend === "worse").length;
+    const ongoing = diff.ongoing || 0;
+    const counts = [
+      diff.new_issues ? `<span class="count new">${diff.new_issues} new</span>` : "",
+      diff.resolved ? `<span class="count resolved">${diff.resolved} resolved</span>` : "",
+      diff.changed ? `<span class="count changed">${diff.changed} changed</span>` : "",
+      ongoing ? `<span class="count ongoing">${ongoing} still failing</span>` : "",
+      worse ? `<span class="count worse">${worse} measurement${worse === 1 ? "" : "s"} worse</span>` : "",
+      better ? `<span class="count better">${better} better</span>` : "",
+    ].join("") || '<span class="count none">no change in problems</span>';
+    const changes = (diff.changes || [])
+      .map((c) => `
+        <li><span class="k ${esc(c.kind)}">${esc(KIND_WORD[c.kind] || c.kind)}</span>
+          <span class="w">${esc(c.label)} · ${esc(c.value)}<small>${esc(c.module)} · ${sevWord(c.before)} → ${sevWord(c.after)}${c.was ? " · was: " + esc(c.was) : ""}</small></span></li>`)
+      .join("");
+    const moved = metrics.filter((m) => m.trend !== "same");
+    const same = metrics.length - moved.length;
+    const mrows = moved
+      .map((m) => `
+        <tr><td>${esc(m.label)}<small>${esc(m.module)}</small></td>
+          <td class="num">${esc(metricText(m.before, m.unit))}</td><td class="num">${esc(metricText(m.after, m.unit))}</td>
+          <td class="num ${esc(m.trend)}">${m.delta > 0 ? "+" : ""}${esc(metricText(m.delta, m.unit))} · ${m.trend}</td></tr>`)
+      .join("");
+    const section = (title, body) => (body ? `<div class="dsec"><h4>${title}</h4>${body}</div>` : "");
+    const added = diff.added || [], removed = diff.removed || [], gaps = diff.gaps || [];
+    const details =
+      section("Problems", changes ? `<ul class="diff-list">${changes}</ul>` : "") +
+      section("Measurements",
+        (mrows ? `<div class="mwrap"><table class="mtable"><thead><tr><th>Measurement</th><th>Before</th><th>After</th><th>Change</th></tr></thead><tbody>${mrows}</tbody></table></div>` : "") +
+        (same ? `<p class="dnote">${same} measurement${same === 1 ? "" : "s"} about the same.</p>` : "")) +
+      section("Checks",
+        (added.length ? `<p class="dnote">Only this time: ${esc(added.join(", "))}</p>` : "") +
+        (removed.length ? `<p class="dnote">Only last time: ${esc(removed.join(", "))}</p>` : "")) +
+      section("Gaps", gaps.length ? `<ul class="gap-list">${gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : "");
     box.innerHTML = `
       <div class="banner-row">
-        <span class="ttl">Since last run</span>
+        <span class="ttl">${esc(label || "Since last run")}</span>
         <span class="sub">${esc(fmtLocal(diff.against))}</span>
         <span class="counts">${counts}</span>
         <span class="grow"></span>
-        ${total ? '<button class="bk-btn xs" type="button" data-x="toggle" aria-expanded="false">Details</button>' : ""}
+        ${details ? '<button class="bk-btn xs" type="button" data-x="toggle" aria-expanded="false">Details</button>' : ""}
       </div>
-      <ul class="diff-list" hidden>${diff.changes
-        .map((c) => `
-          <li><span class="k ${esc(c.kind)}">${esc(c.kind)}</span>
-            <span class="w">${esc(c.label)} · ${esc(c.value)}<small>${esc(c.module)} · ${sevWord(c.before)} → ${sevWord(c.after)}</small></span></li>`)
-        .join("")}</ul>`;
+      <div class="diff-details" hidden>${details}</div>`;
     const t = box.querySelector('[data-x="toggle"]');
     if (t) {
       t.onclick = () => {
-        const list = box.querySelector(".diff-list");
-        list.hidden = !list.hidden;
-        t.setAttribute("aria-expanded", list.hidden ? "false" : "true");
-        t.textContent = list.hidden ? "Details" : "Hide";
+        const d = box.querySelector(".diff-details");
+        d.hidden = !d.hidden;
+        t.setAttribute("aria-expanded", d.hidden ? "false" : "true");
+        t.textContent = d.hidden ? "Details" : "Hide";
       };
     }
     return box;
   }
   function sevWord(s) {
     return s ? s : "gone";
+  }
+
+  function previewBanner(results, liveRun) {
+    const n = results.filter((r) => r.preview).length;
+    if (!n) return null;
+    const box = document.createElement("div");
+    box.className = "banner preview";
+    box.innerHTML = `
+      <div class="banner-row">
+        <span class="ttl">${I.eye}Preview</span>
+        <span class="sub">${n} module${n === 1 ? "" : "s"} said what ${n === 1 ? "it" : "they"} would change. Nothing was changed.</span>
+        <span class="grow"></span>
+        ${liveRun && previewMode ? '<button class="bk-btn xs hot" type="button" data-x="real">Turn preview off</button>' : ""}
+      </div>`;
+    const b = box.querySelector('[data-x="real"]');
+    if (b) {
+      b.onclick = () => {
+        el("optPreview").checked = false;
+        setPreview(false);
+        b.remove();
+        toast("Preview is off: the next run makes the changes");
+      };
+    }
+    return box;
+  }
+
+  function restartBanner(results) {
+    const need = results.filter((r) => r.restart_required && !r.preview);
+    if (!need.length) return null;
+    const box = document.createElement("div");
+    box.className = "banner restart";
+    const render = () => {
+      const scheduled = restartState === "scheduled";
+      box.innerHTML = `
+        <div class="banner-row">
+          <span class="ttl">${I.power}${scheduled ? "Restart scheduled" : "Restart needed"}</span>
+          <span class="sub">${scheduled
+            ? "This PC restarts within a minute. The signed-in user was warned to save their work."
+            : "To finish: " + esc(need.map((r) => r.title).join(", "))}</span>
+          <span class="grow"></span>
+          ${scheduled
+            ? '<button class="bk-btn xs" type="button" data-x="cancel">Cancel restart</button>'
+            : `<button class="bk-btn xs hot" type="button" data-x="restart"${remoteSafe ? ' disabled title="Remote-safe mode is on"' : ""}>Restart in 60 s</button>
+               <button class="bk-btn xs" type="button" data-x="later">Later</button>`}
+        </div>`;
+      const go = box.querySelector('[data-x="restart"]');
+      if (go) {
+        go.onclick = async () => {
+          const ok = await modal({
+            title: `${I.power} Restart this PC`,
+            body: `<p>Restarts in 60 seconds. The signed-in user sees this message:</p>
+              <ul><li>${esc(RESTART_MSG)}</li></ul>
+              <div class="notebox">${I.warn}<p>A remote session will disconnect. Cancel restart stops it within the minute.</p></div>`,
+            actions: [{ label: "Not now", value: false, focus: true }, { label: "Restart in 60 s", hot: true, value: true }],
+          });
+          if (!ok) return;
+          try {
+            toast(await api.runFix("restart-computer", null, remoteSafe));
+            restartState = "scheduled";
+            render();
+          } catch (e) {
+            toast(errText(e));
+          }
+        };
+      }
+      const cancel = box.querySelector('[data-x="cancel"]');
+      if (cancel) {
+        cancel.onclick = async () => {
+          try {
+            toast(await api.runFix("cancel-restart", null, remoteSafe));
+            restartState = null;
+            render();
+          } catch (e) {
+            toast(errText(e));
+          }
+        };
+      }
+      const later = box.querySelector('[data-x="later"]');
+      if (later) later.onclick = () => box.remove();
+    };
+    render();
+    return box;
   }
 
   /* ------------------------ report viewer ------------------------ */
@@ -1395,15 +1881,16 @@
     const h = report.host || {};
     box.innerHTML = `
       <div class="banner-row">
-        <span class="ttl">${source === "file" ? "Opened report" : "Saved run"}</span>
+        <span class="ttl">${source === "file" ? "Opened report" : source === "compare" ? "Comparison" : "Saved run"}</span>
         <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.cancelled ? " · cancelled" : ""}</span>
         <span class="grow"></span>
         <button class="bk-btn xs" type="button" data-x="back">${live.results.length ? "Back to this run" : "Close"}</button>
       </div>`;
     box.querySelector('[data-x="back"]').onclick = renderLive;
     resultsEl.appendChild(box);
-    if (diff) resultsEl.appendChild(diffBanner(diff));
+    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false).forEach((b) => resultsEl.appendChild(b));
     report.results.forEach((r) => resultsEl.appendChild(buildCard(r, { live: false })));
+    if (diff) applyBadges();
     const worst = worstOf(report.results);
     statusEl.className = "status";
     statusText.textContent = `Viewing · ${report.results.length} module${report.results.length === 1 ? "" : "s"}` + (worst ? ` · worst: ${worst}` : "");
@@ -1421,8 +1908,10 @@
     d.setAttribute("aria-label", "Run history");
     d.innerHTML = `
       <div class="drawer-head"><h3>RUN HISTORY</h3><button class="bk-btn xs" data-x="close" type="button">Close</button></div>
+      <p class="drawer-hint">Open a run, or tick two runs of the same PC to compare them (before and after a fix).</p>
       <div class="drawer-body"><div class="empty-note">Loading…</div></div>
       <div class="drawer-foot">
+        <button class="bk-btn sm hot" data-x="compare" type="button" disabled>Compare 2 ticked</button>
         <button class="bk-btn sm" data-x="open" type="button">${I.open}Open report</button>
         <button class="bk-btn sm" data-x="folder" type="button">Show folder</button>
       </div>`;
@@ -1446,11 +1935,14 @@
     const current = viewing && viewing.path;
     body.innerHTML = list
       .map((m, i) => `
-        <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
-          <span class="when">${esc(fmtLocal(m.generated))}</span>
-          <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
-          <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.cancelled ? " · cancelled" : ""}</span>
-        </button>`)
+        <div class="hist-row">
+          <input class="pick" type="checkbox" data-pick="${i}" aria-label="Tick to compare">
+          <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
+            <span class="when">${esc(fmtLocal(m.generated))}</span>
+            <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
+            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.cancelled ? " · cancelled" : ""}</span>
+          </button>
+        </div>`)
       .join("");
     body.querySelectorAll(".hist").forEach((b) => {
       b.onclick = async () => {
@@ -1465,6 +1957,37 @@
         }
       };
     });
+    const picks = [];
+    const compareBtn = d.querySelector('[data-x="compare"]');
+    body.querySelectorAll(".pick").forEach((c) => {
+      c.onchange = () => {
+        const i = Number(c.dataset.pick);
+        if (c.checked) {
+          picks.push(i);
+          if (picks.length > 2) {
+            const drop = picks.shift();
+            const old = body.querySelector(`.pick[data-pick="${drop}"]`);
+            if (old) old.checked = false;
+          }
+        } else {
+          picks.splice(picks.indexOf(i), 1);
+        }
+        compareBtn.disabled = picks.length !== 2;
+      };
+    });
+    compareBtn.onclick = async () => {
+      if (picks.length !== 2) return;
+      try {
+        const [a, b] = await Promise.all(picks.map((i) => api.loadReport(list[i].path)));
+        const diff = await api.compareReports(a, b);
+        const newer = a.generated >= b.generated ? a : b;
+        const path = list[picks[a.generated >= b.generated ? 0 : 1]].path;
+        close();
+        showReport(newer, diff, "compare", path);
+      } catch (e) {
+        toast(errText(e));
+      }
+    };
   }
 
   async function onFilePicked() {
@@ -1509,6 +2032,7 @@
     const { report, diff } = currentReport();
     if (!report.results.length) return;
     if (fmt === "plain") copy(plainText(report, diff), "Ticket text copied");
+    else if (fmt === "transcript") copyTranscript(report, diff);
     else if (fmt === "md") copy(markdown(report, diff), "Markdown copied");
     else if (fmt === "json") copy(JSON.stringify(report, null, 2), "JSON report copied");
     else if (fmt === "rich") copyRich(richHtml(report, diff), plainText(report, diff));
@@ -1526,17 +2050,60 @@
     if (diff.new_issues) bits.push(`${diff.new_issues} new`);
     if (diff.resolved) bits.push(`${diff.resolved} resolved`);
     if (diff.changed) bits.push(`${diff.changed} changed`);
+    if (diff.ongoing) bits.push(`${diff.ongoing} still failing`);
+    const ms = diff.metrics || [];
+    const better = ms.filter((m) => m.trend === "better").length, worse = ms.filter((m) => m.trend === "worse").length;
+    if (better + worse) bits.push(`${better} measurement${better === 1 ? "" : "s"} better, ${worse} worse`);
     return `Since the last run (${fmtUtc(diff.against)}): ${bits.length ? bits.join(", ") : "no change in problems"}`;
   }
 
-  function plainText(report, diff) {
+  /** Warnings, criticals and failures: NetTriage's KEY FINDINGS. */
+  function keyFindings(report) {
+    const out = [];
+    report.results.forEach((r) => {
+      if (r.error) out.push({ tag: "FAILED", sev: "critical", text: `${r.title}: ${r.error}` });
+      r.findings.forEach((f) => {
+        if (RANK[f.severity] >= 2) out.push({ tag: f.severity === "critical" ? "CRIT" : "WARN", sev: f.severity, text: `${r.title}: ${f.label}: ${f.value}` });
+      });
+    });
+    return out;
+  }
+
+  /** Compare-NetTriage's BEFORE AND AFTER text (mirrors report::render_diff). */
+  function diffText(diff, hostname) {
+    const tag = { ok: "OK", info: "INFO", warning: "WARN", critical: "CRIT" };
+    const lines = ["BEFORE AND AFTER", `Computer  ${hostname}`, `Before    ${fmtUtc(diff.against)}`, `After     ${fmtUtc(diff.generated || "")}`, "", "CHECK RESULTS",
+      `Resolved ${diff.resolved || 0} · New ${diff.new_issues || 0} · Changed ${diff.changed || 0} · Still failing ${diff.ongoing || 0} · Added ${(diff.added || []).length} · Removed ${(diff.removed || []).length}`];
+    (diff.changes || []).forEach((c) => {
+      lines.push(`- ${(KIND_WORD[c.kind] || c.kind).padEnd(13)} ${c.module}: ${c.label}  (${tag[c.before] || "—"} → ${tag[c.after] || "—"}) ${c.value}`);
+      if (c.was) lines.push(`                was: ${c.was}`);
+    });
+    if ((diff.added || []).length) lines.push(`- Added         ${diff.added.join(", ")}`);
+    if ((diff.removed || []).length) lines.push(`- Removed       ${diff.removed.join(", ")}`);
+    lines.push("", "LATENCY AND QUALITY");
+    const ms = diff.metrics || [];
+    const moved = ms.filter((m) => m.trend !== "same");
+    moved.forEach((m) => lines.push(`- ${m.module}: ${m.label}  ${metricText(m.before, m.unit)} → ${metricText(m.after, m.unit)} (${m.delta > 0 ? "+" : ""}${metricText(m.delta, m.unit)}, ${m.trend})`));
+    if (!ms.length) lines.push("- No measurements in common.");
+    else if (ms.length > moved.length) lines.push(`- ${ms.length - moved.length} measurement${ms.length - moved.length === 1 ? "" : "s"} about the same`);
+    if ((diff.gaps || []).length) { lines.push("", "GAPS"); diff.gaps.forEach((g) => lines.push(`- ${g}`)); }
+    return lines.join("\n");
+  }
+
+  function plainText(report, diff, withLogs) {
     const lines = [`itriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
     if (report.cancelled) lines.push("Run was cancelled before every module finished.");
+    if (report.results.some((r) => r.preview)) lines.push("PREVIEW: modules that change the machine only said what they would do.");
+    if (report.results.some((r) => r.restart_required && !r.preview)) lines.push("A restart is needed to finish the changes.");
     if (diff) lines.push(diffLine(diff));
-    lines.push("=".repeat(52), "");
+    lines.push("=".repeat(52), "KEY FINDINGS");
+    const key = keyFindings(report);
+    if (key.length) key.forEach((k) => lines.push(`- [${k.tag}] ${k.text}`));
+    else lines.push("- Nothing needs attention.");
+    lines.push("");
     report.results.forEach((res) => {
       const sev = res.error ? "FAILED" : statusOf(res).toUpperCase();
-      lines.push(`[${sev}] ${res.title}: ${res.error ? "couldn't run" : res.summary}`);
+      lines.push(`[${sev}] ${res.title}${res.preview ? " (preview)" : ""}: ${res.error ? "couldn't run" : res.summary}`);
       if (res.error) {
         lines.push(`    error: ${res.error}`);
       } else {
@@ -1547,16 +2114,37 @@
           if (f.kb) lines.push(`        KB: ${f.kb.title} <${f.kb.url}>`);
         });
       }
+      const log = res.log && res.log.length ? res.log : logs.get(res.module_id) || [];
+      if (withLogs && log.length) {
+        lines.push("    log:");
+        log.forEach((l) => lines.push(`      | ${l}`));
+      }
       lines.push("");
     });
+    if (diff) lines.push(diffText(diff, report.host ? report.host.hostname : ""));
     return lines.join("\n");
+  }
+
+  async function copyTranscript(report, diff) {
+    let text;
+    try {
+      text = isTauri ? await api.reportText(report, diff, true) : plainText(report, diff, true);
+    } catch (_) {
+      text = plainText(report, diff, true);
+    }
+    copy(text, "Full transcript copied");
   }
 
   function markdown(report, diff) {
     const cell = (s) => String(s).replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
     const tag = { ok: "OK", info: "INFO", warning: "WARN", critical: "CRIT" };
     const out = [`## itriage report · ${report.host ? report.host.hostname : ""}`, "", `${fmtUtc(report.generated)} · ${hostLine(report)}`];
+    if (report.results.some((r) => r.preview)) out.push("", "> **Preview:** modules that change the machine only said what they would do.");
     if (diff) out.push("", `**${diffLine(diff)}**`);
+    const key = keyFindings(report);
+    out.push("", "### Key findings", "");
+    if (key.length) key.forEach((k) => out.push(`- **${k.tag}** ${cell(k.text)}`));
+    else out.push("- Nothing needs attention.");
     report.results.forEach((res) => {
       const sev = res.error ? "FAILED" : (tag[statusOf(res)] || "INFO");
       out.push("", `### [${sev}] ${res.title}: ${res.error ? "couldn't run" : res.summary}`, "");
@@ -1572,6 +2160,11 @@
         out.push(`| ${tag[f.severity] || "INFO"} | ${cell(f.label)} | ${value} |`);
       });
     });
+    if (diff && (diff.metrics || []).some((m) => m.trend !== "same")) {
+      out.push("", "### What moved since the last run", "", "| Measurement | Before | After | Change |", "|---|---|---|---|");
+      diff.metrics.filter((m) => m.trend !== "same").forEach((m) => out.push(
+        `| ${cell(m.module + ": " + m.label)} | ${metricText(m.before, m.unit)} | ${metricText(m.after, m.unit)} | ${m.delta > 0 ? "+" : ""}${metricText(m.delta, m.unit)} (${m.trend}) |`));
+    }
     return out.join("\n") + "\n";
   }
 
@@ -1599,7 +2192,16 @@
     return `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2328">
       <p style="margin:0 0 6px"><b>itriage report</b> · ${esc(fmtUtc(report.generated))}<br>${esc(hostLine(report))}</p>
       ${diff ? `<p style="margin:0 0 8px"><b>${esc(diffLine(diff))}</b></p>` : ""}
+      ${keyHtml(report, color)}
       <table style="border-collapse:collapse;font-size:13px">${rows}</table></div>`;
+  }
+
+  function keyHtml(report, color) {
+    const key = keyFindings(report);
+    const items = key.length
+      ? key.map((k) => `<li><b style="color:${color[k.sev] || color.info}">${esc(k.tag)}</b> ${esc(k.text)}</li>`).join("")
+      : "<li>Nothing needs attention.</li>";
+    return `<p style="margin:8px 0 2px"><b>Key findings</b></p><ul style="margin:0 0 10px;padding-left:18px">${items}</ul>`;
   }
 
   function changeIn(diff, moduleId, label) {
@@ -1698,6 +2300,9 @@
     el("ssResults").innerHTML = "";
     try {
       const outcome = await api.run(ids, {
+        preview: false,
+        remoteSafe,
+        target: null,
         onStart: ({ id, index, total }) => {
           step.textContent = `Checking ${(SS_TITLES[id] || "your computer").toLowerCase()}…`;
           bar.style.width = Math.round((index / Math.max(total, 1)) * 100) + "%";
@@ -1791,7 +2396,7 @@
     slot.innerHTML = '<span class="ss-note">Working…</span>';
     let message = null;
     try {
-      message = await api.runFix(it.f.action.id, it.f.action.target || null);
+      message = await api.runFix(it.f.action.id, it.f.action.target || null, remoteSafe);
     } catch (e) {
       slot.innerHTML = `<span class="ss-note err">${I.xc}That didn't work: ${esc(errText(e))}</span>`;
     } finally {
@@ -1924,7 +2529,7 @@
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
   function loadSelection() {
-    const defaults = CATALOGUE.filter((m) => !m.mutating).map((m) => m.id);
+    const defaults = CATALOGUE.filter((m) => !m.mutating && !m.takes_target).map((m) => m.id);
     try {
       const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
       if (Array.isArray(saved)) return saved.filter((x) => typeof x === "string");
@@ -1934,14 +2539,22 @@
   function saveSelection() {
     try { localStorage.setItem(STORE_KEY, JSON.stringify([...selected])); } catch (_) { /* ignore */ }
   }
+  function loadDest() {
+    try { return localStorage.getItem("itriage.destination.v1") || ""; } catch (_) { return ""; }
+  }
+  function saveDest() {
+    try { localStorage.setItem("itriage.destination.v1", destination); } catch (_) { /* ignore */ }
+  }
 
   /* --------------------------- bridges ----------------------------- */
   function realApi() {
     const { invoke } = window.__TAURI__.core;
     const { listen } = window.__TAURI__.event;
     return {
-      listModules: () => invoke("list_modules"),
+      listModules: (remoteSafe) => invoke("list_modules", { remoteSafe: !!remoteSafe }),
+      listPresets: () => invoke("list_presets"),
       listFixes: () => invoke("list_fixes"),
+      checkTarget: (text) => invoke("check_target", { text }),
       getProfile: () => invoke("get_profile"),
       hostContext: () => invoke("get_host_context"),
       telemetry: () => invoke("get_telemetry"),
@@ -1953,21 +2566,33 @@
           listen("module-done", (e) => h.onDone(e.payload)),
         ]);
         try {
-          return await invoke("run_modules", { selected: ids });
+          return await invoke("run_modules", {
+            selected: ids,
+            preview: !!h.preview,
+            remoteSafe: !!h.remoteSafe,
+            target: h.target || null,
+          });
         } finally {
           offs.forEach((off) => off());
         }
       },
       cancel: () => invoke("cancel_run"),
-      recheck: async (id) => {
-        const outcome = await invoke("run_modules", { selected: [id], record: false });
+      recheck: async (id, o) => {
+        const outcome = await invoke("run_modules", {
+          selected: [id],
+          record: false,
+          remoteSafe: !!(o && o.remoteSafe),
+          target: (o && o.target) || null,
+        });
         return (outcome && outcome.report.results[0]) || null;
       },
-      runFix: (id, target) => invoke("run_fix", { id, target }),
+      runFix: (id, target, remoteSafe) => invoke("run_fix", { id, target, remoteSafe: !!remoteSafe }),
       listHistory: () => invoke("list_history"),
       loadReport: (path) => invoke("load_report", { path }),
       importReport: (text) => invoke("import_report", { text }),
       compareWithPrevious: (report) => invoke("compare_with_previous", { report }),
+      compareReports: (a, b) => invoke("compare_reports", { a, b }),
+      reportText: (report, diff, logs) => invoke("report_text", { report, diff: diff || null, logs: !!logs }),
       openLink: (url) => invoke("open_link", { url }),
       openHistoryFolder: () => invoke("open_history_folder"),
     };
@@ -1999,6 +2624,34 @@
     };
   }
 
+  /** Target::parse, for the preview. */
+  function mockParseTarget(text) {
+    const input = String(text || "").trim();
+    const parts = input.split(/\s+/);
+    let host = parts[0] || "";
+    let portsText = parts.slice(1).join(" ");
+    const v6 = host.match(/^\[([^\]]+)\](?::(.*))?$/);
+    if (v6) {
+      host = v6[1];
+      if (!portsText && v6[2]) portsText = v6[2];
+    } else if ((host.match(/:/g) || []).length === 1) {
+      const [h, pp] = host.split(":");
+      host = h;
+      if (!portsText) portsText = pp;
+    }
+    if (!host || host.length > 253 || host.startsWith("-") || !/^[A-Za-z0-9._:%-]+$/.test(host)) {
+      throw `\`${host}\` isn't a host name or IP address.`;
+    }
+    const ports = [];
+    for (const part of portsText.split(/[,\s;]+/).filter(Boolean)) {
+      const n = Number(part);
+      if (!Number.isInteger(n) || n < 1 || n > 65535) throw `\`${part}\` isn't a port number (1–65535). Ports go after the host, like fileserver01:445,3389.`;
+      if (!ports.includes(n)) ports.push(n);
+    }
+    if (ports.length > 16) throw "Up to 16 ports at a time.";
+    return { host, ports };
+  }
+
   function mockApi() {
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const clone = (x) => JSON.parse(JSON.stringify(x));
@@ -2007,10 +2660,11 @@
     let cancelFlag = false;
     const allowed = (id, target) =>
       MOCK_FIXES.some((e) => (e.includes(":") ? e === `${id}:${target}` : e === id && (id !== "start-service" || !target)));
-    const lockFor = (m) =>
-      m.mutating && m.id.startsWith("update.") && !MOCK_PROFILE.policy.allow_installs
-        ? "Blocked by site policy: updates are deployed centrally here."
-        : undefined;
+    const lockFor = (m, safe) => {
+      if (m.mutating && m.id.startsWith("update.") && !MOCK_PROFILE.policy.allow_installs) return "Blocked by site policy: updates are deployed centrally here.";
+      if (safe && m.disruptive) return REMOTE_SAFE_REASON;
+      return undefined;
+    };
     /** A sample result, with fixes the user already ran showing as fixed. */
     const result = (id, rechecked) => {
       const m = CATALOGUE.find((x) => x.id === id);
@@ -2030,23 +2684,64 @@
       }
       return r;
     };
+    const previewResult = (m) => {
+      const pv = MOCK_PREVIEW[m.id];
+      const summary = !pv
+        ? `Preview: ${m.title} would run. Nothing was changed.`
+        : pv[0].startsWith("nothing") ? `Preview: ${pv[0]}.` : `Preview: ${pv[0]}. Nothing was changed.`;
+      const findings = pv ? pv[1].map(([l, v, sev]) => F(l, v, sev || "info")) : [F("Would", m.description)];
+      return R(m.id, m.title, m.category, summary, 30 + Math.round(Math.random() * 400), findings, { preview: true });
+    };
+    const targetResult = (text) => {
+      if (!text) {
+        return R("net.target", "Destination test", "network", "Skipped: no destination given", 1,
+          [F("Destination", "none given: type a host name or address, with ports if they aren't 443, 80, 445 and 3389")]);
+      }
+      const t = mockParseTarget(text);
+      const ports = t.ports.length ? t.ports : [443, 80, 445, 3389];
+      const literal = /^[\d.]+$/.test(t.host) || t.host.includes(":");
+      const ip = literal ? t.host : "10.40.8.20";
+      const findings = [literal
+        ? F(`DNS ${t.host}`, "an address; no lookup needed")
+        : F(`DNS ${t.host}`, `${ip} · resolved in 9 ms`, "ok", null, { metric: M(9, "ms") })];
+      let open = 0;
+      ports.forEach((port) => {
+        if (port === 3389 || port === 80) {
+          findings.push(F(`${t.host}:${port}`, `no connection: ${ip} ${port === 80 ? "refused" : "timed out"}`, "critical"));
+        } else {
+          open++;
+          const ms = port === 445 ? 14 : port === 443 ? 21 : 17;
+          findings.push(F(`${t.host}:${port}`, `open · connected in ${ms} ms${literal ? "" : ` (${ip})`}`, "ok", null, { metric: M(ms, "ms") }));
+        }
+      });
+      findings.push(F(`Route to ${t.host}`, "via 10.20.32.1 on Wi-Fi (from 10.20.33.118)", "info", "DNS servers on that interface: 10.20.0.53, 10.20.0.54"));
+      findings.push(F(`Ping ${t.host}`, "avg 16 ms (min 12 ms / max 24 ms) · 0% loss", "ok", null, { metric: M(16, "ms") }));
+      return R("net.target", "Destination test", "network",
+        `${t.host}: ${open} of ${ports.length} port${ports.length === 1 ? "" : "s"} open · ping 16 ms`, 1610, findings);
+    };
+    const NEW_THIS_VERSION = ["net.latency", "net.proxy", "net.target"];
     const diffFor = (results) => {
       const byMod = new Map(results.map((r) => [r.module_id, r]));
       const changes = MOCK_DIFF.changes.filter((c) => {
         const r = byMod.get(c.module_id);
-        if (!r) return false;
+        if (!r || r.preview) return false;
         if (c.kind === "resolved") return true;
         const f = r.findings.find((x) => x.label === c.label);
         return !!f && RANK[f.severity] >= 2;
       });
+      const metrics = MOCK_DIFF.metrics.filter((m) => byMod.has(m.module_id) && !byMod.get(m.module_id).preview);
       const count = (k) => changes.filter((c) => c.kind === k).length;
-      return { against: MOCK_DIFF.against, changes, new_issues: count("new"), resolved: count("resolved"), changed: count("changed") };
+      return {
+        against: MOCK_DIFF.against, generated: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+        changes, metrics, new_issues: count("new"), resolved: count("resolved"), changed: count("changed"), ongoing: count("ongoing"),
+        added: results.filter((r) => NEW_THIS_VERSION.includes(r.module_id)).map((r) => r.title), removed: [], gaps: [],
+      };
     };
     /** The run before the latest: Spooler down, printers and clock fine. */
     const savedReport = (meta) => {
       if (saved.has(meta.path)) return clone(saved.get(meta.path));
-      const ids = CATALOGUE.filter((m) => !m.mutating).map((m) => m.id).slice(0, meta.modules);
-      const results = ids.map((id) => clone(MOCK_RESULTS[id])).map((r) => {
+      const ids = CATALOGUE.filter((m) => !m.mutating && !m.takes_target).map((m) => m.id).slice(0, meta.modules);
+      const results = ids.map((id) => clone(MOCK_RESULTS[id])).filter(Boolean).map((r) => {
         r.findings.forEach((f) => { delete f.action; });
         if (r.module_id === "proc.services") {
           r.summary = "184 running · 2 automatic services not running";
@@ -2060,15 +2755,21 @@
           r.summary = "Clock in sync with DC01";
           r.findings[1] = F("Offset vs DC01", "412 ms slow", "ok", "round trip 3 ms · server stratum 2");
         }
-        if (r.module_id === "system.disk") r.findings[0] = F("C:\\", "38.1 GB free of 476.9 GB (92% used) · NTFS", "warning");
+        if (r.module_id === "system.disk") {
+          r.findings[0] = F("C:\\", "38.1 GB free of 476.9 GB (92% used) · NTFS", "warning", null, { metric: M(8, "% free", false) });
+          r.findings[2] = F("Disk latency", "31.2 ms per transfer · queue 2.6", "critical", null, { metric: M(31.2, "ms") });
+        }
+        if (r.module_id === "desk.wifi") r.findings[1] = F("Signal", "61% · good", "warning", null, { metric: M(61, "%", false) });
         return r;
       });
       const h = meta.hostname === MOCK_HOST.hostname ? clone(MOCK_HOST) : Object.assign(clone(MOCK_HOST), { hostname: meta.hostname, os: "Windows 11 Enterprise 23H2" });
       return { schema: 1, generated: meta.generated, host: h, profile: MOCK_PROFILE.name, cancelled: meta.cancelled, results };
     };
     return {
-      listModules: async () => CATALOGUE.map((m) => Object.assign({}, m, lockFor(m) ? { locked: lockFor(m) } : {})),
+      listModules: async (safe) => CATALOGUE.map((m) => Object.assign({}, m, lockFor(m, safe) ? { locked: lockFor(m, safe) } : {})),
+      listPresets: async () => PRESET_CATALOGUE,
       listFixes: async () => FIX_CATALOGUE,
+      checkTarget: async (text) => mockParseTarget(text),
       getProfile: async () => MOCK_PROFILE,
       hostContext: async () => host,
       telemetry: async () => mockSample(),
@@ -2088,16 +2789,24 @@
           const m = chosen[i];
           h.onStart({ id: m.id, title: m.title, index: i, total });
           let res;
-          if (m.requires_admin && !host.elevated) {
+          if (m.mutating && h.preview) {
+            await sleep(160 + Math.random() * 220);
+            res = previewResult(m);
+          } else if (h.remoteSafe && m.disruptive) {
+            await sleep(80);
+            res = R(m.id, m.title, m.category, "", 0, [], { error: REMOTE_SAFE_REASON });
+          } else if (m.requires_admin && !host.elevated) {
             await sleep(180);
-            res = { module_id: m.id, title: m.title, category: m.category, findings: [], summary: "", error: ADMIN_REQUIRED, duration_ms: 1 };
+            res = R(m.id, m.title, m.category, "", 1, [], { error: ADMIN_REQUIRED });
           } else {
-            for (const line of MOCK_LOGS[m.id] || []) {
+            const lines = MOCK_LOGS[m.id] || [];
+            for (const line of lines) {
               await sleep(110 + Math.random() * 170);
               h.onLog({ id: m.id, line });
             }
             await sleep(220 + Math.random() * 320);
-            res = result(m.id, false);
+            res = m.id === "net.target" ? targetResult(h.target) : result(m.id, false);
+            if (lines.length) res.log = lines.slice();
           }
           results.push(res);
           h.onDone(res);
@@ -2110,17 +2819,19 @@
         const path = `${HIST_DIR}${stamp}_${host.hostname}.json`;
         saved.set(path, clone(report));
         MOCK_HISTORY.unshift({ path, generated: report.generated, hostname: host.hostname, modules: results.length, worst: worstOf(results) || (results.some((r) => statusOf(r) === "info") ? "info" : "ok"), cancelled: report.cancelled });
-        return { report, saved: path, save_error: null, diff: report.cancelled ? null : diffFor(results) };
+        const comparable = results.some((r) => !r.preview && !(CATALOGUE.find((m) => m.id === r.module_id) || {}).mutating);
+        return { report, saved: path, save_error: null, diff: report.cancelled || !comparable ? null : diffFor(results) };
       },
       cancel: async () => { cancelFlag = true; return true; },
-      recheck: async (id) => { await sleep(650); return result(id, true); },
-      runFix: async (id, target) => {
+      recheck: async (id, o) => { await sleep(650); return id === "net.target" ? targetResult(o && o.target) : result(id, true); },
+      runFix: async (id, target, safe) => {
         await sleep(900 + Math.random() * 500);
         const spec = FIX_CATALOGUE.find((f) => f.id === id);
         if (!spec) throw `Unknown fix \`${id}\`.`;
         if (!allowed(id, target)) throw "Blocked by site policy: this fix isn't allowed on this machine.";
+        if (spec.disruptive && safe) throw "Remote-safe mode is on: this could drop the remote session or restart the PC.";
         if (spec.requires_admin && !host.elevated) throw ADMIN_REQUIRED;
-        fixed.add(id + ":" + (target || ""));
+        if (!["restart-computer", "cancel-restart"].includes(id)) fixed.add(id + ":" + (target || ""));
         return FIX_MESSAGES[id](target);
       },
       listHistory: async () => { await sleep(120); return MOCK_HISTORY.slice(); },
@@ -2138,9 +2849,31 @@
       },
       compareWithPrevious: async (report) =>
         report.generated === "2026-11-05T19:02:11Z"
-          ? { against: "2026-11-03T14:15:30Z", new_issues: 1, resolved: 0, changed: 0,
-              changes: [{ module_id: "proc.services", module: "Services", label: "Print Spooler (Spooler)", kind: "new", before: null, after: "critical", value: "stopped · exit 1067 · Automatic" }] }
+          ? { against: "2026-11-03T14:15:30Z", generated: report.generated, new_issues: 1, resolved: 0, changed: 0, ongoing: 1,
+              changes: [
+                { module_id: "proc.services", module: "Services", label: "Print Spooler (Spooler)", kind: "new", before: null, after: "critical", value: "stopped · exit 1067 · Automatic" },
+                { module_id: "site.apps", module: "Required & clinical apps", label: "Citrix Workspace", kind: "ongoing", before: "warning", after: "warning", value: "23.11.1.45 · needs 24.2 or later" },
+              ],
+              metrics: [{ module_id: "system.disk", module: "Disk space & latency", label: "C:\\", unit: "% free", before: 11, after: 8, delta: -3, trend: "worse" }],
+              added: ["Wi-Fi & VPN", "Battery health"], removed: [], gaps: [] }
           : null,
+      compareReports: async (a, b) => {
+        await sleep(150);
+        if (a.host.hostname.toLowerCase() !== b.host.hostname.toLowerCase()) {
+          throw `These runs are from different computers (${a.host.hostname} and ${b.host.hostname}), so they can't be compared.`;
+        }
+        const [older, newer] = a.generated <= b.generated ? [a, b] : [b, a];
+        const d = diffFor(newer.results);
+        const olderIds = new Set(older.results.map((r) => r.module_id));
+        const newerIds = new Set(newer.results.map((r) => r.module_id));
+        d.against = older.generated;
+        d.generated = newer.generated;
+        d.added = newer.results.filter((r) => !olderIds.has(r.module_id)).map((r) => r.title);
+        d.removed = older.results.filter((r) => !newerIds.has(r.module_id)).map((r) => r.title);
+        if (older.cancelled) d.gaps.push("The earlier run was cancelled, so some of its checks didn't finish.");
+        return d;
+      },
+      reportText: async (report, diff, withLogs) => plainText(report, diff, withLogs),
       openLink: async (url) => toast("Preview: this opens " + url),
       openHistoryFolder: async () => toast("Preview: this opens " + HIST_DIR.replace(/\\$/, "")),
     };

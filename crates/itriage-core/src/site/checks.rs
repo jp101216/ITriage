@@ -1,15 +1,17 @@
 //! Site requirements: the services and network endpoints the site profile
 //! says this machine needs. Read-only.
 //!
-//! Endpoints are checked in parallel (DNS, then a TCP connect with a short
-//! timeout), so a profile with a dozen of them still finishes in seconds.
+//! Endpoints are Invoke-NetTriage's "core infrastructure": each is resolved,
+//! then every address it resolves to is tried within one TCP time budget
+//! (1.5 s by default), and the connect time is kept for before/after
+//! comparison. They're checked in parallel, so a profile with a dozen of
+//! them still finishes in seconds.
 
 use crate::actions::offer;
 use crate::model::{Category, Finding, ModuleInfo, Output, Severity};
 use crate::module::{RunContext, TriageModule};
-use crate::profile::EndpointReq;
-use std::net::{TcpStream, ToSocketAddrs};
-use std::time::{Duration, Instant};
+use crate::profile::{Band, EndpointReq};
+use std::time::Duration;
 
 pub struct SiteChecks;
 
@@ -60,7 +62,11 @@ impl TriageModule for SiteChecks {
 
         if !req.endpoint.is_empty() {
             ctx.log(format!("Checking {} endpoint(s)…", req.endpoint.len()));
-            findings.extend(check_endpoints(&req.endpoint));
+            findings.extend(check_endpoints(
+                &req.endpoint,
+                profile.network.tcp_timeout(),
+                profile.thresholds.network_rtt_ms,
+            ));
         }
 
         let total = findings.len();
@@ -82,44 +88,29 @@ pub(crate) enum State {
 }
 
 /// DNS then TCP for every endpoint, all at once.
-fn check_endpoints(endpoints: &[EndpointReq]) -> Vec<Finding> {
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = endpoints.iter().map(|e| scope.spawn(move || probe(e))).collect();
-        handles
-            .into_iter()
-            .zip(endpoints)
-            .map(|(h, e)| h.join().unwrap_or_else(|_| Finding::warn(e.label.clone(), "check crashed")))
-            .collect()
-    })
+fn check_endpoints(endpoints: &[EndpointReq], budget: Duration, rtt: Band) -> Vec<Finding> {
+    crate::net::parallel(endpoints, |e| probe(e, budget, rtt))
 }
 
-fn probe(e: &EndpointReq) -> Finding {
+fn probe(e: &EndpointReq, budget: Duration, rtt: Band) -> Finding {
     let target = format!("{}:{}", e.host, e.port);
-    let addrs: Vec<_> = match (e.host.as_str(), e.port).to_socket_addrs() {
-        Ok(a) => a.collect(),
+    let addresses = match crate::net::resolve(&e.host) {
+        Ok(r) => r.addresses,
         Err(_) => return Finding::crit(e.label.clone(), format!("{} doesn't resolve (DNS)", e.host)),
     };
-    if addrs.is_empty() {
-        return Finding::crit(e.label.clone(), format!("{} has no address", e.host));
-    }
-    let mut last = String::new();
-    for addr in addrs.iter().take(3) {
-        let started = Instant::now();
-        match TcpStream::connect_timeout(addr, Duration::from_secs(3)) {
-            Ok(_) => {
-                let ms = started.elapsed().as_millis();
-                return Finding::ok(e.label.clone(), format!("{target} reachable · {ms} ms"));
+    let check = crate::net::tcp_check(&addresses, e.port, budget);
+    match check.connected() {
+        Some((addr, d)) => {
+            let t = d.as_secs_f64() * 1000.0;
+            let mut f = Finding::new(e.label.clone(), format!("{target} reachable · {}", crate::parse::ping::ms(t)), rtt.high(t))
+                .with_metric(t, "ms", true);
+            if addr.to_string() != e.host {
+                f = f.with_detail(format!("connected to {addr}"));
             }
-            Err(err) => {
-                last = match err.kind() {
-                    std::io::ErrorKind::TimedOut => "timed out".into(),
-                    std::io::ErrorKind::ConnectionRefused => "connection refused".into(),
-                    _ => err.to_string(),
-                }
-            }
+            f
         }
+        None => Finding::crit(e.label.clone(), format!("{target} unreachable ({})", check.error())),
     }
-    Finding::crit(e.label.clone(), format!("{target} unreachable ({last})"))
 }
 
 #[cfg(windows)]
@@ -191,12 +182,13 @@ mod tests {
             EndpointReq { label: "Closed".into(), host: "127.0.0.1".into(), port: closed },
             EndpointReq { label: "Bogus".into(), host: "no-such-host.invalid".into(), port: 443 },
         ];
-        let f = check_endpoints(&eps);
+        let f = check_endpoints(&eps, Duration::from_millis(1500), crate::profile::Thresholds::default().network_rtt_ms);
         assert_eq!(f[0].severity, Severity::Ok, "{:?}", f[0]);
         assert_eq!(f[1].severity, Severity::Critical);
         // Windows retries SYNs to a closed local port, so it may time out instead.
         #[cfg(not(windows))]
         assert!(f[1].value.contains("refused"), "{}", f[1].value);
+        assert!(f[0].metric.is_some(), "connect time is kept for compare");
         assert!(f[2].value.contains("resolve"), "{}", f[2].value);
     }
 }

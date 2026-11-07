@@ -4,11 +4,62 @@ use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
-    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE,
-    RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, RRF_RT_ANY,
+    RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 
-pub use windows::Win32::System::Registry::{HKEY_CURRENT_USER as HKCU, HKEY_LOCAL_MACHINE as HKLM};
+pub use windows::Win32::System::Registry::{
+    HKEY_CURRENT_USER as HKCU, HKEY_LOCAL_MACHINE as HKLM, HKEY_USERS as HKU,
+};
+
+/// Does this key exist (and can we open it)?
+pub fn key_exists(root: HKEY, subkey: &str) -> bool {
+    let path = HSTRING::from(subkey);
+    let mut key = HKEY::default();
+    // SAFETY: open and close a handle; nothing is read.
+    unsafe {
+        if RegOpenKeyExW(root, &path, None, KEY_READ, &mut key) != ERROR_SUCCESS {
+            return false;
+        }
+        let _ = RegCloseKey(key);
+    }
+    true
+}
+
+/// The size in bytes of a value of any type, if it exists.
+pub fn value_size(root: HKEY, subkey: &str, value: &str) -> Option<u32> {
+    let subkey = HSTRING::from(subkey);
+    let value = HSTRING::from(value);
+    let mut size = 0u32;
+    // SAFETY: a size-only query (no data buffer).
+    let status = unsafe { RegGetValueW(root, &subkey, &value, RRF_RT_ANY, None, None, Some(&mut size)) };
+    (status == ERROR_SUCCESS).then_some(size)
+}
+
+/// Read a REG_BINARY value.
+pub fn read_binary(root: HKEY, subkey: &str, value: &str) -> Option<Vec<u8>> {
+    let subkey = HSTRING::from(subkey);
+    let value = HSTRING::from(value);
+    let mut buf = vec![0u8; 4096];
+    let mut size = buf.len() as u32;
+    // SAFETY: `buf` is writable for `size` bytes and outlives the call.
+    let status = unsafe {
+        RegGetValueW(
+            root,
+            &subkey,
+            &value,
+            RRF_RT_REG_BINARY,
+            None,
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    buf.truncate(size as usize);
+    Some(buf)
+}
 
 /// Read a REG_SZ value. `None` if it's missing or empty.
 pub fn read_string(root: HKEY, subkey: &str, value: &str) -> Option<String> {

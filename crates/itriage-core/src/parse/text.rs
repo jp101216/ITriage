@@ -132,6 +132,44 @@ pub fn key_values(s: &str) -> std::collections::HashMap<String, String> {
         .collect()
 }
 
+/// Base64 of a string's UTF-16LE bytes: what PowerShell's `-EncodedCommand`
+/// expects.
+pub fn utf16le_base64(text: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// Hide the password in a proxy URL: `http://user:secret@proxy:8080` →
+/// `http://user:•••@proxy:8080`.
+pub fn redact_userinfo(url: &str) -> String {
+    let (scheme, rest) = match url.find("://") {
+        Some(i) => (&url[..i + 3], &url[i + 3..]),
+        None => ("", url),
+    };
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..host_end].rfind('@') {
+        Some(at) => {
+            let user = rest[..at].split(':').next().unwrap_or("");
+            format!("{scheme}{user}:•••{}", &rest[at..])
+        }
+        None => url.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,5 +220,20 @@ mod tests {
         assert_eq!(kv["NTP"], "yes");
         assert_eq!(kv["Timezone"], "America/Detroit");
         assert_eq!(kv.len(), 3);
+    }
+
+    #[test]
+    fn encodes_like_powershell() {
+        // [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('dir'))
+        assert_eq!(utf16le_base64("dir"), "ZABpAHIA");
+        assert_eq!(utf16le_base64("Get-Date"), "RwBlAHQALQBEAGEAdABlAA==");
+        assert_eq!(utf16le_base64(""), "");
+    }
+
+    #[test]
+    fn hides_proxy_passwords() {
+        assert_eq!(redact_userinfo("http://jess:hunter2@proxy.example.org:8080"), "http://jess:•••@proxy.example.org:8080");
+        assert_eq!(redact_userinfo("proxy.example.org:3128"), "proxy.example.org:3128");
+        assert_eq!(redact_userinfo("http://proxy/path@x"), "http://proxy/path@x");
     }
 }
