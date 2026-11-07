@@ -297,8 +297,9 @@ Windows-only ones, is unit-tested.
 
 ## Run it
 
-Installers for Windows (`.msi`, setup `.exe`) and Linux (`.deb`) are built by
-CI on every push; download them from the run's artifacts.
+Installers for Windows (`.msi`, setup `.exe`) and Linux (`.deb`) are on the
+[Releases](https://github.com/jp101216/itriage/releases) page. CI also builds
+them on every push, under each run's artifacts.
 
 To build yourself you need Rust (stable) and the Tauri CLI (`cargo install tauri-cli`).
 
@@ -321,6 +322,20 @@ cargo run -p itriage-core --example triage -- desk.printers site.checks
 cargo run -p itriage-core --example triage -- --json > report.json   # open it in the app
 ITRIAGE_PROFILE=profiles/home-lab.toml cargo run -p itriage-core --example triage -- site.checks
 ```
+
+## Releasing
+
+1. Bump the version in `crates/itriage-core/Cargo.toml`, `src-tauri/Cargo.toml`
+   and `src-tauri/tauri.conf.json`.
+2. Add the notes as `release-notes/vX.Y.Z.md`, and merge to `main`.
+3. On GitHub: **Actions → CI → Run workflow** on `main`, with **release** set to
+   `vX.Y.Z`.
+
+CI builds and tests everything, then tags that commit and publishes the release
+with the Windows and Linux installers attached. The tag has to match the app
+version, or the release job stops before publishing anything. Pushing a
+`vX.Y.Z` tag from a clone does the same, but leaves the release as a draft to
+review first.
 
 ## Security notes
 

@@ -6,9 +6,16 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a release for this version, e.g. v0.4.0 (run on main). Leave empty for a normal build."
+        required: false
+        default: ""
+        type: string
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Per event too, so a release run and a push to main don't cancel each other.
+  group: ci-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -75,13 +82,12 @@ jobs:
 
   # Every push gets installers (branch builds too, so a feature can be tried
   # on a real machine before it's merged); pull requests reuse the push build.
+  # Publishing them as a release is the `release` job's work.
   bundle:
     name: Installers (${{ matrix.os }})
     needs: check
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write # attach installers to draft releases on v* tags
     strategy:
       fail-fast: false
       matrix:
@@ -118,12 +124,62 @@ jobs:
             target/release/bundle/deb/*.deb
           if-no-files-found: error
 
-      - name: Attach to draft release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v3
+  # Publishes a GitHub Release with the installers attached, once, after both
+  # installer builds pass. Two ways in:
+  #   * Actions -> CI -> Run workflow on main, with `release` set to the
+  #     version (e.g. v0.4.0): tags that commit and publishes the release.
+  #   * Pushing a v* tag from a clone: makes a draft release to review first.
+  # The tag must match the app version in tauri.conf.json, and the notes come
+  # from release-notes/<tag>.md when that file exists.
+  release:
+    name: Publish release
+    needs: bundle
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the version and pick the notes
+        shell: bash
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" && "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Releases are published from main; this run is on ${GITHUB_REF#refs/heads/}."
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' isn't a version tag like v1.2.3."
+            exit 1
+          fi
+          want="v$(jq -r .version src-tauri/tauri.conf.json)"
+          if [[ "$TAG" != "$want" ]]; then
+            echo "::error::$TAG doesn't match the app version ($want in src-tauri/tauri.conf.json)."
+            exit 1
+          fi
+          if [[ -f "release-notes/$TAG.md" ]]; then
+            cp "release-notes/$TAG.md" notes.md
+          else
+            echo "itriage $TAG" > notes.md
+          fi
+
+      - uses: actions/download-artifact@v8
         with:
-          draft: true
+          pattern: itriage-*
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: itriage ${{ env.TAG }}
+          body_path: notes.md
+          draft: ${{ github.event_name == 'push' }}
+          fail_on_unmatched_files: true
           files: |
-            target/release/bundle/msi/*.msi
-            target/release/bundle/nsis/*.exe
-            target/release/bundle/deb/*.deb
+            dist/**/*.msi
+            dist/**/*.exe
+            dist/**/*.deb
