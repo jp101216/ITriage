@@ -28,8 +28,6 @@ servers and devices a machine must have, which fixes are allowed, whether
 installs are locked, the alert thresholds, which network probes run, and which
 KB articles go with which problems.
 
-> **Working name.** `itriage` is a placeholder. Rename the crates and the
-> window title whenever you've landed on the real name.
 
 ---
 
