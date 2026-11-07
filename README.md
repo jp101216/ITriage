@@ -328,14 +328,14 @@ ITRIAGE_PROFILE=profiles/home-lab.toml cargo run -p itriage-core --example triag
 1. Bump the version in `crates/itriage-core/Cargo.toml`, `src-tauri/Cargo.toml`
    and `src-tauri/tauri.conf.json`.
 2. Add the notes as `release-notes/vX.Y.Z.md`, and merge to `main`.
-3. On GitHub: **Actions → CI → Run workflow** on `main`, with **release** set to
-   `vX.Y.Z`.
+3. On GitHub: **Actions → Release → Run workflow** (on `main`). There's nothing
+   to type; it works from the GitHub mobile app too.
 
-CI builds and tests everything, then tags that commit and publishes the release
-with the Windows and Linux installers attached. The tag has to match the app
-version, or the release job stops before publishing anything. Pushing a
-`vX.Y.Z` tag from a clone does the same, but leaves the release as a draft to
-review first.
+The Release workflow runs the full CI build and tests, then tags that commit
+with the version from `tauri.conf.json` and publishes the release with the
+Windows and Linux installers attached. It stops before publishing if that
+version has already been released. Pushing a `vX.Y.Z` tag from a clone does
+the same, but leaves the release as a draft to review first.
 
 ## Security notes
 
