@@ -1,4 +1,4 @@
-/* itriage frontend logic — v0.6.
+/* ITriage frontend logic — v0.6.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -124,12 +124,12 @@
     mod("fix.tcp", "TCP autotuning & NIC power", "repair", "Sets TCP receive autotuning back to normal and turns off the adapters' sleep settings (DeviceSleepOnDisconnect, SelectiveSuspend).",
       CHANGE("Changes TCP and adapter power settings. The adapter settings apply the next time each adapter restarts.", Object.assign({}, DROP, WIN))),
     mod("fix.netstack", "Reset network stack", "repair", "Resets the Winsock catalog and the TCP/IP stack (IPv4 and IPv6). Applies after a restart. Refused when any address is static.",
-      CHANGE("Resets Winsock and TCP/IP to defaults. Static IP settings would be lost (itriage refuses if it finds any), and a restart is needed.", Object.assign({}, DROP, WIN))),
+      CHANGE("Resets Winsock and TCP/IP to defaults. Static IP settings would be lost (ITriage refuses if it finds any), and a restart is needed.", Object.assign({}, DROP, WIN))),
     mod("fix.adapters", "Restart adapters & renew DHCP", "repair", "Restarts every physical network adapter that's up, waits for each to come back, then renews DHCP (ipconfig /release, /renew).",
       CHANGE("Every network connection drops for up to a minute. A remote session will disconnect and should reconnect on its own.", DROP)),
     mod("fix.temp", "Clear temp files", "fixes", "Deletes temp files older than a day from every user profile and C:\\Windows\\Temp (only your own without admin). Skips files in use.",
       CHANGE("Permanently deletes temp files older than a day. Files in use are skipped.")),
-    mod("fix.recycle", "Empty Recycle Bin", "fixes", "Permanently deletes what's in the Recycle Bin (the Trash on Linux) for the account itriage runs as.",
+    mod("fix.recycle", "Empty Recycle Bin", "fixes", "Permanently deletes what's in the Recycle Bin (the Trash on Linux) for the account ITriage runs as.",
       CHANGE("Permanently deletes files the user may still expect to recover. Ask them first.")),
     mod("fix.repair", "Clean up & check system files", "fixes", "DISM component-store cleanup, then System File Checker (sfc /scannow). Takes 15–45 minutes; use when corruption is suspected or space is critical.",
       CHANGE("Runs DISM and SFC, which take 15–45 minutes and keep the disk busy. Don't restart until they finish.", Object.assign({}, ADMIN, WIN))),
@@ -239,7 +239,7 @@
 
   /* --------------------- sample data for the preview ---------------- */
   const ADMIN_REQUIRED =
-    'Administrator rights required. Use "Relaunch as admin" in the header (or right-click itriage → Run as administrator).';
+    'Administrator rights required. Use "Relaunch as admin" in the header (or right-click ITriage → Run as administrator).';
   const REMOTE_SAFE_REASON =
     "Remote-safe mode is on: this could drop the remote session or restart the PC. Switch remote-safe off to run it.";
   const MOCK_HOST = {
@@ -678,9 +678,9 @@
     <header class="brandbar" id="brandbar">
       <div class="brand">
         <span class="logo">${I.logo}</span>
-        <span class="name">itriage</span>
+        <span class="name">ITriage</span>
         <span class="brk">${VERSION}</span>
-        ${isTauri ? "" : '<span class="tag preview">PREVIEW · SAMPLE DATA</span><a class="tag getapp" href="https://github.com/jp101216/ITriage/releases/latest" target="_blank" rel="noopener" title="Download itriage for Windows or Linux">GET THE APP ↗</a>'}
+        ${isTauri ? "" : '<span class="tag preview">PREVIEW · SAMPLE DATA</span><a class="tag getapp" href="https://github.com/jp101216/ITriage/releases/latest" target="_blank" rel="noopener" title="Download ITriage for Windows or Linux">GET THE APP ↗</a>'}
         <button class="tag profile" id="profileTag" type="button" title="Site profile"><span id="profileIcon">${I.shield}</span><span id="profileName">PROFILE —</span></button>
         <span class="tag mode-tag pv" id="tagPreview" hidden title="Preview (what-if) is on: nothing will be changed">${I.eye}PREVIEW</span>
         <span class="tag mode-tag safe" id="tagSafe" hidden title="Remote-safe is on: nothing that could drop the session or restart the PC can run">${I.shield}REMOTE-SAFE</span>
@@ -733,7 +733,7 @@
                 <button type="button" role="menuitem" data-fmt="transcript">${I.copy}<span>Full transcript<small>Every module's log too · for an escalation</small></span></button>
                 <button type="button" role="menuitem" data-fmt="rich">${I.export}<span>Rich text<small>Formatted table · TeamDynamix, Outlook</small></span></button>
                 <button type="button" role="menuitem" data-fmt="md">${I.book}<span>Markdown<small>Teams, GitHub, wikis</small></span></button>
-                <button type="button" role="menuitem" data-fmt="json">${I.download}<span>JSON report<small>Re-open in itriage, or attach to the ticket</small></span></button>
+                <button type="button" role="menuitem" data-fmt="json">${I.download}<span>JSON report<small>Re-open in ITriage, or attach to the ticket</small></span></button>
               </div>
             </div>
           </div>
@@ -1197,7 +1197,7 @@
           <dt>Opens in</dt><dd>${pol.start_in === "self-service" ? "self-service view" : "technician view"}${pol.technician_view === false ? " · technician view turned off" : ""}</dd>
           ${profileSkin() ? `<dt>Theme</dt><dd>${esc(profileSkin().name)} by default</dd>` : ""}
         </dl>
-        <p>A machine-wide profile at <code>${esc(where)}</code> wins over a personal one, and a broken one locks itriage to read-only.</p>`,
+        <p>A machine-wide profile at <code>${esc(where)}</code> wins over a personal one, and a broken one locks ITriage to read-only.</p>`,
       actions: [{ label: "Close", hot: true, value: true }],
     });
   }
@@ -1711,7 +1711,7 @@
     let notice = "";
     if (action.requires_admin && host && !host.elevated) {
       notice = host.platform === "windows"
-        ? `<div class="warnbox">${I.shield}<div><p><b>Needs administrator rights.</b> It will stop with an error until itriage runs elevated.</p>
+        ? `<div class="warnbox">${I.shield}<div><p><b>Needs administrator rights.</b> It will stop with an error until ITriage runs elevated.</p>
              ${host.can_relaunch_elevated ? '<button class="bk-btn xs" data-x="relaunch" type="button">Relaunch as admin</button>' : ""}</div></div>`
         : `<div class="notebox">${I.shield}<p>Needs root: you'll be asked for your password.</p></div>`;
     }
@@ -2064,7 +2064,7 @@
     const file = fileInput.files && fileInput.files[0];
     fileInput.value = "";
     if (!file) return;
-    if (file.size > 20 * 1024 * 1024) { toast("That file is too big to be an itriage report."); return; }
+    if (file.size > 20 * 1024 * 1024) { toast("That file is too big to be an ITriage report."); return; }
     try {
       const text = await file.text();
       const r = await api.importReport(text);
@@ -2161,7 +2161,7 @@
   }
 
   function plainText(report, diff, withLogs) {
-    const lines = [`itriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
+    const lines = [`ITriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
     if (report.cancelled) lines.push("Run was cancelled before every module finished.");
     if (report.results.some((r) => r.preview)) lines.push("PREVIEW: modules that change the machine only said what they would do.");
     if (report.results.some((r) => r.restart_required && !r.preview)) lines.push("A restart is needed to finish the changes.");
@@ -2208,7 +2208,7 @@
   function markdown(report, diff) {
     const cell = (s) => String(s).replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
     const tag = { ok: "OK", info: "INFO", warning: "WARN", critical: "CRIT" };
-    const out = [`## itriage report · ${report.host ? report.host.hostname : ""}`, "", `${fmtUtc(report.generated)} · ${hostLine(report)}`];
+    const out = [`## ITriage report · ${report.host ? report.host.hostname : ""}`, "", `${fmtUtc(report.generated)} · ${hostLine(report)}`];
     if (report.results.some((r) => r.preview)) out.push("", "> **Preview:** modules that change the machine only said what they would do.");
     if (diff) out.push("", `**${diffLine(diff)}**`);
     const key = keyFindings(report);
@@ -2260,7 +2260,7 @@
       });
     });
     return `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2328">
-      <p style="margin:0 0 6px"><b>itriage report</b> · ${esc(fmtUtc(report.generated))}<br>${esc(hostLine(report))}</p>
+      <p style="margin:0 0 6px"><b>ITriage report</b> · ${esc(fmtUtc(report.generated))}<br>${esc(hostLine(report))}</p>
       ${diff ? `<p style="margin:0 0 8px"><b>${esc(diffLine(diff))}</b></p>` : ""}
       ${keyHtml(report, color)}
       <table style="border-collapse:collapse;font-size:13px">${rows}</table></div>`;
@@ -2343,7 +2343,7 @@
         <p class="ss-hint">Takes about a minute. Nothing on your computer is changed.</p>
         <div class="ss-progress" id="ssProg" hidden><div class="bar"><i id="ssBar"></i></div><p id="ssStep">Starting…</p></div>
         <div class="ss-results" id="ssResults"></div>
-        <p class="ss-foot">itriage ${VERSION}${isTauri ? "" : " · preview with sample results"}</p>
+        <p class="ss-foot">ITriage ${VERSION}${isTauri ? "" : " · preview with sample results"}</p>
       </div>`;
     const tech = el("ssTech");
     if (tech) tech.onclick = () => setMode("tech");
@@ -2564,7 +2564,7 @@
     const card = (s) => `
       <button class="skin" type="button" data-id="${s.id}" aria-pressed="${s.id === chosen}">
         <span class="skin-thumb" data-skin="${s.id}" aria-hidden="true">
-          <span class="st-top"><span class="st-logo">${I.logo}</span><span class="st-name">itriage</span><span class="st-ver">${VERSION}</span></span>
+          <span class="st-top"><span class="st-logo">${I.logo}</span><span class="st-name">ITriage</span><span class="st-ver">${VERSION}</span></span>
           <span class="st-mod on"><span class="st-box"></span><span class="st-lines"><i></i><i></i></span></span>
           <span class="st-mod"><span class="st-box"></span><span class="st-lines"><i></i><i></i></span></span>
           <span class="st-run"><b>RUN</b></span>
@@ -2617,7 +2617,7 @@
       const names = needAdmin.map((m) => `<b>${esc(m.title)}</b>`).join(" and ");
       notice = host.platform === "windows"
         ? `<div class="warnbox">${I.shield}<div><p><b>Not running as administrator.</b> ${names}
-             will stop with an error until itriage runs elevated.</p>
+             will stop with an error until ITriage runs elevated.</p>
              ${host.can_relaunch_elevated ? '<button class="bk-btn xs" data-x="relaunch" type="button">Relaunch as admin</button>' : ""}
            </div></div>`
         : `<div class="notebox">${I.shield}<p>${esc(host.elevation_note)} Applies to ${names}.</p></div>`;
@@ -3014,8 +3014,8 @@
       },
       importReport: async (text) => {
         let r;
-        try { r = JSON.parse(text); } catch (e) { throw "Not an itriage report: " + e.message; }
-        if (!r || !Array.isArray(r.results) || !r.host || !r.generated) throw "Not an itriage report: missing host, generated or results.";
+        try { r = JSON.parse(text); } catch (e) { throw "Not an ITriage report: " + e.message; }
+        if (!r || !Array.isArray(r.results) || !r.host || !r.generated) throw "Not an ITriage report: missing host, generated or results.";
         return { report: r, diff: null, saved: null };
       },
       compareWithPrevious: async (report) =>

@@ -158,7 +158,7 @@ fn validate_target(id: &str, target: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(match id {
-            "install-oem-tool" => format!("`{target}` isn't one of the OEM tools itriage installs."),
+            "install-oem-tool" => format!("`{target}` isn't one of the OEM tools ITriage installs."),
             "install-update" => format!("`{target}` isn't a Windows Update identity."),
             _ => format!("`{target}` isn't a valid service name."),
         })

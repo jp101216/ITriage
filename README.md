@@ -1,6 +1,6 @@
-# itriage
+# ITriage
 
-[![CI](https://github.com/jp101216/itriage/actions/workflows/ci.yml/badge.svg)](https://github.com/jp101216/itriage/actions/workflows/ci.yml)
+[![CI](https://github.com/jp101216/ITriage/actions/workflows/ci.yml/badge.svg)](https://github.com/jp101216/ITriage/actions/workflows/ci.yml)
 
 A cross-platform IT triage, repair and update tool for Windows and Linux: one
 desktop app that is also a command line. The app has two views:
@@ -17,7 +17,9 @@ desktop app that is also a command line. The app has two views:
 
 Given arguments, the same program runs without a window
 (`itriage --preset triage`) and returns the PowerShell toolkit's exit codes,
-for remote shells, scheduled tasks and RMM tools.
+for remote shells, scheduled tasks and RMM tools. The app is ITriage; the
+command, the program file, its folders and the installers are lowercase
+`itriage`, so scripts and upgrades never depend on capitals.
 
 **Try the interface in your browser:**
 [jp101216.github.io/ITriage](https://jp101216.github.io/ITriage/) runs the
@@ -34,12 +36,12 @@ KB articles go with which problems.
 
 ## Coming from the PowerShell toolkit
 
-itriage carries over the four maintained scripts of
+ITriage carries over the four maintained scripts of
 [Powershell-Ops-IR-Toolkit](https://github.com/jp101216/Powershell-Ops-IR-Toolkit)
 3.0.0. `Invoke-LiveResponse.ps1` stays out of scope: incident response lives in
 [LiveResponse-NG](https://github.com/jp101216/LiveResponse-NG).
 
-| Script | In itriage |
+| Script | In ITriage |
 |---|---|
 | `Invoke-NetTriage.ps1` | the **Slowness triage** preset (`--preset triage`) |
 | `Compare-NetTriage.ps1` | an automatic before/after after every run, **History → tick two → Compare**, and `--compare OLD NEW` |
@@ -50,13 +52,13 @@ A preset is a starting point: pick it, then tick or untick modules.
 
 ### Invoke-NetTriage → Slowness triage
 
-| NetTriage | itriage |
+| NetTriage | ITriage |
 |---|---|
 | System baseline, pending reboot, uptime | **System information**: make, model, serial, BIOS, motherboard, signed-in user, uptime, restart pending (and why) |
 | CPU, memory, disk free and disk latency, top processes by real-time CPU% | **Top processes** (overall CPU load first), **Memory usage**, **Disk space & latency** |
 | Adapters, IPv4/IPv6, gateway, DNS | **Network connectivity**: adapters, the route in use, its gateway and DNS servers, each server asked directly |
 | VPN indicators (Cisco Secure Client, Zscaler) | **Wi-Fi & VPN**, which tells a running client from an active tunnel |
-| Proxy (WinHTTP and per-user WinINet) | **Proxy settings**, read from the signed-in user's settings even when itriage runs elevated |
+| Proxy (WinHTTP and per-user WinINet) | **Proxy settings**, read from the signed-in user's settings even when ITriage runs elevated |
 | RTT and packet loss to the gateway and DNS, DNS resolve time | **Latency & packet loss**; the timed lookup is in Network connectivity |
 | TCP reachability for `CoreInfrastructure.json` | **Site services & endpoints**, from the profile's `[[require.endpoint]]` entries |
 | `-TargetDestination`, `-TargetPorts` | **Destination test**: the field on its card, or `--target fileserver01:445,3389` (`--ports` also works) |
@@ -68,7 +70,7 @@ A preset is a starting point: pick it, then tick or untick modules.
 
 ### Compare-NetTriage → before and after
 
-When a run finishes, itriage compares it with the earlier run on that machine
+When a run finishes, ITriage compares it with the earlier run on that machine
 that shares the most checks (the newest of those), so a triage is compared
 with the last triage even if a tune-up ran in between. The comparison shows:
 
@@ -88,7 +90,7 @@ the comparison as JSON with a text summary beside it, as Compare-NetTriage's
 
 ### Invoke-EndpointTuneUp → Tune-up
 
-| Tune-Up step | itriage module |
+| Tune-Up step | ITriage module |
 |---|---|
 | DNS flush and re-registration | Flush & re-register DNS |
 | ARP and NetBIOS purge | Purge ARP & NetBIOS caches |
@@ -113,11 +115,11 @@ Configuration Manager cycle) as changed, already set, skipped or failed.
 
 ### Invoke-UpdateSystem → Drivers & firmware
 
-| UpdateSystem | itriage |
+| UpdateSystem | ITriage |
 |---|---|
 | `-ScanOnly` | Available updates |
 | `-AutoInstall` | Install drivers & firmware |
-| OEM routing | the same ten manufacturers, matched on the SMBIOS manufacturer, then the model, then the motherboard. Dell Command \| Update, HP Image Assistant and Lenovo Thin Installer run unattended; Surface firmware comes through Windows Update; MyASUS, MSI Center, GIGABYTE Control Center, ASRock, Acer Care Center and Samsung Update are named for the technician to run. itriage never flashes a BIOS itself. |
+| OEM routing | the same ten manufacturers, matched on the SMBIOS manufacturer, then the model, then the motherboard. Dell Command \| Update, HP Image Assistant and Lenovo Thin Installer run unattended; Surface firmware comes through Windows Update; MyASUS, MSI Center, GIGABYTE Control Center, ASRock, Acer Care Center and Samsung Update are named for the technician to run. ITriage never flashes a BIOS itself. |
 | `-UpdateId` | **Install this update** beside each pending update (`--fix install-update <id>`) |
 | `-IncludeApps` | Install OS & app updates: pending Windows Update software updates, then `winget upgrade --all` |
 | `-Force` for OEM-tool installs | **Install …** beside a missing OEM tool, allowed by `[policy] allow_installs` |
@@ -183,7 +185,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Reset network stack | `netsh winsock reset`, `netsh int ip reset`, `netsh int ipv6 reset`; refused with any static address | n/a | ✔ | locked |
 | Restart adapters & renew DHCP | restart physical adapters that are up, wait for each, `ipconfig /release` and `/renew` | `nmcli device disconnect` / `connect` | ✔ | locked |
 | Clear temp files | every profile's temp folder and `Windows\Temp` (your own without admin); older than 24 h; skips files in use and links | your own files in the temp folder; refuses as root | | runs |
-| Empty Recycle Bin | all drives, for the account itriage runs as | `~/.local/share/Trash` | | runs |
+| Empty Recycle Bin | all drives, for the account ITriage runs as | `~/.local/share/Trash` | | runs |
 | Clean up & check system files | `DISM /StartComponentCleanup`, then `sfc /scannow` | n/a | ✔ | runs |
 | Optimize system drive | `defrag C: /O /U` (TRIM on SSD, defrag on HDD) | `fstrim -av` | ✔ | runs |
 | Refresh Group Policy | `gpupdate /force` | n/a | | locked |
@@ -259,7 +261,7 @@ user gets a save-your-work message) and **Cancel restart**.
 
 ## Site profiles
 
-A profile is a TOML file. itriage uses the first one it finds:
+A profile is a TOML file. ITriage uses the first one it finds:
 
 1. **Machine-wide**: `%ProgramData%\itriage\profile.toml` (Windows) or
    `/etc/itriage/profile.toml` (Linux). Deploy it with your management tool;
@@ -268,7 +270,7 @@ A profile is a TOML file. itriage uses the first one it finds:
 3. **Personal**: `%APPDATA%\itriage\profile.toml` or `~/.config/itriage/profile.toml`.
 4. The built-in default: everything allowed, nothing required.
 
-A machine-wide profile that doesn't parse **fails closed**: itriage runs
+A machine-wide profile that doesn't parse **fails closed**: ITriage runs
 read-only and shows the parse error in a banner, rather than quietly ignoring
 the policy.
 
@@ -404,7 +406,7 @@ before/after table.
 * **Rich text**: an inline-styled table that survives pasting into TeamDynamix
   and Outlook (falls back to plain text where rich copy isn't available);
 * **Markdown**: for Teams, GitHub and wikis;
-* **JSON report**: re-opens in itriage.
+* **JSON report**: re-opens in ITriage.
 
 Each includes the host, OS, privilege level, profile, the before/after summary
 and KB links.
@@ -559,7 +561,7 @@ need admin rights say so before you click. A preview needs no rights.
 ## Architecture
 
 ```
-itriage/
+ITriage/
 ├── crates/itriage-core/        # the engine: GUI-agnostic, no Tauri
 │   ├── src/
 │   │   ├── model.rs            # Severity / Finding (+metric, fix, KB) / ModuleInfo / ModuleResult / Target
@@ -599,7 +601,7 @@ is unit-tested.
 ## Run it
 
 Installers for Windows (`.msi`, setup `.exe`) and Linux (`.deb`) are on the
-[Releases](https://github.com/jp101216/itriage/releases) page, with
+[Releases](https://github.com/jp101216/ITriage/releases) page, with
 `SHA256SUMS.txt` and a build-provenance attestation for each file (see
 [Checking a download](#checking-a-download)). CI also builds them on every
 push, under each run's artifacts; those builds are never signed.
@@ -653,7 +655,7 @@ Release builds sign the Windows installers, and the app inside them, with
 Until then the Release workflow publishes them unsigned and says so in the run.
 
 Signing puts a verified publisher name on the installers and on the UAC
-prompt (the MSI, and itriage's "Relaunch as admin") instead of "Unknown
+prompt (the MSI, and ITriage's "Relaunch as admin") instead of "Unknown
 publisher", and lets endpoint security tools identify who made it. It doesn't
 make SmartScreen's warning disappear at once: reputation builds as signed
 releases from the same identity are downloaded and run.
@@ -684,7 +686,7 @@ to another subscription later.
 4. When the validation shows **Completed**, add a **Certificate profile** of
    type **Public Trust** with your validated identity.
 5. In **Microsoft Entra ID → App registrations**, create an app (for example
-   "itriage releases"). Under **Certificates & secrets → Federated
+   "ITriage releases"). Under **Certificates & secrets → Federated
    credentials**, add **GitHub Actions deploying Azure resources** with
    organization `jp101216`, repository `ITriage` (same capitals), entity
    **Environment**, and name `release`. Only the release workflow's signing job
@@ -751,7 +753,7 @@ Digital Signatures**, or with
   faster and still works where PowerShell is locked down. Three Tune-up steps
   need cmdlets with no plain API (adapter power settings and adapter restarts
   through the NetAdapter module, and the Configuration Manager client's
-  triggers). They run short scripts compiled into itriage, passed with
+  triggers). They run short scripts compiled into ITriage, passed with
   `-EncodedCommand` and never built from input. Where PowerShell is blocked,
   those steps report it and the rest of the run carries on.
 

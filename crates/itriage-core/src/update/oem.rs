@@ -49,7 +49,7 @@ impl OemTool {
             Some((_, severity, text)) => (*severity, (*text).to_string()),
             None => (
                 Severity::Warning,
-                "finished with an exit code this version of itriage doesn't recognise; check the tool's log".into(),
+                "finished with an exit code this version of ITriage doesn't recognise; check the tool's log".into(),
             ),
         }
     }
@@ -179,7 +179,7 @@ static ROUTES: [Route; 10] = [
         winget_id: Some("Lenovo.SystemUpdate"),
         search_name: "Lenovo System Update",
         via: Via::Runner(&LENOVO),
-        note: Some("itriage runs Lenovo Thin Installer unattended when it's installed; Lenovo System Update has to be opened."),
+        note: Some("ITriage runs Lenovo Thin Installer unattended when it's installed; Lenovo System Update has to be opened."),
         matches: |m| m.contains("lenovo"),
     },
     Route {
@@ -276,7 +276,7 @@ pub fn tool_name(winget_id: &str) -> Option<&'static str> {
 /// Install a routed OEM tool with winget, the way Invoke-UpdateSystem does.
 #[cfg(windows)]
 pub fn install_tool(winget_id: &str, ctx: &crate::module::RunContext) -> Result<String, String> {
-    let name = tool_name(winget_id).ok_or_else(|| format!("`{winget_id}` isn't one of the OEM tools itriage installs."))?;
+    let name = tool_name(winget_id).ok_or_else(|| format!("`{winget_id}` isn't one of the OEM tools ITriage installs."))?;
     let route = ROUTES.iter().find(|r| r.winget_id == Some(winget_id)).expect("tool_name found it");
     if !crate::update::winget::available() {
         return Err("winget isn't available; install App Installer from the Microsoft Store first.".into());

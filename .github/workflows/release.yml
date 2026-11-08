@@ -200,7 +200,7 @@ jobs:
           if [[ -f "release-notes/$tag.md" ]]; then
             cp "release-notes/$tag.md" notes.md
           else
-            echo "itriage $tag" > notes.md
+            echo "ITriage $tag" > notes.md
           fi
           echo "TAG=$tag" >> "$GITHUB_ENV"
           echo "DRAFT=$draft" >> "$GITHUB_ENV"
@@ -247,7 +247,7 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
-          name: itriage ${{ env.TAG }}
+          name: ITriage ${{ env.TAG }}
           body_path: notes.md
           draft: ${{ env.DRAFT }}
           fail_on_unmatched_files: true

@@ -36,6 +36,6 @@ pub fn relaunch_elevated() -> Result<(), String> {
     if result.0 as isize > 32 {
         Ok(())
     } else {
-        Err("Elevation was cancelled, so itriage is still running as a standard user.".into())
+        Err("Elevation was cancelled, so ITriage is still running as a standard user.".into())
     }
 }

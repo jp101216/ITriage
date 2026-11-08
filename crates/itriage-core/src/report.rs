@@ -175,7 +175,7 @@ pub fn load(path: &Path) -> Result<Report, String> {
 
 /// Parse report JSON (from history, an export, or a remote run).
 pub fn parse(text: &str) -> Result<Report, String> {
-    serde_json::from_str(text).map_err(|e| format!("Not an itriage report: {e}"))
+    serde_json::from_str(text).map_err(|e| format!("Not an ITriage report: {e}"))
 }
 
 /// The most recent saved run of this host from before `generated` that ran
@@ -517,7 +517,7 @@ pub fn metric_text(value: f64, unit: &str) -> String {
 pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> String {
     let h = &report.host;
     let mut out = vec![
-        format!("itriage report — {}", utc(&report.generated)),
+        format!("ITriage report — {}", utc(&report.generated)),
         [
             Some(h.hostname.clone()),
             Some(h.os.clone()),

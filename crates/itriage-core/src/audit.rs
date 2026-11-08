@@ -59,7 +59,7 @@ pub fn run_finished(results: &[ModuleResult], cancelled: bool) {
         .unwrap_or(Severity::Ok);
     let ids: Vec<&str> = results.iter().map(|r| r.module_id.as_str()).collect();
     let message = format!(
-        "itriage run {}: {} module(s), worst result {:?}{}",
+        "ITriage run {}: {} module(s), worst result {:?}{}",
         if cancelled { "cancelled" } else { "finished" },
         results.len(),
         worst,
@@ -72,8 +72,8 @@ pub fn run_finished(results: &[ModuleResult], cancelled: bool) {
 pub fn module_ran(result: &ModuleResult) {
     let ok = result.error.is_none();
     let message = match &result.error {
-        None => format!("itriage module {} ran: {}", result.module_id, result.summary),
-        Some(e) => format!("itriage module {} failed: {e}", result.module_id),
+        None => format!("ITriage module {} ran: {}", result.module_id, result.summary),
+        Some(e) => format!("ITriage module {} failed: {e}", result.module_id),
     };
     record("module", event_id::MODULE, ok, &message, json!({ "module": result.module_id }));
 }
@@ -85,8 +85,8 @@ pub fn fix_ran(id: &str, target: Option<&str>, outcome: &Result<String, String>)
         None => id.to_string(),
     };
     let (ok, message) = match outcome {
-        Ok(m) => (true, format!("itriage fix {what} succeeded: {m}")),
-        Err(e) => (false, format!("itriage fix {what} failed: {e}")),
+        Ok(m) => (true, format!("ITriage fix {what} succeeded: {m}")),
+        Err(e) => (false, format!("ITriage fix {what} failed: {e}")),
     };
     let event = if ok { event_id::FIX_OK } else { event_id::FIX_FAILED };
     record("fix", event, ok, &message, json!({ "fix": id, "target": target }));
