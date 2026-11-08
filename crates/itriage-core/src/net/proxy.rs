@@ -89,7 +89,7 @@ mod imp {
             notes.push(format!("bypass: {b}"));
         }
         if sid.is_none() && user != me && user.is_some() {
-            notes.push("read from the account itriage runs as".into());
+            notes.push("read from the account ITriage runs as".into());
         }
         f = f.with_detail(notes.join(" · "));
         findings.push(f);

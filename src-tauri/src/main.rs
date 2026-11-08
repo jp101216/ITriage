@@ -1,7 +1,7 @@
 // Hide the console window on Windows release builds (keep it in debug).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-//! Tauri desktop shell for itriage. Deliberately thin: all the real work
+//! Tauri desktop shell for ITriage. Deliberately thin: all the real work
 //! lives in `itriage-core`.
 //!
 //! Commands:
@@ -384,5 +384,5 @@ fn main() {
             open_history_folder
         ])
         .run(tauri::generate_context!())
-        .expect("error while running itriage");
+        .expect("error while running ITriage");
 }

@@ -15,7 +15,7 @@ use crate::report::{self, Report};
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
-itriage: IT triage and updates
+ITriage: IT triage and updates
 
 USAGE
   itriage [OPTIONS] [MODULE...]
@@ -241,7 +241,7 @@ pub fn main(argv: Vec<String>) -> i32 {
     let status = &loaded.status;
     if !args.quiet {
         eprintln!(
-            "itriage · {} · {} · {} · profile: {} ({}){}{}",
+            "ITriage · {} · {} · {} · profile: {} ({}){}{}",
             host.hostname,
             host.os,
             if host.elevated { "elevated" } else { "standard user" },

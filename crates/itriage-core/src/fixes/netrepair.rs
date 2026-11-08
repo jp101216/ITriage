@@ -187,7 +187,7 @@ impl TriageModule for ResetStack {
         .mutating()
         .admin()
         .disruptive()
-        .warning("Resets Winsock and TCP/IP to defaults. Static IP settings would be lost (itriage refuses if it finds any), and a restart is needed.")
+        .warning("Resets Winsock and TCP/IP to defaults. Static IP settings would be lost (ITriage refuses if it finds any), and a restart is needed.")
     }
 
     fn preview(&self, _ctx: &RunContext) -> Result<Output, String> {

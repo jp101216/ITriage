@@ -165,7 +165,7 @@ fn os_targets() -> (Vec<PathBuf>, Option<String>) {
         // As root, "our" files in a shared /tmp include system services'.
         return (
             Vec::new(),
-            Some("skipped as root: the shared temp folder holds system services' files. Run itriage as the user whose temp files should go".into()),
+            Some("skipped as root: the shared temp folder holds system services' files. Run ITriage as the user whose temp files should go".into()),
         );
     }
     (vec![std::env::temp_dir()], Some("other users' files and system folders are never touched".into()))

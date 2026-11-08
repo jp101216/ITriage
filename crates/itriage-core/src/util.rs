@@ -355,7 +355,7 @@ fn send_line(tx: &mpsc::Sender<String>, line: &mut Vec<u8>) -> bool {
 
 /// Shown when a Windows admin-only module runs without elevation.
 pub const ADMIN_REQUIRED: &str = "Administrator rights required. Use \"Relaunch as admin\" \
-     in the header (or right-click itriage → Run as administrator).";
+     in the header (or right-click ITriage → Run as administrator).";
 
 /// Fail fast unless the process is elevated (Windows install modules).
 #[cfg(windows)]

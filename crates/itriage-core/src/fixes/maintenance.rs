@@ -39,7 +39,7 @@ impl TriageModule for EmptyRecycleBin {
             "fix.recycle",
             "Empty Recycle Bin",
             Category::Fixes,
-            "Permanently deletes what's in the Recycle Bin (the Trash on Linux) for the account itriage runs as.",
+            "Permanently deletes what's in the Recycle Bin (the Trash on Linux) for the account ITriage runs as.",
         )
         .mutating()
         .warning("Permanently deletes files the user may still expect to recover. Ask them first.")

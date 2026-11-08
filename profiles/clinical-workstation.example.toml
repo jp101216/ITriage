@@ -7,7 +7,7 @@
 #   Windows: %ProgramData%\itriage\profile.toml
 #   Linux:   /etc/itriage/profile.toml
 # A machine-wide profile always wins over a per-user one, and if it doesn't
-# parse, itriage runs read-only rather than ignoring it.
+# parse, ITriage runs read-only rather than ignoring it.
 
 name = "Clinical workstation (example)"
 description = "Shared nursing-unit PC: badge-tap sign-in, virtual desktop, label printer"
