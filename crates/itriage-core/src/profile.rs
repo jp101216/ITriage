@@ -31,8 +31,20 @@ pub struct Profile {
     pub updates: UpdateSettings,
     pub cleanup: CleanupSettings,
     pub history: HistorySettings,
+    pub ui: UiSettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
+}
+
+/// How the app looks. Cosmetic only: a technician's own pick (saved on
+/// their computer) wins, and a name the app doesn't know is ignored rather
+/// than treated as a broken profile.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiSettings {
+    /// The technician console's default theme: red, amber, phosphor, radar,
+    /// cyber, holo, tactical, minimal or glass. Absent means red.
+    pub theme: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,6 +365,7 @@ pub struct ProfileStatus {
     pub policy: Policy,
     pub requirements: usize,
     pub kb_rules: usize,
+    pub ui: UiSettings,
 }
 
 pub struct Loaded {
@@ -400,6 +413,7 @@ fn loaded(profile: Profile, source: &'static str, path: Option<PathBuf>, error: 
         policy: profile.policy.clone(),
         requirements: profile.requirement_count(),
         kb_rules: profile.kb.len(),
+        ui: profile.ui.clone(),
     };
     Loaded { profile, status }
 }
@@ -653,6 +667,19 @@ mod tests {
         assert_eq!(lab.history.keep, 0);
         let ints = Profile::from_toml("[thresholds]\nuptime_days = { warn = 3, crit = 5 }").unwrap();
         assert_eq!(ints.thresholds.uptime_days, Band::new(3.0, 5.0), "whole numbers work in bands");
+    }
+
+    #[test]
+    fn ui_theme_is_optional_and_reaches_the_status() {
+        assert_eq!(Profile::from_toml("").unwrap().ui.theme, None, "no [ui] means the built-in theme");
+        let p = Profile::from_toml("[ui]\ntheme = \"minimal\"").unwrap();
+        assert_eq!(p.ui.theme.as_deref(), Some("minimal"));
+        let status = loaded(p, "user", None, None).status;
+        assert_eq!(status.ui.theme.as_deref(), Some("minimal"));
+        let json = serde_json::to_value(&status).unwrap();
+        assert_eq!(json["ui"]["theme"], "minimal", "the frontend reads profile.ui.theme");
+        // A theme this build doesn't know is the frontend's to ignore, not a broken profile.
+        assert!(Profile::from_toml("[ui]\ntheme = \"vaporwave\"").is_ok());
     }
 
     #[test]

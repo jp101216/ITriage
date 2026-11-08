@@ -9,7 +9,8 @@ desktop app that is also a command line. The app has two views:
   them, and get streamed, severity-coded results with one-click fixes and
   knowledge-base links. Every run is saved, and the next run on that machine
   shows what changed, measurements included. Results export as ticket text, a
-  full transcript, rich text for TeamDynamix, Markdown, or JSON.
+  full transcript, rich text for TeamDynamix, Markdown, or JSON. Nine themes,
+  from the red HUD to a flat, quiet one.
 * **Self-service check.** A calm page for the person at the PC: their computer
   name up front (with a copy button), one "Check my computer" button, results
   in plain words, a few safe fixes, and "Copy details for the service desk".
@@ -339,6 +340,7 @@ Every setting, with its default:
 | `[updates] windows_update_drivers` | `"auto"` | `"always"` installs Windows Update drivers after the OEM tool too |
 | `[cleanup] temp_min_age_hours` | `24` | temp files changed more recently are kept |
 | `[history] keep` | `100` | saved runs kept; `0` keeps them all |
+| `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
 | `[[require.service]]`, `[[require.app]]`, `[[require.endpoint]]`, `[[require.device]]` | none | what this machine must have |
 | `[[kb]]` | none | knowledge-base links for matching findings |
 
@@ -485,7 +487,8 @@ installers:
 
 ## Interface
 
-The technician console is a red HUD-style diagnostic console:
+The technician console is a HUD-style diagnostic console (red by default; see
+[Themes](#themes)):
 
 * **Live telemetry strip** across the top. Five scopes are fed once a second by
   `itriage_core::telemetry::Sampler`: CPU (big trace), network ↓/↑, per-core
@@ -511,9 +514,36 @@ The technician console is a red HUD-style diagnostic console:
   badges and measurement changes (`+26 ms`) after a compare.
 
 The self-service view is deliberately quieter: teal, no scanlines, big type,
-plain words. Type throughout: Rajdhani (display), Chakra Petch (interface),
-Share Tech Mono (data), all bundled. Animations respect
-`prefers-reduced-motion`.
+plain words, whatever the console's theme. Type: Rajdhani (display), Chakra
+Petch (interface), Share Tech Mono (data), all bundled; the terminal themes use
+Share Tech Mono throughout, and Sleek Minimalist and Enterprise Glass use the
+system font (Segoe UI on Windows). Animations respect `prefers-reduced-motion`.
+
+### Themes
+
+**Theme** in the header opens the picker. **Equip** tries a theme on the whole
+console at once; **Apply changes** keeps it, and **Cancel / Close** (or Esc)
+puts the old one back. The choice is remembered per user on that computer.
+
+| Theme | `[ui] theme` | Look |
+|---|---|---|
+| Critical Red Alert | `red` | the default: high-contrast red HUD, hazard-striped run button |
+| Wasteland Amber | `amber` | amber terminal: scanlines, monospace throughout, `[ ]` / `[X]` checkboxes |
+| Atomic Phosphor | `phosphor` | green phosphor CRT with a solid green run button |
+| Sub Radar | `radar` | cold blue sonar screen with rings and a grid; easy on the eyes at night |
+| Cyber-Tactical | `cyber` | slate dashboard: cyan signals, amber headings, red run button; modules tint by their last result |
+| Holographic HUD | `holo` | cyan glass panels on a grid, orange highlights, the strongest glow |
+| Tactical | `tactical` | armored charcoal and red, cut corners, low glow |
+| Sleek Minimalist | `minimal` | flat greys, pill buttons, one red accent, no glow or scanlines |
+| Enterprise Glass | `glass` | frosted panels over a soft red-and-blue gradient |
+
+Severity colours keep their meaning in every theme (a critical finding is
+red even on the green phosphor screen), and the telemetry scopes and gauges
+take the theme's colours. A site profile can set the default with
+`[ui] theme`; a technician's own pick still wins on their computer, and an
+unknown name falls back to red. Themes are plain CSS: each one sets the colour
+and type tokens at the top of `src/styles.css`, and the "v0.6 — themes"
+section at the end adds what a palette can't (scanlines, cut corners, glass).
 
 ## Privilege model
 
@@ -725,16 +755,17 @@ Digital Signatures**, or with
   `-EncodedCommand` and never built from input. Where PowerShell is blocked,
   those steps report it and the rest of the run carries on.
 
-## Verification status (v0.5)
+## Verification status (v0.6)
 
 | What | How | Result |
 |---|---|---|
 | Workspace, Linux | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | Core crate, Windows | clippy-clean for `x86_64-pc-windows-msvc` via `-Zbuild-std` | clean |
-| Engine | 129 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison | all pass |
+| Engine | 130 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison | all pass |
 | Command line, Linux | every read-only module and the triage preset (with a destination) run for real; the Tune-up and update modules previewed; exit codes checked | working |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: the new commands exercised over IPC (presets, destination parsing, preview runs, remote-safe refusals, two triage runs compared, transcripts, fix validation, concurrent-run refusal) and the tune-up preview screen rendered | working |
 | Interface | the browser preview driven through every v0.5 flow (presets, preview, restart banner, destination, remote-safe locks, comparison, transcript, narrow layout), no console errors | working |
+| Themes | all nine screenshotted in Chromium idle, mid-run, after a triage run and at 400 px (no sideways scroll), and rendered in WebKitGTK 2.52 (the Linux app's engine); the default compared pixel by pixel with v0.5 (glow halos within 11/255); the picker's equip, cancel, Esc, keyboard and apply, a reload, the profile default, a saved pick beating it, an unknown name falling back, and the self-service view unchanged; no console errors | working |
 | Windows, CI | `windows-latest` (Windows Server 2025): 122 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); installers built | passing |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 

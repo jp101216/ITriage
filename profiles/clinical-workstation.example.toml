@@ -81,6 +81,12 @@ temp_min_age_hours = 24
 # Saved runs kept on this PC (0 keeps every run).
 keep = 100
 
+[ui]
+# The technician console's default theme: red (the default), amber, phosphor,
+# radar, cyber, holo, tactical, minimal or glass. Technicians can still pick
+# their own with Theme in the header; theirs wins on their computer.
+# theme = "minimal"
+
 [[require.service]]
 name = "Spooler"
 label = "Print Spooler"

@@ -1,8 +1,9 @@
-/* itriage frontend logic — v0.5.
+/* itriage frontend logic — v0.6.
  *
  * Two views over the same engine:
- *   • Technician: the red HUD console. Module rail, streaming report, one-click
- *     fixes, KB links, run history and compare, export formats, cancel.
+ *   • Technician: the HUD console (red by default, eight more themes in the
+ *     picker). Module rail, streaming report, one-click fixes, KB links, run
+ *     history and compare, export formats, cancel.
  *   • Self-service: a calm teal "check my computer" page for the person at the
  *     PC, with the computer name up front, plain-language results, a few safe
  *     fixes and a "copy details for the service desk" button.
@@ -18,15 +19,15 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.5";
+  const VERSION = "v0.6";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
     `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${extra || ""}>${body}</svg>`;
   const I = {
-    logo: '<svg viewBox="0 0 24 24" fill="none" stroke="#ff3b36" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-5 3 10 2.5-7 1.5 2H22"/></svg>',
+    logo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-5 3 10 2.5-7 1.5 2H22"/></svg>',
     logoCalm: '<svg viewBox="0 0 24 24" fill="none" stroke="#3ccfbc" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h4l2-5 3 10 2.5-7 1.5 2H22"/></svg>',
-    check: '<svg viewBox="0 0 24 24" fill="none" stroke="#1a0304" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>',
+    check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12l5 5L20 6"/></svg>',
     play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 4v16l13-8z"/></svg>',
     stop: '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>',
     caret: sv('<path d="M9 6l6 6-6 6"/>', ' stroke-width="2.4"'),
@@ -67,6 +68,8 @@
     wrench: sv('<path d="M15 4a5 5 0 0 0-4.6 6.9L4 17.3V20h2.7l6.4-6.4A5 5 0 0 0 20 9l-3 3-3-1-1-3z"/>'),
     power: sv('<path d="M12 3v8M7 6.3a8 8 0 1 0 10 0"/>'),
     eye: sv('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+    palette: sv('<path d="M12 3a9 9 0 0 0 0 18c1.2 0 2-.8 2-1.9 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1 .8-1.9 1.9-1.9H17a4 4 0 0 0 4-4C21 6.5 17 3 12 3z"/>' +
+      '<g fill="currentColor" stroke="none"><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="14.5" cy="7" r="1.2"/><circle cx="17" cy="11" r="1.2"/></g>'),
     nodes:
       '<svg viewBox="0 0 92 26" fill="none" stroke="currentColor" stroke-width="1.2">' +
       '<path d="M46 13 62 4M46 13 70 15M46 13 58 23M46 13 30 6M46 13 26 19M62 4 84 7M70 15 84 7M70 15 86 20" opacity=".7"/>' +
@@ -258,6 +261,7 @@
     policy: { allow_changes: true, allow_installs: true, fixes: MOCK_FIXES, start_in: "technician", technician_view: true, remote_safe: false },
     requirements: 8,
     kb_rules: 3,
+    ui: { theme: null },
   };
   const A = (id, target, label) => {
     const spec = FIX_CATALOGUE.find((f) => f.id === id);
@@ -632,6 +636,28 @@
   const mockSample = isTauri ? null : mockTelemetry();
   const api = isTauri ? realApi() : mockApi();
 
+  /* ---------------------------- themes ----------------------------- */
+  // How the technician console looks: html[data-skin] picks a token set in
+  // styles.css. A technician's own choice is remembered on this computer;
+  // without one, the site profile's [ui] theme; without that, Critical Red.
+  const SKINS = [
+    { id: "red", name: "Critical Red Alert", note: "High-contrast tactical console. The default." },
+    { id: "amber", name: "Wasteland Amber", note: "Old-school amber terminal with scanlines." },
+    { id: "phosphor", name: "Atomic Phosphor", note: "Classic green phosphor CRT." },
+    { id: "radar", name: "Sub Radar", note: "Cold blue sonar screen, easy on the eyes at night." },
+    { id: "cyber", name: "Cyber-Tactical", note: "Slate dashboard with cyan, amber and red signals." },
+    { id: "holo", name: "Holographic HUD", note: "Cyan glass panels with a holographic glow." },
+    { id: "tactical", name: "Tactical", note: "Armored charcoal and red, with cut corners." },
+    { id: "minimal", name: "Sleek Minimalist", note: "Flat and quiet: no glow, no scanlines." },
+    { id: "glass", name: "Enterprise Glass", note: "Frosted panels over a soft gradient." },
+  ];
+  const SKIN_KEY = "itriage.skin.v1";
+  /** The site profile's theme at the last start, so a site default doesn't flash red. */
+  const SITE_SKIN_KEY = "itriage.skin.site.v1";
+  /** Canvas colours read from the theme (see pal()); cleared when it changes. */
+  let PAL = null;
+  setSkin(savedSkin() || storedSkin(SITE_SKIN_KEY) || "red");
+
   /* --------------------------- mount ------------------------------- */
   const root = document.getElementById("app");
   root.innerHTML = `
@@ -659,6 +685,7 @@
         <span class="tag mode-tag pv" id="tagPreview" hidden title="Preview (what-if) is on: nothing will be changed">${I.eye}PREVIEW</span>
         <span class="tag mode-tag safe" id="tagSafe" hidden title="Remote-safe is on: nothing that could drop the session or restart the PC can run">${I.shield}REMOTE-SAFE</span>
         <button class="bk-btn xs view-switch" id="toSelf" type="button" title="The simple view end users see">${I.swap}Self-service view</button>
+        <button class="bk-btn xs" id="skinBtn" type="button" title="Change how the console looks">${I.palette}Theme</button>
       </div>
       <dl class="stats">
         <div><dt>TARGET:</dt><dd class="hot" id="stTarget">—</dd></div>
@@ -748,6 +775,7 @@
   el("openBtn").onclick = () => fileInput.click();
   fileInput.onchange = onFilePicked;
   el("toSelf").onclick = () => setMode("self");
+  el("skinBtn").onclick = openSkins;
   profileTag.onclick = showProfile;
   exportBtn.onclick = (e) => { e.stopPropagation(); toggleMenu(); };
   exportMenu.querySelectorAll("[data-fmt]").forEach((b) => {
@@ -775,6 +803,7 @@
 
   async function boot() {
     try { profile = await api.getProfile(); } catch (_) { /* no profile info */ }
+    applyProfileSkin();
     remoteSafe = !!(profile && profile.policy && profile.policy.remote_safe);
     el("optSafe").checked = remoteSafe;
     el("tagSafe").hidden = !remoteSafe;
@@ -922,8 +951,8 @@
     const t = tele;
     drawTrace(scopes.cpu, hist.cpu, { max: 100, fill: true, head: true, top: 16 });
     drawTrace(scopes.net, hist.net, { max: autoMax(hist.net), top: 15 });
-    drawBars(scopes.cores, t.cores, { top: 15 });
-    drawTrace(scopes.mem, hist.mem, { max: 100, top: 15 });
+    drawBars(scopes.cores, t.cores, { top: 15, tone: "action" });
+    drawTrace(scopes.mem, hist.mem, { max: 100, top: 15, tone: "action" });
     drawTrace(scopes.disk, hist.disk, { max: autoMax(hist.disk), fill: true, top: 15 });
 
     const peak = t.cores.length ? Math.round(Math.max(...t.cores)) : 0;
@@ -956,11 +985,49 @@
     return { ctx, w, h };
   }
 
+  /** The theme's canvas colours, read from its tokens once per theme. */
+  function pal() {
+    if (PAL) return PAL;
+    const cs = getComputedStyle(document.documentElement);
+    const trip = (name, fallback) => {
+      const v = cs.getPropertyValue(name).trim().split(/\s+/).map(Number);
+      return v.length === 3 && v.every(Number.isFinite) ? v : fallback;
+    };
+    const fx = parseFloat(cs.getPropertyValue("--fx"));
+    PAL = {
+      fx: Number.isFinite(fx) ? fx : 1,
+      accent: trip("--accent-rgb", [255, 59, 54]),
+      glow: trip("--glow-rgb", [255, 40, 34]),
+      action: trip("--action-rgb", [255, 59, 54]),
+      crit: trip("--crit-rgb", [255, 46, 85]),
+      bg: trip("--bg-rgb", [10, 4, 5]),
+    };
+    return PAL;
+  }
+  /** rgba() for an [r, g, b] triplet, lifted toward white by `lift` (0–1). */
+  function col(c, a = 1, lift = 0) {
+    const m = (x) => Math.round(x + (255 - x) * lift);
+    return `rgba(${m(c[0])}, ${m(c[1])}, ${m(c[2])}, ${a})`;
+  }
+  /** A scope's colour and glow: the theme's accent, or its action colour. */
+  function tone(name) {
+    const p = pal();
+    return name === "action" ? { c: p.action, g: p.action } : { c: p.accent, g: p.glow };
+  }
+  /** Glow alpha and blur, scaled by the theme's --fx (0 turns glow off). */
+  function glowA(a) {
+    return Math.min(1, a * pal().fx);
+  }
+  function blur(px) {
+    return pal().fx > 0 ? px : 0;
+  }
+
   /** A glowing oscilloscope trace, newest sample at the right edge. */
   function drawTrace(c, data, o) {
     const f = fit(c);
     if (!f || !data.length) return;
     const { ctx, w, h } = f;
+    const t = tone(o.tone);
     const cap = o.cap || HISTORY;
     const top = o.top ?? 3, bottom = h - 3;
     const span = w - 4;
@@ -977,23 +1044,23 @@
       ctx.lineTo(x0, h);
       ctx.closePath();
       const g = ctx.createLinearGradient(0, top, 0, h);
-      g.addColorStop(0, "rgba(255, 59, 54, 0.30)");
-      g.addColorStop(1, "rgba(255, 59, 54, 0)");
+      g.addColorStop(0, col(t.c, 0.3));
+      g.addColorStop(1, col(t.c, 0));
       ctx.fillStyle = g;
       ctx.fill();
     }
     path();
     ctx.lineJoin = "round";
     ctx.lineWidth = o.width || 1.6;
-    ctx.strokeStyle = "#ff4a43";
-    ctx.shadowColor = "rgba(255, 40, 34, 0.95)";
-    ctx.shadowBlur = o.glow ?? 8;
+    ctx.strokeStyle = col(t.c, 1, 0.07);
+    ctx.shadowColor = col(t.g, glowA(0.95));
+    ctx.shadowBlur = blur(o.glow ?? 8);
     ctx.stroke();
     if (o.head) {
       ctx.beginPath();
       ctx.arc(span, y(data[data.length - 1]), 2.6, 0, Math.PI * 2);
-      ctx.fillStyle = "#ffd6d0";
-      ctx.shadowBlur = 12;
+      ctx.fillStyle = col(t.c, 1, 0.8);
+      ctx.shadowBlur = blur(12);
       ctx.fill();
     }
     ctx.shadowBlur = 0;
@@ -1005,14 +1072,15 @@
     if (!f || !values || !values.length) return;
     const { ctx, w, h } = f;
     const top = (o && o.top) ?? 3;
+    const t = tone(o && o.tone);
     const n = values.length, gap = n > 32 ? 1 : 2;
     const bw = Math.max(1, (w - 4 - gap * (n - 1)) / n);
     values.forEach((v, i) => {
       const bh = Math.max(1.5, (clamp(v, 0, 100) / 100) * (h - top - 3));
       const hot = v >= 85;
-      ctx.fillStyle = hot ? "#ff7a70" : "rgba(255, 59, 54, 0.85)";
-      ctx.shadowColor = "rgba(255, 40, 34, 0.9)";
-      ctx.shadowBlur = hot ? 8 : ((o && o.glow) ?? 3);
+      ctx.fillStyle = hot ? col(t.c, 1, 0.3) : col(t.c, 0.85);
+      ctx.shadowColor = col(t.g, glowA(0.9));
+      ctx.shadowBlur = blur(hot ? 8 : ((o && o.glow) ?? 3));
       ctx.fillRect(2 + i * (bw + gap), h - 3 - bh, bw, bh);
     });
     ctx.shadowBlur = 0;
@@ -1024,12 +1092,13 @@
     if (!f) return;
     const { ctx, w, h } = f;
     const warn = pct >= 90;
+    const p = pal(), t = tone("accent");
     let x = 0;
     if (warn) {
       const s = Math.min(h - 6, 16), ty = (h - s) / 2;
-      ctx.fillStyle = "#ff3b36";
-      ctx.shadowColor = "rgba(255, 40, 34, 0.9)";
-      ctx.shadowBlur = 6;
+      ctx.fillStyle = col(p.crit);
+      ctx.shadowColor = col(p.crit, glowA(0.9));
+      ctx.shadowBlur = blur(6);
       ctx.beginPath();
       ctx.moveTo(s / 2, ty);
       ctx.lineTo(s, ty + s);
@@ -1037,7 +1106,7 @@
       ctx.closePath();
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.fillStyle = "#1a0304";
+      ctx.fillStyle = col(p.bg);
       ctx.fillRect(s / 2 - 0.9, ty + s * 0.36, 1.8, s * 0.32);
       ctx.fillRect(s / 2 - 0.9, ty + s * 0.76, 1.8, 1.8);
       x = s + 6;
@@ -1047,10 +1116,10 @@
     const sh = Math.min(10, h - 8), sy = (h - sh) / 2;
     const lit = Math.round((clamp(pct, 0, 100) / 100) * segs);
     for (let i = 0; i < segs; i++) {
-      const on = i < lit;
-      ctx.fillStyle = on ? (warn && i >= segs - 3 ? "#ff7a70" : "#ff3b36") : "rgba(255, 59, 54, 0.16)";
-      ctx.shadowColor = "rgba(255, 40, 34, 0.8)";
-      ctx.shadowBlur = on ? 4 : 0;
+      const on = i < lit, hot = on && warn && i >= segs - 3;
+      ctx.fillStyle = hot ? col(p.crit) : on ? col(t.c) : col(t.c, 0.16);
+      ctx.shadowColor = col(hot ? p.crit : t.g, glowA(0.8));
+      ctx.shadowBlur = on ? blur(4) : 0;
       ctx.fillRect(x + i * (sw + gap), sy, sw, sh);
     }
     ctx.shadowBlur = 0;
@@ -1126,6 +1195,7 @@
           <dt>Requirements</dt><dd>${p.requirements} (services, apps, endpoints, devices)</dd>
           <dt>KB links</dt><dd>${p.kb_rules} rule${p.kb_rules === 1 ? "" : "s"}</dd>
           <dt>Opens in</dt><dd>${pol.start_in === "self-service" ? "self-service view" : "technician view"}${pol.technician_view === false ? " · technician view turned off" : ""}</dd>
+          ${profileSkin() ? `<dt>Theme</dt><dd>${esc(profileSkin().name)} by default</dd>` : ""}
         </dl>
         <p>A machine-wide profile at <code>${esc(where)}</code> wins over a personal one, and a broken one locks itriage to read-only.</p>`,
       actions: [{ label: "Close", hot: true, value: true }],
@@ -2412,12 +2482,12 @@
 
   /* -------------------------- modals ------------------------------ */
   /** A dialog. Resolves with the chosen action's value (undefined if dismissed). */
-  function modal({ title, body, actions, onMount }) {
+  function modal({ title, body, actions, onMount, cls }) {
     return new Promise((resolve) => {
       const scrim = document.createElement("div");
       scrim.className = "scrim";
       scrim.innerHTML = `
-        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">
+        <div class="modal${cls ? " " + cls : ""}" role="dialog" aria-modal="true" aria-labelledby="m-title">
           <div class="hazard"></div>
           <div class="modal-body">
             <h3 id="m-title">${title}</h3>
@@ -2436,6 +2506,107 @@
       if (onMount) onMount(scrim, close);
       const fi = Math.max(0, actions.findIndex((a) => a.focus));
       if (!scrim.querySelector("textarea")) scrim.querySelector(`[data-i="${fi}"]`).focus();
+    });
+  }
+
+  /* -------------------------- themes ------------------------------ */
+  function skinById(id) {
+    const key = String(id || "").trim().toLowerCase();
+    return SKINS.find((s) => s.id === key) || null;
+  }
+  function currentSkin() {
+    return document.documentElement.dataset.skin || "red";
+  }
+  function storedSkin(key) {
+    try {
+      const s = skinById(localStorage.getItem(key));
+      return s ? s.id : null;
+    } catch (_) {
+      return null;
+    }
+  }
+  /** This technician's own pick, if they applied one. */
+  function savedSkin() {
+    return storedSkin(SKIN_KEY);
+  }
+  function saveSkin(id) {
+    try { localStorage.setItem(SKIN_KEY, id); } catch (_) { /* ignore */ }
+  }
+  /** Switch the whole console to a theme (unknown ids fall back to red). */
+  function setSkin(id) {
+    const s = skinById(id) || SKINS[0];
+    document.documentElement.dataset.skin = s.id;
+    PAL = null;
+    return s.id;
+  }
+  /** The site profile's default theme ([ui] theme), if it names a known one. */
+  function profileSkin() {
+    return skinById(profile && profile.ui && profile.ui.theme);
+  }
+  /** Use the profile's theme (or red), unless this technician has picked their own. */
+  function applyProfileSkin() {
+    const s = profileSkin();
+    try {
+      if (s) localStorage.setItem(SITE_SKIN_KEY, s.id);
+      else localStorage.removeItem(SITE_SKIN_KEY);
+    } catch (_) { /* ignore */ }
+    const want = s ? s.id : "red";
+    if (savedSkin() || want === currentSkin()) return;
+    setSkin(want);
+    paintTelemetry();
+  }
+
+  /** The theme picker: Equip tries a theme on the whole console, Apply keeps it. */
+  function openSkins() {
+    const before = currentSkin();
+    let chosen = before;
+    const site = profileSkin();
+    const card = (s) => `
+      <button class="skin" type="button" data-id="${s.id}" aria-pressed="${s.id === chosen}">
+        <span class="skin-thumb" data-skin="${s.id}" aria-hidden="true">
+          <span class="st-top"><span class="st-logo">${I.logo}</span><span class="st-name">itriage</span><span class="st-ver">${VERSION}</span></span>
+          <span class="st-mod on"><span class="st-box"></span><span class="st-lines"><i></i><i></i></span></span>
+          <span class="st-mod"><span class="st-box"></span><span class="st-lines"><i></i><i></i></span></span>
+          <span class="st-run"><b>RUN</b></span>
+        </span>
+        <span class="skin-meta"><span class="skin-name">${esc(s.name)}</span><span class="skin-note">${esc(s.note)}</span></span>
+        <span class="skin-state">${s.id === chosen ? "ACTIVE" : "EQUIP"}</span>
+      </button>`;
+    modal({
+      cls: "wide",
+      title: `${I.palette}<span class="skin-ttl">Select GUI skin / theme</span>`,
+      body: `
+        <p>Equip a theme to try it on the whole console, then apply it to keep it on this computer.${site ? ` This site's default is ${esc(site.name)}.` : ""}
+          The self-service view keeps its own calm look.</p>
+        <div class="skins" role="group" aria-label="Themes">${SKINS.map(card).join("")}</div>`,
+      actions: [{ label: "Cancel / Close", value: false }, { label: "Apply changes", hot: true, value: true }],
+      onMount: (scrim) => {
+        const cards = scrim.querySelectorAll(".skin");
+        cards.forEach((b) => {
+          b.onclick = () => {
+            chosen = setSkin(b.dataset.id);
+            cards.forEach((x) => {
+              const on = x.dataset.id === chosen;
+              x.setAttribute("aria-pressed", String(on));
+              x.querySelector(".skin-state").textContent = on ? "ACTIVE" : "EQUIP";
+            });
+            paintTelemetry();
+          };
+        });
+        // Start on the current theme rather than the first button.
+        requestAnimationFrame(() => {
+          const cur = scrim.querySelector('.skin[aria-pressed="true"]');
+          if (cur) cur.focus();
+        });
+      },
+    }).then((apply) => {
+      if (apply) {
+        saveSkin(chosen);
+        toast(`Theme: ${skinById(chosen).name}`);
+      } else if (currentSkin() !== before) {
+        setSkin(before);
+        paintTelemetry();
+      }
     });
   }
 
