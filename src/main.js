@@ -577,7 +577,7 @@
     "fix.netcache": ["would purge the address caches", [["Would run", "netsh interface ip delete arpcache"], ["Would run", "nbtstat -R"], ["Would run", "nbtstat -RR"]]],
     "fix.tcp": ["would normalise TCP and adapter power settings", [["Would run", "netsh int tcp set global autotuninglevel=normal"],
       ["Wi-Fi", "would turn off DeviceSleepOnDisconnect, SelectiveSuspend"], ["Ethernet", "sleep settings already off"],
-      ["Undo", "what these settings are now is saved first, so Revert tune-up can put them back"]]],
+      ["Undo", "the current settings would be saved first, so Revert tune-up can set DeviceSleepOnDisconnect and SelectiveSuspend on Wi-Fi"]]],
     "fix.netstack": ["would reset Winsock and TCP/IP; a restart would be needed", [["Static address check", "every address is from DHCP or autoconfiguration", "ok"],
       ["Would run", "netsh winsock reset"], ["Would run", "netsh int ip reset"], ["Would run", "netsh int ipv6 reset"]]],
     "fix.adapters": ["would restart these adapters and renew DHCP", [["Would restart Wi-Fi", "10.20.33.118/22, fe80::1a2b:3c4d/64"],

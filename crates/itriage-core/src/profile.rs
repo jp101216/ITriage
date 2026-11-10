@@ -732,10 +732,19 @@ mod tests {
         assert!(clinical.policy.remote_safe && !clinical.network.public_probes);
         assert_eq!(clinical.network.tcp_probe_target(), Some(("ehr-gateway.example.org".into(), 443)));
         assert_eq!(clinical.thresholds.wifi_signal_pct, Band::new(70.0, 50.0), "commented bands keep the defaults");
+        assert_eq!(clinical.security.require_encryption, Some(true));
+        assert!(!clinical.security.user_may_be_admin && !clinical.updates.notify);
+        assert!(clinical.fix_allowed("clear-saved-credentials", None) && clinical.fix_allowed("unlock-account", Some(r"CORP\jparker")));
+        assert!(!clinical.fix_allowed("restart-computer", None), "not on its list");
         let lab = Profile::from_toml(include_str!("../../../profiles/home-lab.toml")).unwrap();
         assert_eq!(lab.updates.windows_update_drivers, DriverSource::Always);
         assert_eq!(lab.network.target_ports, vec![22, 443, 445, 8006]);
         assert_eq!(lab.history.keep, 0);
+        assert!(lab.security.user_may_be_admin && lab.security.require_encryption.is_none() && lab.updates.notify, "the defaults");
+        assert_eq!(lab.thresholds.password_expiry_days, Band::new(14.0, 3.0));
+        let strict = Profile::from_toml("[thresholds]\ndefinitions_age_days = { warn = 1, crit = 2 }\n[security]\nrequire_encryption = false").unwrap();
+        assert_eq!(strict.thresholds.definitions_age_days.high(1.0), Severity::Warning);
+        assert_eq!(strict.security.require_encryption, Some(false));
         let ints = Profile::from_toml("[thresholds]\nuptime_days = { warn = 3, crit = 5 }").unwrap();
         assert_eq!(ints.thresholds.uptime_days, Band::new(3.0, 5.0), "whole numbers work in bands");
     }

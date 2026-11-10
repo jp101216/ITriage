@@ -344,6 +344,19 @@ mod tests {
         assert_eq!(odd.describe(), "");
     }
 
+    /// Read-only, so it runs for real wherever the tests do.
+    #[cfg(windows)]
+    #[test]
+    fn reads_this_pcs_settings() {
+        let now = read(&crate::module::RunContext::silent()).expect("the script answers");
+        assert!(now.auto_tuning.is_empty() || netsh_level(&now.auto_tuning).is_some(), "an autotuning level Windows has: {now:?}");
+        assert!(now.adapters.iter().all(|a| !a.name.is_empty()), "{now:?}");
+        // Whatever it found, the request built from it is well-formed.
+        if let Some(json) = now.adapters_to_restore() {
+            assert!(serde_json::from_str::<serde_json::Value>(&json).unwrap()["Adapters"].is_array());
+        }
+    }
+
     #[test]
     fn a_second_tune_up_keeps_the_first_before() {
         let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-undo-test-{}", std::process::id()));

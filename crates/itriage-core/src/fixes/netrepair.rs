@@ -118,7 +118,7 @@ impl TriageModule for NetworkTuning {
     fn preview(&self, ctx: &RunContext) -> Result<Output, String> {
         let mut out = would("would normalise TCP and adapter power settings", &["netsh int tcp set global autotuninglevel=normal"]);
         out.findings.extend(imp::powershell_rows(NIC_POWER_READ, ctx));
-        out.findings.push(Finding::info("Undo", "what these settings are now is saved first, so Revert tune-up can put them back"));
+        out.findings.push(imp::undo_preview(ctx));
         // Settings saved by an earlier run can still be put back.
         out.findings.extend(super::undo::load().as_ref().and_then(super::undo::offer_finding));
         Ok(out)
@@ -409,6 +409,18 @@ mod imp {
         }
     }
 
+    /// The preview's line: what a real run would save before changing it.
+    pub fn undo_preview(ctx: &RunContext) -> Finding {
+        match crate::fixes::undo::read(ctx) {
+            Ok(now) if now.would_change() => Finding::info(
+                "Undo",
+                format!("the current settings would be saved first, so Revert tune-up can set {}", now.describe()),
+            ),
+            Ok(_) => Finding::info("Undo", "nothing to save: these settings are already the tuned ones"),
+            Err(e) => Finding::info("Undo", format!("the current settings couldn't be read, so a real run couldn't be undone ({e})")),
+        }
+    }
+
     pub fn powershell_rows(script: &'static str, ctx: &RunContext) -> Vec<Finding> {
         match crate::win::ps::run(script, ctx, Duration::from_secs(180)) {
             Ok(out) => match crate::fixes::rows(&out.stdout) {
@@ -486,6 +498,10 @@ mod imp {
     #[allow(dead_code)]
     pub fn remember_tuning(_ctx: &RunContext) -> Option<Finding> {
         None
+    }
+
+    pub fn undo_preview(_ctx: &RunContext) -> Finding {
+        Finding::info("Undo", "what these settings are now is saved first, so Revert tune-up can put them back")
     }
 
     /// NetworkManager devices that are connected and physical, each with
