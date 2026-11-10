@@ -944,7 +944,13 @@ Digital Signatures**, or with
   checked it. Where PowerShell is blocked, those checks say so and the rest
   of the run carries on.
 
-## Verification status (v0.7.0)
+## Verification status
+
+The v0.7.1 fixes passed 199 Linux core tests, 197 Windows core tests and six
+browser regression tests, along with workspace Clippy, smoke checks and installer
+builds on both platforms. The browser tests use simulated checks and repairs.
+The earlier manual checks below were performed through v0.7.0; hardware and
+domain validation remain as noted.
 
 | What | How | Result |
 |---|---|---|

@@ -1,6 +1,6 @@
 {
   "productName": "itriage",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "identifier": "com.jp101216.itriage",
   "build": {
     "frontendDist": "../src"
