@@ -26,6 +26,9 @@ target_ports = [22, 443, 445, 8006]
 # Invoke-UpdateSystem does. The default ("auto") uses them only when there's
 # no manufacturer tool, so the two don't keep replacing each other's drivers.
 windows_update_drivers = "always"
+# BitLocker is suspended for one restart before the manufacturer's tool runs
+# (the default). Set false to leave that to the tool.
+# suspend_bitlocker = false
 
 [history]
 keep = 0   # keep every run
