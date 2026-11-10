@@ -1715,3 +1715,57 @@ body.previewing .run-btn .plate { color: #dbe7f3; text-shadow: 0 0 10px rgb(var(
 }
 .skin-thumb[data-skin="glass"] > .st-mod { background: rgb(255 255 255 / 0.07); }
 .skin-thumb[data-skin="glass"] > .st-mod.on { background: rgb(var(--accent-rgb) / 0.16); }
+
+/* ==================================================================
+   v0.6.1 — short windows
+   A 1366×768 laptop, or the window dragged small, down to the 960×640
+   minimum. The header and the rail's fixed parts tighten up so the
+   module list keeps room for a few rows. The default 1240×880 window
+   is untouched. (Narrow windows stack into one column and scroll, so
+   they don't need this.)
+   ================================================================== */
+@media (min-width: 861px) and (max-height: 840px) {
+  /* Telemetry: one row of scopes, no title (STATUS in the header says the same). */
+  :root[data-skin] body:not(.calm) .hud {
+    grid-template-columns: minmax(0, 0.8fr) minmax(0, 2fr);
+    margin-top: 8px; padding: 8px 12px;
+  }
+  :root[data-skin] body:not(.calm) .hud-title { display: none; }
+  :root[data-skin] body:not(.calm) .hud-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-rows: minmax(0, 1fr);
+  }
+  :root[data-skin] body:not(.calm) :is(.scope, .scope.big) { min-height: 42px; }
+
+  :root[data-skin] body:not(.calm) .brandbar { padding-block: 6px; row-gap: 4px; }
+  :root[data-skin] body:not(.calm) .logo { width: 36px; height: 36px; }
+  :root[data-skin] body:not(.calm) .logo svg { width: 22px; height: 22px; }
+
+  /* The rail's fixed parts. */
+  :root[data-skin] body:not(.calm) :is(.rail-head, .rail-actions, .presets) { padding-block: 6px; }
+  :root[data-skin] body:not(.calm) .rail-head h2 { font-size: 21px; }
+  :root[data-skin] body:not(.calm) .sel-count { width: 30px; height: 30px; font-size: 16px; }
+  :root[data-skin] body:not(.calm) .run-dock { padding-top: 8px; }
+  :root[data-skin] body:not(.calm) .run-opts { margin-bottom: 6px; }
+  :root[data-skin] body:not(.calm) .run-btn { padding: 6px; }
+  :root[data-skin] body:not(.calm) .micro { display: none; }
+
+  /* Module rows: two lines of description (the rest is in its tooltip). */
+  :root[data-skin] body:not(.calm) .modules { padding-top: 0; }
+  :root[data-skin] body:not(.calm) .cat { margin: 8px 4px 5px; }
+  :root[data-skin] body:not(.calm) .cat:first-child { margin-top: 4px; }
+  :root[data-skin] body:not(.calm) .rail-actions { padding-block: 5px; }
+  :root[data-skin] body:not(.calm) .mod { padding-block: 7px; margin-bottom: 6px; }
+  :root[data-skin] body:not(.calm) .mod .d {
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+}
+/* Short and not wide: the header's stats can't sit beside the brand, so they
+   take one line under it instead of two. */
+@media (min-width: 861px) and (max-width: 1100px) and (max-height: 840px) {
+  :root[data-skin] body:not(.calm) .stats {
+    width: 100%; margin-left: 0;
+    grid-template-columns: repeat(4, minmax(0, auto)); justify-content: start; column-gap: 24px;
+  }
+}

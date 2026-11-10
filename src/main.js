@@ -799,7 +799,7 @@
   pollTelemetry();
   setInterval(pollTelemetry, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollTelemetry(); });
-  window.addEventListener("resize", () => requestAnimationFrame(paintTelemetry));
+  window.addEventListener("resize", () => requestAnimationFrame(() => { paintTelemetry(); tipClipped(); }));
 
   async function boot() {
     try { profile = await api.getProfile(); } catch (_) { /* no profile info */ }
@@ -1304,6 +1304,15 @@
       }
     });
     paintTelemetry(); // fresh canvases need a frame
+    tipClipped();
+  }
+
+  /** In a short window a description shows two lines; the rest goes in its tooltip. */
+  function tipClipped() {
+    modulesEl.querySelectorAll(".mod .d").forEach((d) => {
+      if (d.scrollHeight > d.clientHeight + 1) d.title = d.textContent;
+      else d.removeAttribute("title");
+    });
   }
 
   function syncRows() {
