@@ -285,7 +285,7 @@ fn collect<R: Read + Send + 'static>(mut reader: R) -> Collected {
 /// otherwise UTF-8 read leniently.
 fn decode(bytes: &[u8]) -> String {
     if matches!(Decoder::detect(bytes), Some(Decoder::Utf16Le { .. })) {
-        let units: Vec<u16> = bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+        let units: Vec<u16> = bytes.as_chunks::<2>().0.iter().map(|p| u16::from_le_bytes(*p)).collect();
         String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string()
     } else {
         String::from_utf8_lossy(bytes).into_owned()
