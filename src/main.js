@@ -2722,16 +2722,20 @@
     return String(s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
+  /** The ticked checks from last time. Modules that change the machine are
+   *  never remembered: they're picked on purpose, each time. */
   function loadSelection() {
+    const changes = new Set(CATALOGUE.filter((m) => m.mutating).map((m) => m.id));
     const defaults = CATALOGUE.filter((m) => !m.mutating && !m.takes_target).map((m) => m.id);
     try {
       const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
-      if (Array.isArray(saved)) return saved.filter((x) => typeof x === "string");
+      if (Array.isArray(saved)) return saved.filter((x) => typeof x === "string" && !changes.has(x));
     } catch (_) { /* storage unavailable */ }
     return defaults;
   }
   function saveSelection() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify([...selected])); } catch (_) { /* ignore */ }
+    const checks = [...selected].filter((id) => !(catalogue.find((m) => m.id === id) || {}).mutating);
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(checks)); } catch (_) { /* ignore */ }
   }
   function loadDest() {
     try { return localStorage.getItem("itriage.destination.v1") || ""; } catch (_) { return ""; }
