@@ -3,6 +3,7 @@ name = "itriage-core"
 version = "0.7.0"
 edition = "2021"
 description = "Platform-split IT triage + update engine. GUI-agnostic; the Tauri app (or the CLI example) is just a shell over this."
+license = "MIT"
 publish = false
 
 [dependencies]

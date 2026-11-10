@@ -3,6 +3,7 @@ name = "itriage"
 version = "0.7.0"
 edition = "2021"
 description = "IT triage & update tool — Tauri desktop shell"
+license = "MIT"
 publish = false
 default-run = "itriage"
 

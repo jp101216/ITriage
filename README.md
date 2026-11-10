@@ -958,6 +958,9 @@ RUSTC_BOOTSTRAP=1 cargo clippy -Zbuild-std=std,panic_abort \
 
 ## License
 
-Not licensed yet, so all rights are reserved until a license is chosen. The
-bundled fonts (Rajdhani, Chakra Petch, Share Tech Mono) are under the SIL
+ITriage is released under the [MIT License](LICENSE): use it, change it and
+share it, at home or at work, as long as the copyright notice stays with it.
+It comes with no warranty.
+
+The bundled fonts (Rajdhani, Chakra Petch, Share Tech Mono) are under the SIL
 Open Font License 1.1; see the `src/fonts/LICENSE-*.txt` files.
