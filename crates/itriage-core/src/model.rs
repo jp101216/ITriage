@@ -192,14 +192,25 @@ impl Target {
         };
         let (host, inline_ports) = if let Some(rest) = host_part.strip_prefix('[') {
             let (h, after) = rest.split_once(']').ok_or("An IPv6 address in brackets needs its closing ']'.")?;
-            (h, after.strip_prefix(':'))
+            if h.split('%').next().and_then(|ip| ip.parse::<std::net::Ipv6Addr>().ok()).is_none() {
+                return Err("Brackets are only used around an IPv6 address.".into());
+            }
+            let ports = if after.is_empty() {
+                None
+            } else {
+                Some(after.strip_prefix(':').ok_or("After ']', use ':ports' or leave it empty.")?)
+            };
+            (h, ports)
         } else if host_part.matches(':').count() == 1 {
             let (h, p) = host_part.split_once(':').unwrap_or((host_part, ""));
             (h, Some(p))
         } else {
             (host_part, None)
         };
-        let (ports, explicit_ports) = match ports_part.or(inline_ports).filter(|p| !p.trim().is_empty()) {
+        if ports_part.is_some() && inline_ports.is_some() {
+            return Err("Give ports once, after ':' or a space, like fileserver01:445,3389.".into());
+        }
+        let (ports, explicit_ports) = match ports_part.or(inline_ports) {
             Some(text) => (parse_ports(text)?, true),
             None => (default_ports.to_vec(), false),
         };
@@ -233,6 +244,9 @@ fn parse_ports(text: &str) -> Result<Vec<u16>, String> {
     }
     if ports.len() > 16 {
         return Err("Up to 16 ports at a time.".into());
+    }
+    if ports.is_empty() {
+        return Err("Give at least one port number (1–65535) after the host.".into());
     }
     Ok(ports)
 }
@@ -412,7 +426,10 @@ mod tests {
 
     #[test]
     fn rejects_bad_destinations() {
-        for bad in ["", "-oProxyCommand=x", "host;reboot", "host:0", "host:99999", "a b,c"] {
+        for bad in [
+            "", "-oProxyCommand=x", "host;reboot", "host:0", "host:99999", "a b,c",
+            "[::1]garbage", "[::1]:", "[server]:443", "host:", "host:,;", "host:443 80",
+        ] {
             assert!(Target::parse(bad, &DEFAULTS).is_err(), "{bad}");
         }
     }

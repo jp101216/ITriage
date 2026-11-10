@@ -1027,6 +1027,7 @@
   }
 
   function setMode(next) {
+    if (running || fixBusy) return;
     if (next === "tech" && !canTech()) return;
     mode = next;
     const self = mode === "self";
@@ -1488,13 +1489,13 @@
       runK.textContent = `[${pad2(n)}]`;
       runLabel.textContent = idleLabel();
     }
-    runBtn.disabled = running ? cancelRequested : n === 0;
+    runBtn.disabled = fixBusy || (running ? cancelRequested : n === 0);
     saveSelection();
   }
 
   /* ----------------------------- run ------------------------------- */
   async function onRun() {
-    if (running || selected.size === 0) return;
+    if (running || fixBusy || selected.size === 0) return;
     const chosen = catalogue.filter((m) => selected.has(m.id) && !m.locked);
     if (!chosen.length) return;
     if (chosen.some((m) => m.takes_target)) {
@@ -1521,6 +1522,8 @@
   }
 
   async function startRun(ids) {
+    // A destination validation or confirmation may have yielded meanwhile.
+    if (running || fixBusy) return;
     const total = ids.length;
     viewing = null;
     running = true;
@@ -1822,9 +1825,9 @@
     if (running) { toast("Wait for the run to finish first."); return; }
     if (fixBusy) return;
     if (!(await confirmFix(f.action, f))) return;
+    if (running || fixBusy) return;
     const slot = btn.parentElement.querySelector(".fix-slot");
-    fixBusy = true;
-    setFixButtons(false);
+    setFixBusy(true);
     slot.innerHTML = '<span class="fix-note busy"><span class="spin"></span>Running fix…</span>';
     const again = !["restart-computer", "cancel-restart"].includes(f.action.id) && recheckMode(res) !== null;
     let message = null;
@@ -1833,15 +1836,35 @@
       slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span>` + (again ? '<span class="fix-note busy">Re-checking…</span>' : "");
     } catch (e) {
       slot.innerHTML = `<span class="fix-note err">${I.xc}${esc(errText(e))}</span>`;
-    } finally {
-      fixBusy = false;
-      setFixButtons(true);
     }
-    if (message != null) {
-      toast(message);
-      if (f.action.id === "restart-computer") restartState = "scheduled";
-      if (f.action.id === "cancel-restart") restartState = null;
-      if (again) await recheck(res, message);
+    try {
+      if (message != null) {
+        toast(message);
+        if (f.action.id === "restart-computer") restartState = "scheduled";
+        if (f.action.id === "cancel-restart") restartState = null;
+        if (again && !(await recheck(res, message))) {
+          slot.querySelectorAll(".fix-note.busy").forEach((n) => n.remove());
+          const warning = document.createElement("span");
+          warning.className = "fix-note err";
+          warning.textContent = "The fix finished, but the re-check couldn't finish. Run the check again.";
+          slot.appendChild(warning);
+        }
+      }
+    } finally {
+      setFixBusy(false);
+    }
+  }
+
+  /** The fix and its re-check form one operation: a new run must not clear
+   *  the live report while either is still using it. */
+  function setFixBusy(on) {
+    fixBusy = on;
+    setFixButtons(!on);
+    syncRows();
+    el("toSelf").disabled = on || running;
+    for (const id of ["ssGo", "ssTech"]) {
+      const button = el(id);
+      if (button) button.disabled = on || running;
     }
   }
 
@@ -1872,12 +1895,26 @@
       return null;
     }
     if (!res) return null;
+    logs.set(moduleId, res.log || []);
     const i = live.results.findIndex((r) => r.module_id === moduleId);
     if (i >= 0) live.results[i] = res;
     if (live.report) {
       const j = live.report.results.findIndex((r) => r.module_id === moduleId);
       if (j >= 0) live.report.results[j] = res;
+      // Never export the old diagnosis or verdict if refreshing fails.
+      live.report.likely = [];
+      delete live.report.exit_code;
+      live.diff = null;
+      try {
+        const updated = await api.refreshReport(live.report);
+        live.report = updated.report;
+        live.results = updated.report.results;
+        live.diff = updated.diff || null;
+      } catch (e) {
+        toast("The check finished, but the report couldn't be refreshed: " + errText(e));
+      }
     }
+    setDiff(live.diff);
     lastSev.set(moduleId, statusOf(res));
     const row = modulesEl.querySelector(`.mod[data-id="${CSS.escape(moduleId)}"]`);
     if (row) row.dataset.sev = statusOf(res);
@@ -1887,12 +1924,9 @@
       fresh.classList.add("flash");
       if (old) old.replaceWith(fresh);
       else resultsEl.appendChild(fresh);
-      statusText.textContent = runSummary(live.results, false, live.results.length);
-    }
-    // The fix may have removed the cause: work the likely cause out again.
-    if (live.report && api.likelyCauses) {
-      try { live.report.likely = await api.likelyCauses(live.results); } catch (_) { /* keep what was there */ }
-      refreshLikely();
+      statusText.textContent = runSummary(live.results, !!(live.report && live.report.cancelled), live.results.length);
+      refreshLiveBanners();
+      applyBadges();
     }
     return res;
   }
@@ -1969,10 +2003,11 @@
       card.querySelectorAll(".fr[data-label]").forEach((row) => {
         const fl = row.querySelector(".fl");
         if (!fl) return;
+        fl.querySelectorAll(".dbadge, .mdelta").forEach((b) => b.remove());
         const c = changeFor(card.dataset.mod, row.dataset.label);
-        if (c && !fl.querySelector(".dbadge")) fl.insertAdjacentHTML("beforeend", badgeHtml(c));
+        if (c) fl.insertAdjacentHTML("beforeend", badgeHtml(c));
         const mc = metricFor(card.dataset.mod, row.dataset.label);
-        if (mc && mc.trend !== "same" && !fl.querySelector(".mdelta")) fl.insertAdjacentHTML("beforeend", deltaHtml(mc));
+        if (mc && mc.trend !== "same") fl.insertAdjacentHTML("beforeend", deltaHtml(mc));
       });
     });
   }
@@ -2006,14 +2041,13 @@
     return box;
   }
 
-  /** Swap the likely-cause banner for the live run's current one. */
-  function refreshLikely() {
+  /** Refresh every derived banner after a re-check, including comparison. */
+  function refreshLiveBanners() {
     if (mode !== "tech" || viewing) return;
-    const old = resultsEl.querySelector(".banner.likely");
-    const fresh = likelyBanner(live.report && live.report.likely);
-    if (old && fresh) old.replaceWith(fresh);
-    else if (old) old.remove();
-    else if (fresh) resultsEl.insertBefore(fresh, resultsEl.querySelector(".banner.diff, .card"));
+    resultsEl.querySelectorAll(":scope > .banner").forEach((b) => b.remove());
+    const first = resultsEl.querySelector(".card");
+    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely)
+      .forEach((b) => resultsEl.insertBefore(b, first));
   }
 
   function diffBanner(diff, label) {
@@ -2125,6 +2159,7 @@
       const go = box.querySelector('[data-x="restart"]');
       if (go) {
         go.onclick = async () => {
+          if (running || fixBusy) return;
           const ok = await modal({
             title: `${I.power} Restart this PC`,
             body: `<p>Restarts in 60 seconds. The signed-in user sees this message:</p>
@@ -2132,25 +2167,32 @@
               <div class="notebox">${I.warn}<p>A remote session will disconnect. Cancel restart stops it within the minute.</p></div>`,
             actions: [{ label: "Not now", value: false, focus: true }, { label: "Restart in 60 s", hot: true, value: true }],
           });
-          if (!ok) return;
+          if (!ok || running || fixBusy) return;
+          setFixBusy(true);
           try {
             toast(await api.runFix("restart-computer", null, remoteSafe, ticketValue()));
             restartState = "scheduled";
             render();
           } catch (e) {
             toast(errText(e));
+          } finally {
+            setFixBusy(false);
           }
         };
       }
       const cancel = box.querySelector('[data-x="cancel"]');
       if (cancel) {
         cancel.onclick = async () => {
+          if (running || fixBusy) return;
+          setFixBusy(true);
           try {
             toast(await api.runFix("cancel-restart", null, remoteSafe, ticketValue()));
             restartState = null;
             render();
           } catch (e) {
             toast(errText(e));
+          } finally {
+            setFixBusy(false);
           }
         };
       }
@@ -2759,21 +2801,24 @@
             <button class="ss-copy" id="ssCopyName" type="button">${I.copy}Copy</button></div>
           <p class="ss-meta">${host ? `<span>${esc(host.os)}</span>` : ""}<span>Give this name to the service desk when you call.</span></p>
         </section>
-        <button class="ss-go" id="ssGo" type="button"${running ? " disabled" : ""}>${I.radar}<span>${running ? "Checking…" : live.results.length ? "Check again" : "Check my computer"}</span></button>
+        <button class="ss-go" id="ssGo" type="button"${running || fixBusy ? " disabled" : ""}>${I.radar}<span>${running ? "Checking…" : live.results.length ? "Check again" : "Check my computer"}</span></button>
         <p class="ss-hint">Takes about a minute. Nothing on your computer is changed.</p>
         <div class="ss-progress" id="ssProg" hidden><div class="bar"><i id="ssBar"></i></div><p id="ssStep">Starting…</p></div>
         <div class="ss-results" id="ssResults"></div>
         <p class="ss-foot">ITriage ${VERSION}${isTauri ? "" : " · preview with sample results"}</p>
       </div>`;
     const tech = el("ssTech");
-    if (tech) tech.onclick = () => setMode("tech");
+    if (tech) {
+      tech.disabled = running || fixBusy;
+      tech.onclick = () => setMode("tech");
+    }
     el("ssCopyName").onclick = () => host && copy(host.hostname, "Computer name copied");
     el("ssGo").onclick = runSelf;
     if (live.results.length && !running) renderSelfResults();
   }
 
   async function runSelf() {
-    if (running) return;
+    if (running || fixBusy) return;
     const ids = selfIds();
     if (!ids.length) return;
     running = true;
@@ -2807,6 +2852,7 @@
         live.report = outcome.report;
         live.results = outcome.report.results;
         live.diff = outcome.diff || null;
+        if (outcome.save_error) toast("Couldn't save this run to history: " + outcome.save_error);
       }
     } catch (e) {
       toast("The check stopped: " + errText(e));
@@ -2886,24 +2932,27 @@
       body: `<p>${esc(fixDescription(it.f.action))}</p>`,
       actions: [{ label: "Not now", value: false, focus: true }, { label: "Go ahead", hot: true, value: true }],
     });
-    if (!ok) return;
+    if (!ok || running || fixBusy) return;
     const slot = btn.parentElement.querySelector(".ss-slot");
-    fixBusy = true;
-    setFixButtons(false);
+    setFixBusy(true);
     slot.innerHTML = '<span class="ss-note">Working…</span>';
     let message = null;
     try {
       message = await api.runFix(it.f.action.id, it.f.action.target || null, remoteSafe, ticketValue());
     } catch (e) {
       slot.innerHTML = `<span class="ss-note err">${I.xc}That didn't work: ${esc(errText(e))}</span>`;
-    } finally {
-      fixBusy = false;
-      setFixButtons(true);
     }
-    if (message != null) {
-      toast(message);
-      await recheck(it.r, message);
-      if (mode === "self") renderSelfResults();
+    try {
+      if (message != null) {
+        toast(message);
+        if (await recheck(it.r, message)) {
+          if (mode === "self") renderSelfResults();
+        } else {
+          slot.textContent = "The fix finished, but the re-check couldn't finish. Check the computer again.";
+        }
+      }
+    } finally {
+      setFixBusy(false);
     }
   }
 
@@ -3198,6 +3247,7 @@
       loadReport: (path) => invoke("load_report", { path }),
       importReport: (text) => invoke("import_report", { text }),
       compareWithPrevious: (report) => invoke("compare_with_previous", { report }),
+      refreshReport: (report) => invoke("refresh_report", { report }),
       compareReports: (a, b) => invoke("compare_reports", { a, b }),
       reportText: (report, diff, logs) => invoke("report_text", { report, diff: diff || null, logs: !!logs }),
       openLink: (url) => invoke("open_link", { url }),
@@ -3240,14 +3290,22 @@
     const parts = input.split(/\s+/);
     let host = parts[0] || "";
     let portsText = parts.slice(1).join(" ");
+    let explicitPorts = parts.length > 1;
+    const inlinePorts = (text) => {
+      if (explicitPorts) throw "Give ports once, after ':' or a space, like fileserver01:445,3389.";
+      explicitPorts = true;
+      portsText = text;
+    };
     const v6 = host.match(/^\[([^\]]+)\](?::(.*))?$/);
     if (v6) {
       host = v6[1];
-      if (!portsText && v6[2]) portsText = v6[2];
+      try { new URL(`http://[${host.split("%")[0]}]`); }
+      catch (_) { throw "Brackets are only used around an IPv6 address."; }
+      if (v6[2] !== undefined) inlinePorts(v6[2]);
     } else if ((host.match(/:/g) || []).length === 1) {
       const [h, pp] = host.split(":");
       host = h;
-      if (!portsText) portsText = pp;
+      inlinePorts(pp);
     }
     if (!host || host.length > 253 || host.startsWith("-") || !/^[A-Za-z0-9._:%-]+$/.test(host)) {
       throw `\`${host}\` isn't a host name or IP address.`;
@@ -3255,11 +3313,12 @@
     const ports = [];
     for (const part of portsText.split(/[,\s;]+/).filter(Boolean)) {
       const n = Number(part);
-      if (!Number.isInteger(n) || n < 1 || n > 65535) throw `\`${part}\` isn't a port number (1–65535). Ports go after the host, like fileserver01:445,3389.`;
+      if (!/^\+?[0-9]+$/.test(part) || !Number.isInteger(n) || n < 1 || n > 65535) throw `\`${part}\` isn't a port number (1–65535). Ports go after the host, like fileserver01:445,3389.`;
       if (!ports.includes(n)) ports.push(n);
     }
     if (ports.length > 16) throw "Up to 16 ports at a time.";
-    return { host, ports, explicit_ports: ports.length > 0 };
+    if (explicitPorts && !ports.length) throw "Give at least one port number (1–65535) after the host.";
+    return { host, ports, explicit_ports: explicitPorts };
   }
 
   /** A stand-in for the engine's likely-cause rules, enough for the sample
@@ -3576,6 +3635,10 @@
       reportText: async (report, diff, withLogs) => plainText(report, diff, withLogs),
       trends: async () => { await sleep(120); return mockTrends(); },
       likelyCauses: async (results) => mockLikely(results),
+      refreshReport: async (report) => ({
+        report: Object.assign({}, clone(report), { likely: mockLikely(report.results) }),
+        diff: report.cancelled ? null : diffFor(report.results),
+      }),
       // The preview has no release to compare with; ?update=1 shows the tag.
       checkUpdate: async () => (/[?&]update=1\b/.test(location.search)
         ? { current: VERSION.slice(1), latest: "0.7.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.7.1", newer: true }

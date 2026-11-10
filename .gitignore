@@ -1,6 +1,7 @@
 # Rust build output
 /target
 **/target
+/node_modules
 
 # Tauri generated files
 /src-tauri/gen

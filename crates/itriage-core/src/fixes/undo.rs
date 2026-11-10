@@ -186,8 +186,13 @@ pub fn remember(before: &Tuning) -> Option<Snapshot> {
 }
 
 fn remember_in(path: &std::path::Path, before: &Tuning) -> Option<Snapshot> {
+    // A retry after a partial change must not replace the original baseline
+    // with the partly tuned state. Revert removes it only after full success.
+    if let Some(saved) = load_from(path) {
+        return Some(saved);
+    }
     if !before.would_change() {
-        return load_from(path);
+        return None;
     }
     let snapshot = Snapshot {
         saved: crate::parse::time::epoch_to_rfc3339(crate::util::now_epoch()),
@@ -368,6 +373,11 @@ mod tests {
         // The tune-up runs again: the state is now the tuned one.
         let again = remember_in(&path, &tuning(TUNED)).expect("the earlier snapshot is still offered");
         assert_eq!(again, first);
+        // A partially successful run leaves settings to change on a retry.
+        // That retry must still be able to restore the original TCP level.
+        let partial = tuning(r#"{"AutoTuning":"Normal","Adapters":[{"Name":"Wi-Fi","SelectiveSuspend":"Enabled"}]}"#);
+        assert!(partial.would_change());
+        assert_eq!(remember_in(&path, &partial).unwrap(), first, "a partial retry keeps the full original snapshot");
         assert_eq!(load_from(&path).unwrap().before, tuning(BEFORE));
         let offer = offer_finding(&first).unwrap();
         assert_eq!(offer.action.as_ref().unwrap().id, "revert-tuneup");
