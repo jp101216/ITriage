@@ -9,6 +9,7 @@ pub mod apps;
 pub mod certs;
 pub mod com;
 pub mod devices;
+pub mod dirs;
 pub mod domain;
 pub mod eventlog;
 pub mod net;
@@ -22,6 +23,7 @@ pub mod session;
 pub mod shell;
 pub mod smbios;
 pub mod token;
+pub mod trust;
 pub mod wlan;
 pub mod wua;
 

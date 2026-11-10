@@ -191,6 +191,20 @@ pub fn nmcli_active_wifi(out: &str) -> Vec<WifiLink> {
         .collect()
 }
 
+/// `nmcli -t -f DEVICE,TYPE,STATE,CON-UUID device`: the wired and Wi-Fi
+/// devices that are connected, each with the UUID of its active connection
+/// when NetworkManager gives one.
+pub fn nmcli_connected(out: &str) -> Vec<(String, Option<String>)> {
+    out.lines()
+        .map(nmcli_fields)
+        .filter(|f| f.len() >= 3 && matches!(f[1].as_str(), "ethernet" | "wifi") && f[2].starts_with("connected"))
+        .map(|f| {
+            let uuid = f.get(3).filter(|u| u.len() == 36 && u.chars().all(|c| c.is_ascii_hexdigit() || c == '-')).cloned();
+            (f[0].clone(), uuid)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,6 +248,25 @@ mod tests {
         assert_eq!(stack_reset_safety(&[Dhcp, Unknown]), StackSafety::Unknown);
         assert_eq!(stack_reset_safety(&[]), StackSafety::Unknown);
         assert_eq!(AddrOrigin::from_windows(3), Dhcp);
+    }
+
+    #[test]
+    fn lists_connected_devices_with_their_connection() {
+        let out = "enp3s0:ethernet:connected:3f2a9c1e-5b7d-4e8a-9c0b-1a2b3c4d5e6f\n\
+                   wlp2s0:wifi:connected (externally):\n\
+                   wlan1:wifi:disconnected:--\n\
+                   lo:loopback:connected (externally):aa\n\
+                   tun0:tun:connected:11111111-2222-3333-4444-555555555555\n";
+        assert_eq!(
+            nmcli_connected(out),
+            vec![
+                ("enp3s0".to_string(), Some("3f2a9c1e-5b7d-4e8a-9c0b-1a2b3c4d5e6f".to_string())),
+                ("wlp2s0".to_string(), None),
+            ],
+            "wired and Wi-Fi only; no UUID means reconnect by device"
+        );
+        // Older nmcli without the fourth field still lists the devices.
+        assert_eq!(nmcli_connected("eth0:ethernet:connected\n"), vec![("eth0".to_string(), None)]);
     }
 
     #[test]

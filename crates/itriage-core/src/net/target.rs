@@ -3,6 +3,12 @@
 //! address it resolves to, then shows the route the OS picks for it (which
 //! interface, which gateway: the quickest way to spot traffic going around a
 //! VPN, or into one) and pings it. Read-only.
+//!
+//! A port the technician typed that doesn't answer is a critical finding:
+//! that's the question they asked. With no ports typed, the four defaults
+//! are tried, and a closed one is only information (a web server has no
+//! reason to answer on 445 or 3389); it becomes a warning when none of them
+//! answers.
 
 use crate::model::{Category, Finding, ModuleInfo, Output, Severity};
 use crate::module::{RunContext, TriageModule};
@@ -36,6 +42,7 @@ impl TriageModule for DestinationTest {
         let profile = ctx.profile();
         let (settings, th) = (&profile.network, &profile.thresholds);
         let host = target.host.as_str();
+        let explicit = target.explicit_ports && !target.ports.is_empty();
         let ports = if target.ports.is_empty() { settings.target_ports.clone() } else { target.ports.clone() };
         let mut findings = Vec::new();
 
@@ -77,8 +84,11 @@ impl TriageModule for DestinationTest {
                     Finding::new(label, format!("open · connected in {}{via}", ms(t)), th.network_rtt_ms.high(t))
                         .with_metric(t, "ms", true)
                 }
-                None => Finding::crit(label, format!("no connection: {}", check.error())),
+                None => closed_port(label, &check.error(), explicit),
             });
+        }
+        if open == 0 && !explicit {
+            findings.push(none_answered(host, &ports));
         }
 
         // NetTriage's "selected address": the first one that connected.
@@ -151,10 +161,72 @@ impl TriageModule for DestinationTest {
     }
 }
 
+/// A port that didn't accept a connection: a problem when it was asked for
+/// by number, information when it was only one of the defaults.
+fn closed_port(label: String, why: &str, explicit: bool) -> Finding {
+    if explicit {
+        Finding::crit(label, format!("no connection: {why}"))
+    } else {
+        Finding::info(label, format!("no connection: {why}")).with_detail("One of the default ports; not every host listens on it.")
+    }
+}
+
+/// None of the default ports answered: worth a warning, and a pointer to
+/// naming the port the service really uses.
+fn none_answered(host: &str, ports: &[u16]) -> Finding {
+    let list = ports.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
+    Finding::warn(format!("{host} ports"), format!("none of the default ports ({list}) accepted a connection"))
+        .with_detail(format!("If the service uses another port, add it after the host, like {host}:8443, and run this again."))
+}
+
 fn worst(a: Severity, b: Severity) -> Severity {
     if a.rank() >= b.rank() {
         a
     } else {
         b
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Target;
+
+    #[test]
+    fn only_ports_asked_for_by_number_are_critical_when_closed() {
+        assert_eq!(closed_port("srv:3389".into(), "10.0.0.5 refused", true).severity, Severity::Critical);
+        let default = closed_port("srv:3389".into(), "10.0.0.5 refused", false);
+        assert_eq!(default.severity, Severity::Info);
+        assert!(default.detail.unwrap().contains("default ports"));
+        let none = none_answered("srv", &[443, 80]);
+        assert_eq!(none.severity, Severity::Warning);
+        assert!(none.value.contains("443, 80") && none.detail.unwrap().contains("srv:8443"));
+    }
+
+    #[test]
+    fn a_host_with_one_default_port_open_is_not_an_alert() {
+        // Something listening on one port only, tested the way a technician
+        // would: by name, with no ports typed.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let open = listener.local_addr().unwrap().port();
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let run = |explicit: bool| {
+            let target = Target { host: "127.0.0.1".into(), ports: vec![open, closed], explicit_ports: explicit };
+            let ctx = RunContext::silent().with_target(&target);
+            DestinationTest.run(&ctx)
+        };
+        let defaults = run(false);
+        let port_rows = |r: &crate::model::ModuleResult| -> Vec<Severity> {
+            r.findings.iter().filter(|f| f.label.starts_with("127.0.0.1:")).map(|f| f.severity).collect()
+        };
+        assert_eq!(port_rows(&defaults), vec![Severity::Ok, Severity::Info], "{:?}", defaults.findings);
+        assert!(defaults.findings.iter().all(|f| f.label != "127.0.0.1 ports"), "one answered, so no warning");
+        assert!(defaults.summary.contains("1 of 2 ports open"), "{}", defaults.summary);
+
+        let typed = run(true);
+        assert_eq!(port_rows(&typed), vec![Severity::Ok, Severity::Critical], "a typed port that's closed is the answer to the question");
     }
 }

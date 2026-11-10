@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------- formatting
@@ -130,11 +130,37 @@ pub fn command_exists(program: &str) -> bool {
 
 // ---------------------------------------------------------- running commands
 
+/// Where a program named without a folder really is.
+///
+/// On Windows, a bare name is one of two things. Windows' own tools (netsh,
+/// sfc, powershell…) are taken from the system folder by full path. Anything
+/// else (winget) is looked up on PATH. Either way the search never starts in
+/// ITriage's own folder or the current one, which is where Windows would
+/// look first: a file planted there under a system tool's name must not be
+/// what an elevated ITriage runs.
+#[cfg(windows)]
+fn resolve(program: &OsStr) -> PathBuf {
+    let Some(name) = program.to_str().filter(|n| !n.contains(['\\', '/', ':'])) else {
+        return PathBuf::from(program);
+    };
+    crate::win::dirs::system_tool(name)
+        .or_else(|| find_in_path(name))
+        // Not installed. A full path that doesn't exist fails cleanly,
+        // where the bare name would send Windows searching.
+        .unwrap_or_else(|| crate::win::dirs::system32().join(name))
+}
+
+#[cfg(not(windows))]
+fn resolve(program: &OsStr) -> PathBuf {
+    PathBuf::from(program)
+}
+
 /// A `Command` with sane defaults for a GUI host: no stdin (so a tool that
-/// prompts gets EOF instead of hanging), and on Windows no console window
-/// flashing up for every child process.
+/// prompts gets EOF instead of hanging), on Windows no console window
+/// flashing up for every child process, and a program found the safe way
+/// (see [`resolve`]).
 pub fn cmd(program: impl AsRef<OsStr>) -> Command {
-    let mut c = Command::new(program);
+    let mut c = Command::new(resolve(program.as_ref()));
     c.stdin(Stdio::null());
     #[cfg(windows)]
     {
@@ -175,19 +201,95 @@ fn program_name(c: &Command) -> String {
         .unwrap_or_else(|| c.get_program().to_string_lossy().into_owned())
 }
 
-/// Run to completion and capture output. Errors only if the program can't
-/// start; a non-zero exit comes back in `code` for the caller to interpret
-/// (plenty of tools use exit codes as data — `dnf check-update` returns 100).
-pub fn capture(mut command: Command) -> Result<CmdOutput, String> {
+/// How long a quick query (`systemctl show`, `nmcli`, `w32tm`) may take
+/// before it's treated as hung.
+pub const QUICK: Duration = Duration::from_secs(60);
+/// For commands that wait on a person: a password typed into the polkit
+/// prompt.
+pub const PROMPTED: Duration = Duration::from_secs(10 * 60);
+
+/// Run to completion and capture output, giving up after [`QUICK`]. Errors
+/// if the program can't start or doesn't finish in time; a non-zero exit
+/// comes back in `code` for the caller to interpret (plenty of tools use
+/// exit codes as data — `dnf check-update` returns 100).
+pub fn capture(command: Command) -> Result<CmdOutput, String> {
+    capture_for(command, QUICK)
+}
+
+/// [`capture`] with its own time limit. A tool that hangs (a dead network
+/// share, a prompt nobody sees) is stopped, so one stuck check can't hold up
+/// the whole run.
+pub fn capture_for(mut command: Command, timeout: Duration) -> Result<CmdOutput, String> {
     let name = program_name(&command);
-    let out = command
-        .output()
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
         .map_err(|e| format!("could not run `{name}`: {e}"))?;
+    let out = child.stdout.take().map(collect);
+    let err = child.stderr.take().map(collect);
+
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(timed_out(&name, timeout));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(15)),
+            Err(e) => return Err(format!("lost track of `{name}`: {e}")),
+        }
+    };
+    // The output normally ends with the process. If something it started
+    // still holds the pipe open, take what there is after a short wait.
+    let text = |collected: Option<Collected>| {
+        collected.map_or_else(String::new, |c| {
+            let _ = c.done.recv_timeout(Duration::from_secs(2));
+            let bytes = c.bytes.lock().unwrap_or_else(|p| p.into_inner());
+            decode(&bytes)
+        })
+    };
     Ok(CmdOutput {
-        code: out.status.code(),
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        code: status.code(),
+        stdout: text(out),
+        stderr: text(err),
     })
+}
+
+/// A pipe being read on its own thread.
+struct Collected {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    /// Closes when the pipe reaches its end.
+    done: mpsc::Receiver<()>,
+}
+
+fn collect<R: Read + Send + 'static>(mut reader: R) -> Collected {
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let (tx, done) = mpsc::channel::<()>();
+    let sink = bytes.clone();
+    std::thread::spawn(move || {
+        let _tx = tx; // dropped at the end of the stream
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => sink.lock().unwrap_or_else(|p| p.into_inner()).extend_from_slice(&buf[..n]),
+            }
+        }
+    });
+    Collected { bytes, done }
+}
+
+/// Captured output as text: UTF-16LE when it plainly is (see [`Decoder`]),
+/// otherwise UTF-8 read leniently.
+fn decode(bytes: &[u8]) -> String {
+    if matches!(Decoder::detect(bytes), Some(Decoder::Utf16Le { .. })) {
+        let units: Vec<u16> = bytes.chunks_exact(2).map(|p| u16::from_le_bytes([p[0], p[1]])).collect();
+        String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string()
+    } else {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
 }
 
 /// Run, capture, and treat a non-zero exit as an error.
@@ -489,12 +591,12 @@ pub fn require_admin_here() -> Result<(), String> {
 #[cfg(unix)]
 pub fn privileged_shell(script: &str) -> Result<(Command, bool), String> {
     if crate::host::is_elevated() {
-        let mut c = cmd("sh");
+        let mut c = cmd("/bin/sh");
         c.arg("-c").arg(script);
         Ok((c, false))
-    } else if command_exists("pkexec") {
-        let mut c = cmd("pkexec");
-        c.arg("sh").arg("-c").arg(script);
+    } else if let Some(pkexec) = crate::trust::system_program("pkexec") {
+        let mut c = cmd(pkexec);
+        c.arg("/bin/sh").arg("-c").arg(script);
         Ok((c, true))
     } else {
         Err("Needs root: run itriage with sudo, or install polkit (pkexec) so it can ask for your password."
@@ -508,13 +610,15 @@ pub fn privileged_shell(script: &str) -> Result<(Command, bool), String> {
 /// pkexec is in the way.
 #[cfg(unix)]
 pub fn privileged(program: &str, args: &[&str]) -> Result<(Command, bool), String> {
-    let path = find_in_path(program).ok_or_else(|| format!("`{program}` isn't installed."))?;
+    // From the system's own folders, never from a PATH that may begin with
+    // a folder the user controls: this is about to run as root.
+    let path = crate::trust::system_program(program).ok_or_else(|| format!("`{program}` isn't installed."))?;
     if crate::host::is_elevated() {
         let mut c = cmd(&path);
         c.args(args);
         Ok((c, false))
-    } else if command_exists("pkexec") {
-        let mut c = cmd("pkexec");
+    } else if let Some(pkexec) = crate::trust::system_program("pkexec") {
+        let mut c = cmd(pkexec);
         c.arg(&path).args(args);
         Ok((c, true))
     } else {
@@ -638,6 +742,34 @@ mod tests {
         let mut mixed = b"plain\r\n".to_vec();
         mixed.extend(utf16le("wide line\r\nnext\r\n"));
         assert_eq!(pumped(mixed, 4096), vec!["plain", "wide line", "next"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_stops_hung_tools_and_keeps_both_streams() {
+        let mut c = cmd("sh");
+        c.args(["-c", "echo out; echo err >&2; exit 7"]);
+        let out = capture(c).unwrap();
+        assert_eq!((out.code, out.stdout.trim(), out.stderr.trim()), (Some(7), "out", "err"));
+
+        let mut hung = cmd("sh");
+        hung.args(["-c", "sleep 30"]);
+        let started = Instant::now();
+        let err = capture_for(hung, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("stopped after"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+
+        // Something it started keeps the pipe open: don't wait on that.
+        let mut c = cmd("sh");
+        c.args(["-c", "sleep 20 & echo finished"]);
+        let started = Instant::now();
+        let out = capture(c).unwrap();
+        assert_eq!(out.stdout.trim(), "finished");
+        assert!(started.elapsed() < Duration::from_secs(8), "waited on the grandchild");
+
+        assert!(capture(cmd("definitely-not-a-real-tool-xyz")).is_err());
+        assert_eq!(decode(&utf16le("wide ✔")), "wide ✔");
+        assert_eq!(decode("naïve".as_bytes()), "naïve");
     }
 
     #[cfg(unix)]

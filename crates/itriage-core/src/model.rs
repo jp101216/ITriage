@@ -171,6 +171,11 @@ pub struct Target {
     pub host: String,
     #[serde(default)]
     pub ports: Vec<u16>,
+    /// The ports were typed in, not filled in from the defaults. A typed
+    /// port that's closed is a problem; a default one usually just isn't
+    /// what that host serves.
+    #[serde(default)]
+    pub explicit_ports: bool,
 }
 
 impl Target {
@@ -191,9 +196,9 @@ impl Target {
         } else {
             (host_part, None)
         };
-        let ports = match ports_part.or(inline_ports).filter(|p| !p.trim().is_empty()) {
-            Some(text) => parse_ports(text)?,
-            None => default_ports.to_vec(),
+        let (ports, explicit_ports) = match ports_part.or(inline_ports).filter(|p| !p.trim().is_empty()) {
+            Some(text) => (parse_ports(text)?, true),
+            None => (default_ports.to_vec(), false),
         };
         let host = host.trim();
         let valid = !host.is_empty()
@@ -203,7 +208,7 @@ impl Target {
         if !valid {
             return Err(format!("`{host}` isn't a host name or IP address."));
         }
-        Ok(Target { host: host.to_string(), ports })
+        Ok(Target { host: host.to_string(), ports, explicit_ports })
     }
 }
 
@@ -393,10 +398,11 @@ mod tests {
     #[test]
     fn parses_typed_destinations() {
         let t = |s: &str| Target::parse(s, &DEFAULTS).unwrap();
-        assert_eq!(t("intranet.example.com"), Target { host: "intranet.example.com".into(), ports: DEFAULTS.to_vec() });
+        assert_eq!(t("intranet.example.com"), Target { host: "intranet.example.com".into(), ports: DEFAULTS.to_vec(), explicit_ports: false });
         assert_eq!(t("fileserver01:445").ports, vec![445]);
+        assert!(t("fileserver01:445").explicit_ports && t("fileserver01 445").explicit_ports);
         assert_eq!(t("fileserver01 445, 139 3389").ports, vec![445, 139, 3389]);
-        assert_eq!(t("[2001:db8::1]:443"), Target { host: "2001:db8::1".into(), ports: vec![443] });
+        assert_eq!(t("[2001:db8::1]:443"), Target { host: "2001:db8::1".into(), ports: vec![443], explicit_ports: true });
         assert_eq!(t("2001:db8::1").ports, DEFAULTS.to_vec(), "a bare IPv6 address keeps the defaults");
         assert_eq!(t("10.0.0.5:80,443").ports, vec![80, 443]);
     }

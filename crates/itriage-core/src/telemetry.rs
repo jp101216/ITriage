@@ -9,7 +9,12 @@
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Instant;
-use sysinfo::{Disks, Networks, System};
+use sysinfo::{DiskRefreshKind, Disks, Networks, System};
+
+/// How often free space (and the list of volumes) is re-read. Asking every
+/// volume for its free space each second is the expensive part of a sample,
+/// and a network drive that has gone away can make it stall.
+const STORAGE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// One snapshot. Rates are per second over the time since the last sample.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -38,6 +43,7 @@ pub struct Sampler {
     networks: Networks,
     disks: Disks,
     last: Instant,
+    storage_read: Instant,
 }
 
 impl Default for Sampler {
@@ -55,6 +61,7 @@ impl Sampler {
             networks: Networks::new_with_refreshed_list(),
             disks: Disks::new_with_refreshed_list(),
             last: Instant::now(),
+            storage_read: Instant::now(),
         }
     }
 
@@ -66,7 +73,14 @@ impl Sampler {
         self.sys.refresh_cpu_usage();
         self.sys.refresh_memory();
         self.networks.refresh(true);
-        self.disks.refresh(true);
+        // Read/write counters every sample; sizes and the volume list now
+        // and then.
+        if self.storage_read.elapsed() >= STORAGE_EVERY {
+            self.disks.refresh(true);
+            self.storage_read = Instant::now();
+        } else {
+            self.disks.refresh_specifics(false, DiskRefreshKind::nothing().with_io_usage());
+        }
 
         let (rx, tx) = self
             .networks

@@ -796,6 +796,8 @@
   showEmpty();
   boot();
 
+  if (api.onCloseRequested) api.onCloseRequested(askBeforeClosing);
+
   pollTelemetry();
   setInterval(pollTelemetry, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollTelemetry(); });
@@ -1203,10 +1205,51 @@
   }
 
   async function relaunch() {
+    // Relaunching closes this copy, and with it whatever it's in the middle of.
+    if (running || fixBusy) {
+      toast("Something is still running. Wait for it to finish, or cancel it, before relaunching as administrator.");
+      return;
+    }
     try {
       await api.relaunchElevated(); // the Tauri app exits when this succeeds
     } catch (e) {
       toast(errText(e) || "Elevation was cancelled");
+    }
+  }
+
+  /** The window was asked to close while a run or a fix is going. */
+  let closeAsking = false;
+  async function askBeforeClosing() {
+    if (closeAsking) return;
+    closeAsking = true;
+    const what = fixBusy && !running
+      ? "<p>A fix is running. ITriage can close as soon as it finishes; stopping it part-way isn't safe.</p>"
+      : `<p>A run is in progress. Closing now would cut off whatever it's doing.</p>
+         <ul><li><b>Keep running</b> leaves it alone.</li>
+         <li><b>Stop and close</b> stops at the next safe point (an install that has started always finishes), saves what ran, then closes.</li></ul>`;
+    const stop = await modal({
+      title: `${I.warn} ITriage is still working`,
+      body: what,
+      actions: [
+        { label: "Keep running", value: false, focus: true },
+        { label: fixBusy && !running ? "Close when it finishes" : "Stop and close", hot: true, value: true },
+      ],
+    });
+    closeAsking = false;
+    try {
+      if (stop) {
+        if (running && !cancelRequested) {
+          cancelRequested = true;
+          runLabel.textContent = "STOPPING, THEN CLOSING";
+          statusText.textContent = "Stopping at the next safe point, then closing…";
+          syncRows();
+        }
+        await api.closeWhenDone();
+      } else {
+        await api.keepRunning();
+      }
+    } catch (e) {
+      toast(errText(e));
     }
   }
 
@@ -2121,14 +2164,26 @@
     return { report, diff: live.diff };
   }
 
-  function doExport(fmt) {
+  async function doExport(fmt) {
     const { report, diff } = currentReport();
     if (!report.results.length) return;
-    if (fmt === "plain") copy(plainText(report, diff), "Ticket text copied");
-    else if (fmt === "transcript") copyTranscript(report, diff);
+    if (fmt === "plain") copy(await ticketText(report, diff, false), "Ticket text copied");
+    else if (fmt === "transcript") copy(await ticketText(report, diff, true), "Full transcript copied");
     else if (fmt === "md") copy(markdown(report, diff), "Markdown copied");
     else if (fmt === "json") copy(JSON.stringify(report, null, 2), "JSON report copied");
-    else if (fmt === "rich") copyRich(richHtml(report, diff), plainText(report, diff));
+    else if (fmt === "rich") copyRich(richHtml(report, diff), await ticketText(report, diff, false));
+  }
+
+  /** The plain-text report. In the app it's the engine's rendering, the same
+   *  text the command line prints and the history folder keeps, so a ticket
+   *  reads the same wherever it came from. plainText() below stands in for
+   *  it in the browser preview. */
+  async function ticketText(report, diff, withLogs) {
+    try {
+      return await api.reportText(report, diff, withLogs);
+    } catch (_) {
+      return plainText(report, diff, withLogs);
+    }
   }
 
   function hostLine(report) {
@@ -2216,16 +2271,6 @@
     });
     if (diff) lines.push(diffText(diff, report.host ? report.host.hostname : ""));
     return lines.join("\n");
-  }
-
-  async function copyTranscript(report, diff) {
-    let text;
-    try {
-      text = isTauri ? await api.reportText(report, diff, true) : plainText(report, diff, true);
-    } catch (_) {
-      text = plainText(report, diff, true);
-    }
-    copy(text, "Full transcript copied");
   }
 
   function markdown(report, diff) {
@@ -2464,9 +2509,9 @@
         <p>Calling or emailing the service desk? Copy the details and paste them into your message.</p>
         <button class="ss-copy" id="ssShare" type="button">${I.copy}Copy details for the service desk</button>
       </div>`;
-    el("ssShare").onclick = () => {
+    el("ssShare").onclick = async () => {
       const { report, diff } = currentReport();
-      copy(plainText(report, diff), "Details copied: paste them into your message");
+      copy(await ticketText(report, diff, false), "Details copied: paste them into your message");
     };
     box.querySelectorAll("[data-kb]").forEach((a) => wireKb(a));
     box.querySelectorAll(".ss-fix").forEach((b) => {
@@ -2794,6 +2839,9 @@
       reportText: (report, diff, logs) => invoke("report_text", { report, diff: diff || null, logs: !!logs }),
       openLink: (url) => invoke("open_link", { url }),
       openHistoryFolder: () => invoke("open_history_folder"),
+      onCloseRequested: (handler) => listen("close-requested", () => handler()),
+      closeWhenDone: () => invoke("close_when_done"),
+      keepRunning: () => invoke("keep_running"),
     };
   }
 
@@ -2848,7 +2896,7 @@
       if (!ports.includes(n)) ports.push(n);
     }
     if (ports.length > 16) throw "Up to 16 ports at a time.";
-    return { host, ports };
+    return { host, ports, explicit_ports: ports.length > 0 };
   }
 
   function mockApi() {
@@ -2906,7 +2954,12 @@
       let open = 0;
       ports.forEach((port) => {
         if (port === 3389 || port === 80) {
-          findings.push(F(`${t.host}:${port}`, `no connection: ${ip} ${port === 80 ? "refused" : "timed out"}`, "critical"));
+          // As in the engine: a port that was typed and is closed is the
+          // answer to the question; a default one is only information.
+          const why = `no connection: ${ip} ${port === 80 ? "refused" : "timed out"}`;
+          findings.push(t.explicit_ports
+            ? F(`${t.host}:${port}`, why, "critical")
+            : F(`${t.host}:${port}`, why, "info", "One of the default ports; not every host listens on it."));
         } else {
           open++;
           const ms = port === 445 ? 14 : port === 443 ? 21 : 17;

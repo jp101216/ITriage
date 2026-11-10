@@ -24,10 +24,13 @@
 //! * `parse`: pure, OS-independent parsers for tool output, unit-tested on any host.
 //! * `util`, `host`: process execution (captured, streamed, privileged),
 //!   PATH lookup, formatting, machine identity and elevation.
+//! * `trust`: which files an elevated run may start or obey (only ones a
+//!   standard user couldn't have put there).
 //! * `telemetry`: the stateful sampler behind the live HUD charts.
 
 pub mod actions;
 pub mod audit;
+pub mod bitlocker;
 pub mod cli;
 pub mod desk;
 pub mod host;
@@ -40,6 +43,7 @@ pub mod profile;
 pub mod report;
 pub mod site;
 pub mod telemetry;
+pub mod trust;
 pub mod util;
 
 #[cfg(windows)]

@@ -157,14 +157,15 @@ pub fn ensure_event_source(source: &str) {
     if read_string(HKEY_LOCAL_MACHINE, &subkey, "EventMessageFile").is_some() {
         return;
     }
-    let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let windir = super::dirs::windows();
     let Some(dll) = [
         r"Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll",
         r"Microsoft.NET\Framework\v4.0.30319\EventLogMessages.dll",
     ]
     .iter()
-    .map(|rel| format!(r"{windir}\{rel}"))
-    .find(|p| std::path::Path::new(p).is_file()) else {
+    .map(|rel| windir.join(rel))
+    .find(|p| p.is_file())
+    .map(|p| p.display().to_string()) else {
         return;
     };
 

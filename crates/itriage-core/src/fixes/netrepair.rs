@@ -59,7 +59,7 @@ impl TriageModule for PurgeCaches {
 pub struct NetworkTuning;
 
 /// Reports each physical adapter's sleep settings, changing nothing.
-const NIC_POWER_READ: &str = r#"
+pub(crate) const NIC_POWER_READ: &str = r#"
 $ErrorActionPreference = 'Stop'
 $rows = @()
 foreach ($adapter in @(Get-NetAdapter -Physical)) {
@@ -75,7 +75,7 @@ foreach ($adapter in @(Get-NetAdapter -Physical)) {
 
 /// Invoke-EndpointTuneUp's NIC sleep step: turn off the supported sleep
 /// settings with the adapter restart deferred, then verify them.
-const NIC_POWER_OFF: &str = r#"
+pub(crate) const NIC_POWER_OFF: &str = r#"
 $ErrorActionPreference = 'Stop'
 $rows = @()
 foreach ($adapter in @(Get-NetAdapter -Physical)) {
@@ -237,7 +237,7 @@ pub struct RestartAdapters;
 /// Restart every physical adapter that's up, then wait (up to 60 s) for each
 /// to come back. A missing adapter counts as still down.
 #[cfg_attr(not(windows), allow(dead_code))]
-const RESTART_ADAPTERS: &str = r#"
+pub(crate) const RESTART_ADAPTERS: &str = r#"
 $ErrorActionPreference = 'Stop'
 $rows = @()
 $up = @(Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' })
@@ -265,7 +265,7 @@ foreach ($n in $names | Where-Object { $failed -notcontains $_ }) {
 
 /// What the restart script would restart: physical adapters that are up.
 #[cfg_attr(not(windows), allow(dead_code))]
-const PHYSICAL_UP: &str = r#"
+pub(crate) const PHYSICAL_UP: &str = r#"
 $ErrorActionPreference = 'Stop'
 $rows = @(Get-NetAdapter -Physical | Where-Object { $_.Status -eq 'Up' } | ForEach-Object { [pscustomobject]@{ Item = $_.Name; Status = 'Skipped'; Detail = $_.InterfaceDescription } })
 'ITRIAGE-ROWS ' + (ConvertTo-Json -InputObject @($rows) -Compress)
@@ -436,25 +436,27 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use super::*;
-    use crate::util::{capture, cmd, command_exists, pkexec_error, privileged};
+    use crate::util::{capture, capture_for, cmd, command_exists, pkexec_error, privileged, PROMPTED};
 
     pub fn purge_caches(ctx: &RunContext) -> Result<Output, String> {
         let (c, via_pkexec) = privileged("ip", &["neigh", "flush", "all"])?;
         if via_pkexec {
             ctx.log("Asking for your password (pkexec)…");
         }
-        let out = capture(c)?;
+        let out = capture_for(c, PROMPTED)?;
         if via_pkexec {
             if let Some(why) = pkexec_error(out.code) {
                 return Err(why.to_string());
             }
         }
-        let f = if out.success() {
-            Finding::ok("Neighbour (ARP) cache", "flushed")
+        if out.success() {
+            Ok(Output::new("Neighbour cache flushed", vec![Finding::ok("Neighbour (ARP) cache", "flushed")]))
         } else {
-            Finding::crit("Neighbour (ARP) cache", out.combined())
-        };
-        Ok(Output::new("Neighbour cache flushed", vec![f]))
+            let said = out.combined();
+            let said = crate::parse::text::first_line(&said);
+            let why = if said.is_empty() { crate::util::exit_label(out.code) } else { said.to_string() };
+            Ok(Output::new("Flushing the neighbour cache failed", vec![Finding::crit("Neighbour (ARP) cache", why)]))
+        }
     }
 
     #[allow(dead_code)]
@@ -462,16 +464,13 @@ mod imp {
         Vec::new()
     }
 
-    /// NetworkManager devices that are connected and physical.
-    fn devices() -> Vec<String> {
+    /// NetworkManager devices that are connected and physical, each with
+    /// the connection it has up.
+    fn devices() -> Vec<(String, Option<String>)> {
         let mut c = cmd("nmcli");
-        c.args(["-t", "-f", "DEVICE,TYPE,STATE", "device"]).env("LC_ALL", "C");
+        c.args(["-t", "-f", "DEVICE,TYPE,STATE,CON-UUID", "device"]).env("LC_ALL", "C");
         let out = capture(c).ok().filter(|o| o.success()).map(|o| o.stdout).unwrap_or_default();
-        out.lines()
-            .map(crate::parse::net::nmcli_fields)
-            .filter(|f| f.len() >= 3 && matches!(f[1].as_str(), "ethernet" | "wifi") && f[2].starts_with("connected"))
-            .map(|f| f[0].clone())
-            .collect()
+        crate::parse::net::nmcli_connected(&out)
     }
 
     const NO_NMCLI: &str = "NetworkManager (nmcli) isn't installed, so adapters can't be restarted from here.";
@@ -485,7 +484,7 @@ mod imp {
         let addrs = up_adapters();
         Ok(devices()
             .into_iter()
-            .map(|d| {
+            .map(|(d, _)| {
                 let a = addrs.iter().find(|(n, _)| *n == d).map_or_else(|| "no address".to_string(), |(_, a)| a.clone());
                 (d, a)
             })
@@ -501,19 +500,22 @@ mod imp {
             return Ok(vec![Finding::info("Network devices", "none connected")]);
         }
         let mut findings = Vec::new();
-        for dev in list {
+        for (dev, connection) in list {
             ctx.log(format!("Reconnecting {dev}…"));
-            let run = |args: &[&str]| {
-                let mut c = cmd("nmcli");
-                c.args(args).env("LC_ALL", "C");
-                capture(c)
+            // One request that NetworkManager carries out by itself: it
+            // takes the connection down and brings it back up. Two separate
+            // commands would leave the device down if this session (SSH over
+            // that very device) died between them.
+            let mut c = cmd("nmcli");
+            match &connection {
+                Some(uuid) => c.args(["connection", "up", "uuid", uuid, "ifname", &dev]),
+                None => c.args(["device", "connect", &dev]),
             };
-            let down = run(&["device", "disconnect", &dev]);
-            let up = run(&["device", "connect", &dev]);
-            findings.push(match (down, up) {
-                (_, Ok(o)) if o.success() => Finding::ok(dev.clone(), "reconnected"),
-                (_, Ok(o)) => Finding::crit(dev.clone(), crate::parse::text::first_line(&o.combined()).to_string()),
-                (_, Err(e)) => Finding::crit(dev.clone(), e),
+            c.env("LC_ALL", "C");
+            findings.push(match capture_for(c, Duration::from_secs(120)) {
+                Ok(o) if o.success() => Finding::ok(dev.clone(), "reconnected"),
+                Ok(o) => Finding::crit(dev.clone(), crate::parse::text::first_line(&o.combined()).to_string()),
+                Err(e) => Finding::crit(dev.clone(), e),
             });
         }
         Ok(findings)

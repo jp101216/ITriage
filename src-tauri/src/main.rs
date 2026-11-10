@@ -19,8 +19,15 @@
 //!   `compare_reports`, `report_text`: the report viewer and comparisons.
 //! * `open_link` (https only), `open_history_folder`, `relaunch_elevated`.
 //! * `get_telemetry`: one live sample for the HUD charts, polled about once a second.
+//! * `close_when_done` / `keep_running`: the answer to "something is still
+//!   running; close anyway?".
 //!
 //! A run and a fix never overlap: both claim the same busy flag.
+//!
+//! Closing the window while that flag is held would kill a repair or an
+//! install part-way through. So the close is held back and the UI asks; the
+//! choices are to keep running, or to stop at the next safe point and then
+//! close. Relaunching as administrator is refused outright while busy.
 //!
 //! Given any command-line arguments, the binary runs the command line
 //! (`itriage --help`) instead of opening a window.
@@ -33,7 +40,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, State, Window};
+use tauri::{AppHandle, Emitter, Manager, State, Window, WindowEvent};
 
 struct App {
     profile: Arc<itriage_core::Profile>,
@@ -42,20 +49,42 @@ struct App {
     cancel: Arc<AtomicBool>,
     /// A run or a fix is in progress.
     busy: Arc<AtomicBool>,
+    /// The window was asked to close while busy, and nobody has answered yet.
+    close_asked: Arc<AtomicBool>,
+    /// Close the window as soon as what's running has stopped.
+    close_when_done: Arc<AtomicBool>,
 }
 
-/// Releases the busy flag when dropped, so a panic can't wedge the app.
-struct Busy(Arc<AtomicBool>);
+/// Releases the busy flag when dropped, so a panic can't wedge the app, and
+/// closes the window then if that's what was asked for meanwhile.
+struct Busy {
+    flag: Arc<AtomicBool>,
+    close_asked: Arc<AtomicBool>,
+    close_when_done: Arc<AtomicBool>,
+    window: Option<Window>,
+}
 
 impl Drop for Busy {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.flag.store(false, Ordering::SeqCst);
+        self.close_asked.store(false, Ordering::SeqCst);
+        if self.close_when_done.load(Ordering::SeqCst) {
+            if let Some(window) = &self.window {
+                let _ = window.destroy();
+            }
+        }
     }
 }
 
-fn claim(flag: &Arc<AtomicBool>) -> Result<Busy, String> {
-    flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .map(|_| Busy(flag.clone()))
+fn claim(app: &App, window: Option<Window>) -> Result<Busy, String> {
+    app.busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map(|_| Busy {
+            flag: app.busy.clone(),
+            close_asked: app.close_asked.clone(),
+            close_when_done: app.close_when_done.clone(),
+            window,
+        })
         .map_err(|_| "Something is already running. Wait for it to finish, or cancel it, first.".to_string())
 }
 
@@ -120,10 +149,31 @@ async fn get_telemetry(sampler: State<'_, Mutex<Sampler>>) -> Result<Telemetry, 
 /// Start an elevated copy through the UAC prompt and close this one. If the
 /// user declines the prompt, this one keeps running and the UI shows why.
 #[tauri::command]
-fn relaunch_elevated(app: AppHandle) -> Result<(), String> {
+fn relaunch_elevated(app: AppHandle, state: State<'_, App>) -> Result<(), String> {
+    // Relaunching closes this copy, and with it whatever it's in the middle of.
+    if state.busy.load(Ordering::SeqCst) {
+        return Err("Something is still running. Wait for it to finish, or cancel it, before relaunching as administrator.".into());
+    }
     itriage_core::relaunch_elevated()?;
     app.exit(0);
     Ok(())
+}
+
+/// "Stop and close": ask the run to stop at its next safe point, and close
+/// the window when it has (or at once, if it finished in the meantime).
+#[tauri::command]
+fn close_when_done(window: Window, app: State<'_, App>) {
+    app.close_when_done.store(true, Ordering::SeqCst);
+    app.cancel.store(true, Ordering::SeqCst);
+    if !app.busy.load(Ordering::SeqCst) {
+        let _ = window.destroy();
+    }
+}
+
+/// "Keep running": forget the close request.
+#[tauri::command]
+fn keep_running(app: State<'_, App>) {
+    app.close_asked.store(false, Ordering::SeqCst);
 }
 
 #[derive(Serialize)]
@@ -166,7 +216,7 @@ async fn run_modules(
         Some(t) => Some(Target::parse(t, &app.profile.network.target_ports)?),
         None => None,
     };
-    let busy = claim(&app.busy)?;
+    let busy = claim(&app, Some(window.clone()))?;
     app.cancel.store(false, Ordering::SeqCst);
     let profile = app.profile.clone();
     let cancel = app.cancel.clone();
@@ -261,12 +311,13 @@ fn cancel_run(app: State<'_, App>) -> bool {
 /// the UI showed, and the attempt is audited either way.
 #[tauri::command]
 async fn run_fix(
+    window: Window,
     app: State<'_, App>,
     id: String,
     target: Option<String>,
     remote_safe: Option<bool>,
 ) -> Result<String, String> {
-    let busy = claim(&app.busy)?;
+    let busy = claim(&app, Some(window))?;
     let profile = app.profile.clone();
     let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
     tauri::async_runtime::spawn_blocking(move || {
@@ -361,11 +412,29 @@ fn main() {
         status: loaded.status,
         cancel: Arc::new(AtomicBool::new(false)),
         busy: Arc::new(AtomicBool::new(false)),
+        close_asked: Arc::new(AtomicBool::new(false)),
+        close_when_done: Arc::new(AtomicBool::new(false)),
     };
 
     tauri::Builder::default()
         .manage(Mutex::new(Sampler::new()))
         .manage(app)
+        .on_window_event(|window, event| {
+            let WindowEvent::CloseRequested { api, .. } = event else { return };
+            let app = window.state::<App>();
+            if !app.busy.load(Ordering::SeqCst) {
+                return; // nothing running: close as usual
+            }
+            api.prevent_close();
+            if app.close_asked.swap(true, Ordering::SeqCst) {
+                // Asked twice without an answer (the dialog may not be
+                // showing): take that as "stop and close".
+                app.close_when_done.store(true, Ordering::SeqCst);
+                app.cancel.store(true, Ordering::SeqCst);
+            } else {
+                let _ = window.emit("close-requested", ());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             list_modules,
             list_presets,
@@ -377,6 +446,8 @@ fn main() {
             relaunch_elevated,
             run_modules,
             cancel_run,
+            close_when_done,
+            keep_running,
             run_fix,
             list_history,
             load_report,

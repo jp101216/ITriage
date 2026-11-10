@@ -340,7 +340,7 @@ mod imp {
     use super::*;
     use crate::parse::ping::linux_summary;
     use crate::parse::route::{self, Link};
-    use crate::util::{capture, cmd, command_exists};
+    use crate::util::{capture, capture_for, cmd, command_exists};
 
     fn ip_json(args: &[&str]) -> Option<String> {
         if !command_exists("ip") {
@@ -525,6 +525,7 @@ mod imp {
             _ => addr.to_string(),
         };
         let wait = timeout.as_secs().max(1).to_string();
+        let echoes = count;
         let count = count.to_string();
         let run = |fast: bool| {
             let mut c = cmd("ping");
@@ -533,7 +534,9 @@ mod imp {
                 c.args(["-i", "0.2"]);
             }
             c.arg(&target).env("LC_ALL", "C");
-            capture(c)
+            // Every echo may wait out its timeout, plus the gap between them.
+            let limit = Duration::from_secs(u64::from(echoes) * (timeout.as_secs().max(1) + 1) + 5);
+            capture_for(c, limit)
         };
         // -i 0.2 keeps four echoes under a second; BusyBox ping lacks it.
         let mut out = run(true)?;
@@ -553,7 +556,7 @@ mod imp {
         }
         let mut c = cmd("curl");
         c.args(["-sS", "--fail", "--max-time", &timeout.as_secs().max(1).to_string(), "-A", "itriage", url]);
-        let out = capture(c)?;
+        let out = capture_for(c, timeout + Duration::from_secs(5))?;
         if out.success() {
             Ok(out.stdout)
         } else {

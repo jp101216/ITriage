@@ -158,23 +158,102 @@ fn json_files(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
+// ------------------------------------------------------------------ index
+
+/// The history's index: what the list and the "compare with the last run"
+/// lookup need to know about each saved run, so neither has to read and
+/// parse every report (with their full logs) each time. It's a cache: built
+/// from the reports, rebuilt for any whose file has changed, and safe to
+/// delete.
+const INDEX_FILE: &str = "index.cache";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct IndexEntry {
+    /// The report file's size and modified time when this was read from it.
+    size: u64,
+    modified: u64,
+    generated: String,
+    hostname: String,
+    modules: usize,
+    worst: Severity,
+    cancelled: bool,
+    /// The modules that really ran (not as a preview).
+    checks: Vec<String>,
+}
+
+type Index = std::collections::BTreeMap<String, IndexEntry>;
+
+impl IndexEntry {
+    fn of(report: &Report, size: u64, modified: u64) -> Self {
+        Self {
+            size,
+            modified,
+            generated: report.generated.clone(),
+            hostname: report.host.hostname.clone(),
+            modules: report.results.len(),
+            worst: report.worst(),
+            cancelled: report.cancelled,
+            checks: report.results.iter().filter(|r| !r.preview).map(|r| r.module_id.clone()).collect(),
+        }
+    }
+}
+
+fn stamp(path: &Path) -> Option<(u64, u64)> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    Some((meta.len(), modified))
+}
+
+/// Every saved run with its index entry, reading only the reports that are
+/// new or have changed since the index was written.
+fn indexed(dir: &Path) -> Vec<(PathBuf, IndexEntry)> {
+    let index_path = dir.join(INDEX_FILE);
+    let known: Index = std::fs::read_to_string(&index_path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    let mut current = Index::new();
+    let mut out = Vec::new();
+    for path in json_files(dir) {
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        let Some((size, modified)) = stamp(&path) else { continue };
+        let entry = match known.get(&name) {
+            Some(e) if e.size == size && e.modified == modified => e.clone(),
+            _ => match load(&path) {
+                Ok(report) => IndexEntry::of(&report, size, modified),
+                Err(_) => continue, // not a report; leave it alone
+            },
+        };
+        current.insert(name, entry.clone());
+        out.push((path, entry));
+    }
+    if current != known {
+        // Written beside, then moved into place, so a reader never sees half
+        // of it. Best effort: without it the next call just reads more.
+        let tmp = dir.join(format!("{INDEX_FILE}.{}", std::process::id()));
+        if serde_json::to_string(&current).ok().and_then(|text| std::fs::write(&tmp, text).ok()).is_some() {
+            let _ = std::fs::rename(&tmp, &index_path);
+        }
+        let _ = std::fs::remove_file(&tmp);
+    }
+    out
+}
+
 /// Saved runs, newest first.
 pub fn list() -> Vec<ReportMeta> {
-    let Some(dir) = history_dir() else {
-        return Vec::new();
-    };
-    let mut metas: Vec<ReportMeta> = json_files(&dir)
+    history_dir().map(|dir| list_in(&dir)).unwrap_or_default()
+}
+
+fn list_in(dir: &Path) -> Vec<ReportMeta> {
+    let mut metas: Vec<ReportMeta> = indexed(dir)
         .into_iter()
-        .filter_map(|p| {
-            let r = load(&p).ok()?;
-            Some(ReportMeta {
-                path: p.display().to_string(),
-                generated: r.generated.clone(),
-                hostname: r.host.hostname.clone(),
-                modules: r.results.len(),
-                worst: r.worst(),
-                cancelled: r.cancelled,
-            })
+        .map(|(path, e)| ReportMeta {
+            path: path.display().to_string(),
+            generated: e.generated,
+            hostname: e.hostname,
+            modules: e.modules,
+            worst: e.worst,
+            cancelled: e.cancelled,
         })
         .collect();
     metas.sort_by(|a, b| b.generated.cmp(&a.generated));
@@ -213,27 +292,24 @@ fn previous_in(dir: &Path, hostname: &str, generated: &str, ids: &[String]) -> O
     if wanted.is_empty() {
         return None;
     }
-    let mut files = json_files(dir);
-    files.sort_by(|a, b| b.cmp(a)); // names start with the run's timestamp: newest first
-    let mut best: Option<(usize, Report)> = None;
-    for path in files {
-        let Ok(old) = load(&path) else { continue };
-        if !old.host.hostname.eq_ignore_ascii_case(hostname) || old.generated.as_str() >= generated || old.cancelled {
+    // Chosen from the index; only the winner is read from disk.
+    let mut runs = indexed(dir);
+    runs.sort_by(|a, b| b.0.cmp(&a.0)); // names start with the run's timestamp: newest first
+    let mut best: Option<(usize, PathBuf)> = None;
+    for (path, old) in runs {
+        if !old.hostname.eq_ignore_ascii_case(hostname) || old.generated.as_str() >= generated || old.cancelled {
             continue;
         }
-        let shared = wanted
-            .iter()
-            .filter(|id| old.results.iter().any(|r| !r.preview && r.module_id == ***id))
-            .count();
+        let shared = wanted.iter().filter(|id| old.checks.contains(id)).count();
         if shared > best.as_ref().map_or(0, |(n, _)| *n) {
             let complete = shared == wanted.len();
-            best = Some((shared, old));
+            best = Some((shared, path));
             if complete {
                 break; // nothing older can do better
             }
         }
     }
-    best.map(|(_, r)| r)
+    best.and_then(|(_, path)| load(&path).ok())
 }
 
 /// Compare two runs of the same computer, oldest first whichever way
@@ -934,6 +1010,46 @@ mod tests {
         names.sort();
         assert!(pa.with_extension("txt").exists(), "a transcript is saved beside it");
         assert_eq!(names, vec![pa, pb], "and sorts after the first, oldest first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_history_list_reads_each_report_once() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-index-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut first = report(vec![result("system.disk", vec![Finding::warn("C:\\", "90% used")], None)]);
+        first.generated = "2026-11-01T09:00:00Z".into();
+        let mut second = report(vec![result("system.disk", vec![Finding::ok("C:\\", "50% used")], None), result("fix.temp", vec![], None)]);
+        second.generated = "2026-11-02T09:00:00Z".into();
+        second.results[1].preview = true;
+        let p1 = save_in(&dir, &first, 0).unwrap();
+        let p2 = save_in(&dir, &second, 0).unwrap();
+
+        let listed = list_in(&dir);
+        assert_eq!(listed.iter().map(|m| m.generated.as_str()).collect::<Vec<_>>(), vec![second.generated.as_str(), first.generated.as_str()], "newest first");
+        assert_eq!((listed[1].worst, listed[0].modules), (Severity::Warning, 2));
+        let index: Index = serde_json::from_str(&std::fs::read_to_string(dir.join(INDEX_FILE)).unwrap()).unwrap();
+        assert_eq!(index.len(), 2);
+        assert_eq!(index[p2.file_name().unwrap().to_str().unwrap()].checks, vec!["system.disk"], "previews aren't checks");
+
+        // From here the reports themselves aren't read: emptying one's file
+        // while keeping its size and time would go unnoticed, so prove it
+        // the other way round. A report that changes is read again...
+        let mut changed = first.clone();
+        changed.results[0].findings[0] = Finding::crit("C:\\", "99% used, and counting");
+        std::fs::write(&p1, serde_json::to_string_pretty(&changed).unwrap()).unwrap();
+        assert_eq!(list_in(&dir)[1].worst, Severity::Critical, "a changed report is re-read");
+        // ...one that's deleted drops out, and the index isn't a run itself.
+        std::fs::remove_file(&p2).unwrap();
+        let listed = list_in(&dir);
+        assert_eq!(listed.len(), 1);
+        assert!(json_files(&dir).iter().all(|p| p.file_name().unwrap() != INDEX_FILE));
+        // A damaged index is just rebuilt.
+        std::fs::write(dir.join(INDEX_FILE), "not json").unwrap();
+        assert_eq!(list_in(&dir).len(), 1);
+        // The lookup for "the last comparable run" goes through it too.
+        let found = previous_in(&dir, "WS-1", "2026-11-05T09:00:00Z", &["system.disk".to_string()]).unwrap();
+        assert_eq!(found.generated, first.generated);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

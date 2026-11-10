@@ -2,7 +2,7 @@
 
 use crate::module::RunContext;
 use crate::parse::winget::{parse_upgrade_table, tally_upgrade, UpgradeTally, WingetRow};
-use crate::util::{capture, cmd, command_exists, stream};
+use crate::util::{capture_for, cmd, command_exists, stream};
 use std::time::Duration;
 
 pub fn available() -> bool {
@@ -17,7 +17,8 @@ pub fn available() -> bool {
 pub fn pending() -> Result<Vec<WingetRow>, String> {
     let mut c = cmd("winget");
     c.args(["upgrade", "--accept-source-agreements", "--disable-interactivity"]);
-    let out = capture(c)?;
+    // It refreshes its sources from the network before it answers.
+    let out = capture_for(c, Duration::from_secs(3 * 60))?;
     // winget exits non-zero when nothing needs upgrading; the table is the signal.
     Ok(parse_upgrade_table(&out.stdout))
 }
