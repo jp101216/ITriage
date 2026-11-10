@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.6.
+/* ITriage frontend logic — v0.6.1.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.6";
+  const VERSION = "v0.6.1";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>

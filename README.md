@@ -359,7 +359,10 @@ the policy (and remote-safe mode) is checked again in the engine, whatever the
 UI showed. Every attempt, allowed, refused or failed, is written to the audit
 log (`audit.jsonl` in the app's state folder) **and** to the Windows
 Application event log (source `itriage`) or syslog. After a fix runs, the
-module re-checks itself so you see whether it worked.
+module re-checks itself so you see whether it worked. A fix never repeats a
+change, though: on a module that changes the machine, a preview is refreshed
+as a preview and the results of a real run stay as they were, and the engine
+turns any re-check of such a module into a preview whatever the UI asks for.
 
 | Fix | Offered when | Windows | Linux | Admin |
 |---|---|---|---|:-:|
@@ -388,13 +391,17 @@ compared with the most comparable earlier run on that machine (see
 counts problems that are **new**, **resolved**, **still failing** or
 **changed**, and measurements that got **better** or **worse**. Findings are
 badged in place, and **Details** opens the full comparison with a
-before/after table.
+before/after table. A module that couldn't run in one of the two runs is
+listed under **Gaps**: its problems are neither resolved nor new, just not
+compared.
 
 * **History** lists saved runs. Open one to read it with its own comparison,
   or tick two and compare them.
 * **Open** loads a report exported elsewhere: another machine's run, or the
   command line's `--json` or `--out` output. It's added to the history, so the
-  next report from that machine is compared against it.
+  next report from that machine is compared against it. History file names are
+  built from the report's time and host name with everything but letters,
+  digits and hyphens replaced, so an opened report can't name a path.
 
 ## Ticket exports
 
@@ -508,7 +515,13 @@ The technician console is a HUD-style diagnostic console (red by default; see
   lit for the current OS, mini-glyphs (four of them live), a **DISRUPTIVE**
   badge on changes that remote-safe locks, and the destination field on the
   Destination test card. Modules the profile or remote-safe blocks show
-  **LOCKED** with the reason.
+  **LOCKED** with the reason. Ticked checks are remembered between sessions;
+  modules that change the machine never are.
+* **Short windows** (under 840 px tall: a 1366×768 laptop, or the window
+  dragged down to its 960×640 minimum): the telemetry strip becomes one row,
+  the header and the rail's fixed parts tighten, and module descriptions show
+  two lines with the rest in a tooltip, so the list keeps room for a few rows.
+  The default 1240×880 window is unchanged.
 * **Banners** above the results for a needed restart (with Restart in 60 s and
   Cancel restart), a preview, and the comparison with the last run; the run's
   summary line says "restart needed" or "preview" too.
@@ -757,18 +770,19 @@ Digital Signatures**, or with
   `-EncodedCommand` and never built from input. Where PowerShell is blocked,
   those steps report it and the rest of the run carries on.
 
-## Verification status (v0.6)
+## Verification status (v0.6.1)
 
 | What | How | Result |
 |---|---|---|
 | Workspace, Linux | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | Core crate, Windows | clippy-clean for `x86_64-pc-windows-msvc` via `-Zbuild-std` | clean |
-| Engine | 130 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison | all pass |
+| Engine | 134 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison, UTF-16 tool output split across reads, history file names from hostile reports, and a module that couldn't run in one of two compared runs | all pass |
 | Command line, Linux | every read-only module and the triage preset (with a destination) run for real; the Tune-up and update modules previewed; exit codes checked | working |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: the new commands exercised over IPC (presets, destination parsing, preview runs, remote-safe refusals, two triage runs compared, transcripts, fix validation, concurrent-run refusal) and the tune-up preview screen rendered | working |
 | Interface | the browser preview driven through every v0.5 flow (presets, preview, restart banner, destination, remote-safe locks, comparison, transcript, narrow layout), no console errors | working |
 | Themes | all nine screenshotted in Chromium idle, mid-run, after a triage run and at 400 px (no sideways scroll), and rendered in WebKitGTK 2.52 (the Linux app's engine); the default compared pixel by pixel with v0.5 (glow halos within 11/255); the picker's equip, cancel, Esc, keyboard and apply, a reload, the profile default, a saved pick beating it, an unknown name falling back, and the self-service view unchanged; no console errors | working |
-| Windows, CI | `windows-latest` (Windows Server 2025): 123 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); installers built | passing |
+| Fixes in 0.6.1 | each bug reproduced first, then re-run against the fix: the UI driven against a recording stand-in for the engine (a fix on a previewed change module re-checks as a preview, a fix on a real run re-runs nothing, change modules aren't ticked after a relaunch), and all nine themes measured at 1240×880, 1240×840, 1366×690, 1100×720 and 960×640 (the default layout is identical to 0.6.0 element for element; at 960×640 the module list goes from 40–66 px tall, under one row, to 245–269 px, two full rows in every theme; no sideways scroll, no console errors) | working |
+| Windows, CI | `windows-latest` (Windows Server 2025): 127 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); installers built | passing |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 
 A CI runner is a server VM with no Wi-Fi, battery, printers or domain, so those
