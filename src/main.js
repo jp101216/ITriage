@@ -926,8 +926,11 @@
       .catch(() => { /* no notice */ });
   }
 
-  /** The typed ticket, or null. The engine cleans it up. */
+  /** The typed ticket, or null, read from the field itself so a paste or an
+   *  autofill counts too. The engine cleans it up. */
   function ticketValue() {
+    const field = el("ticket");
+    if (field) ticket = field.value;
     return ticket.trim() || null;
   }
 
@@ -1943,6 +1946,7 @@
     const v = Math.abs(value - Math.round(value)) < 0.05 ? String(Math.round(value)) : value.toFixed(1);
     if (unit === "%") return `${v}%`;
     if (unit === "% free") return `${v}% free`;
+    if (unit === "days" && v === "1") return "1 day";
     return unit ? `${v} ${unit}` : v;
   }
   function badgeHtml(c) {
@@ -2371,7 +2375,8 @@
     const byTime = Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0;
     // Round numbers on the axis: a step of 1, 2 or 5 times a power of ten.
     let min = Math.min(...pts.map((p) => p.v)), max = Math.max(...pts.map((p) => p.v));
-    if (min === max) { min -= 1; max += 1; }
+    // A flat line still needs a scale; a count or a share doesn't go below zero.
+    if (min === max) { max += 1; if (min >= 1 || min < 0) min -= 1; }
     const raw = (max - min) / 3, mag = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / mag;
     const step = (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
     let lo = Math.floor(min / step) * step;

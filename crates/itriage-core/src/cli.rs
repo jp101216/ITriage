@@ -377,13 +377,10 @@ fn trends(json: bool) -> i32 {
     println!("Trends for {host}, oldest to newest");
     for s in &series {
         let (first, last) = (&s.points[0], &s.points[s.points.len() - 1]);
-        let moved = last.value - first.value;
-        let word = if moved.abs() < 0.05 {
-            "unchanged"
-        } else if (moved > 0.0) == s.higher_is_worse {
-            "worse"
-        } else {
-            "better"
+        let word = match report::movement(&s.unit, s.higher_is_worse, first.value, last.value) {
+            report::Trend::Same => "about the same",
+            report::Trend::Worse => "worse",
+            report::Trend::Better => "better",
         };
         println!(
             "{:<28} {:<34} {} → {} over {} runs ({word})",

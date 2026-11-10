@@ -570,6 +570,12 @@ fn trend(m: &crate::model::Metric, before: f64, after: f64) -> Trend {
     }
 }
 
+/// Has a measurement really moved from `before` to `after`, and which way?
+/// The same judgement the comparison makes, for a first and last point.
+pub fn movement(unit: &str, higher_is_worse: bool, before: f64, after: f64) -> Trend {
+    trend(&crate::model::Metric { value: after, unit: unit.to_string(), higher_is_worse }, before, after)
+}
+
 /// What changed between two runs. Problems (warning and above) are compared
 /// by severity, so values that always move, like uptime, don't create noise;
 /// measured numbers are compared separately. Only modules that ran both
@@ -743,6 +749,7 @@ pub fn metric_text(value: f64, unit: &str) -> String {
     match unit {
         "%" => format!("{v}%"),
         "% free" => format!("{v}% free"),
+        "days" if v == "1" => "1 day".to_string(),
         "" => v,
         u => format!("{v} {u}"),
     }
@@ -1193,6 +1200,15 @@ mod tests {
         let found = previous_in(&dir, "WS-1", "2026-11-05T09:00:00Z", &["system.disk".to_string()]).unwrap();
         assert_eq!(found.generated, first.generated);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn measurements_read_naturally() {
+        assert_eq!(metric_text(38.0, "ms"), "38 ms");
+        assert_eq!(metric_text(4.5, "days"), "4.5 days");
+        assert_eq!(metric_text(1.0, "days"), "1 day");
+        assert_eq!(metric_text(8.0, "% free"), "8% free");
+        assert_eq!(metric_text(2.0, ""), "2");
     }
 
     #[test]

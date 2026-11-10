@@ -243,7 +243,15 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
     }
 
     // --- Wi-Fi and the local network.
-    let gateway = v.problems("net.latency", |f| f.label.starts_with("Gateway"));
+    // Only what was measured. A ping that couldn't be sent says nothing about
+    // the network, and neither does a gateway that answers no pings at all
+    // while traffic gets through it: plenty of routers are set not to reply.
+    let reaches_out = v.find("net.connectivity", |f| f.label.starts_with("Outbound TCP") && !bad(f)).is_some();
+    let gateway: Vec<Hit> = v
+        .problems("net.latency", |f| f.label.starts_with("Gateway") && (f.label.ends_with("round trip") || f.label.ends_with("packet loss")))
+        .into_iter()
+        .filter(|(_, f)| !(reaches_out && (f.value == "no reply" || f.value.starts_with("100%"))))
+        .collect();
     if let Some(h) = v.problem("desk.wifi", "Signal") {
         let mut evidence = vec![cite(h)];
         evidence.extend(gateway.iter().map(|g| cite(*g)));
@@ -500,6 +508,22 @@ mod tests {
         assert!(likely_causes(&server)[0].cause.starts_with("This PC reaches the network but ehr.example.org:443 doesn't accept the connection"));
         let name = vec![result("net.target", "Destination test", vec![Finding::crit("DNS ehr.example.org", "ehr.example.org doesn't resolve (no such name)")])];
         assert!(likely_causes(&name)[0].cause.starts_with("ehr.example.org can't be found"));
+    }
+
+    #[test]
+    fn a_check_that_couldnt_measure_isnt_a_cause() {
+        // Seen on a PC without ping: the latency check warns that it couldn't
+        // measure, which is not evidence of a slow network.
+        let unmeasured = vec![result("net.latency", "Latency & packet loss", vec![Finding::warn("Gateway 192.0.2.1", "couldn't ping: ping isn't installed")])];
+        assert!(likely_causes(&unmeasured).is_empty());
+        let silent = result("net.latency", "Latency & packet loss", vec![Finding::crit("Gateway 10.20.32.1 round trip", "no reply"), Finding::crit("Gateway 10.20.32.1 packet loss", "100% (0 of 4 replies)")]);
+        assert!(likely_causes(std::slice::from_ref(&silent))[0].cause.starts_with("The connection to the local network is slow or dropping packets"));
+        // Seen on a cloud PC: the gateway ignores pings, and traffic flows through it.
+        let working = result("net.connectivity", "Network connectivity", vec![Finding::ok("Outbound TCP (8.8.8.8:53)", "connected in 12 ms")]);
+        assert!(likely_causes(&[silent.clone(), working.clone()]).is_empty(), "a router that doesn't answer pings isn't a fault");
+        // Some replies lost is a fault, whatever else works.
+        let lossy = result("net.latency", "Latency & packet loss", vec![Finding::warn("Gateway 10.20.32.1 packet loss", "25% (3 of 4 replies)")]);
+        assert_eq!(likely_causes(&[lossy, working]).len(), 1);
     }
 
     #[test]
