@@ -11,6 +11,13 @@
 //! The runner flags and exit codes come from each vendor's command-line
 //! reference. They haven't been tested on hardware yet, so check them on a
 //! real Dell, HP or Lenovo before relying on them.
+//!
+//! These tools run with administrator rights, so one is only started from a
+//! place a standard user couldn't have written to (see [`crate::trust`]).
+//! `C:\Program Files` qualifies. HP Image Assistant's default
+//! `C:\SWSetup\SP…` doesn't, because Windows lets every signed-in user
+//! write to folders made at the top of `C:\`; there ITriage says where the
+//! tool is and why it won't start it.
 
 // Routing and the tool table are shared (the fixes validate against them);
 // running the tools is Windows-only.
@@ -23,7 +30,8 @@ use std::path::{Path, PathBuf};
 pub struct OemTool {
     /// Display name of the tool.
     pub tool: &'static str,
-    locate: fn() -> Option<PathBuf>,
+    /// Every place the tool's program might be, likeliest first.
+    candidates: fn() -> Vec<PathBuf>,
     /// Arguments for an unattended, no-reboot install; logs go in `work`.
     args: fn(&Path) -> Vec<String>,
     exit_codes: &'static [(i32, Severity, &'static str)],
@@ -31,11 +39,36 @@ pub struct OemTool {
     restart_codes: &'static [i32],
     /// Shown when the manufacturer matches but the tool isn't installed.
     pub get_it: &'static str,
+    /// The tool's exit code doesn't say whether a restart is needed.
+    pub restart_unreported: bool,
+}
+
+/// Where a tool's program was found.
+pub enum Located {
+    /// In a place only administrators can write to.
+    Trusted(PathBuf),
+    /// Somewhere a standard user could have put it, and why.
+    Untrusted(PathBuf, String),
+    Missing,
 }
 
 impl OemTool {
-    pub fn locate(&self) -> Option<PathBuf> {
-        (self.locate)()
+    /// The first copy that's safe to run elevated; failing that, the first
+    /// copy there is, with what's wrong with where it is.
+    pub fn locate(&self) -> Located {
+        let mut rejected = None;
+        for path in (self.candidates)().into_iter().filter(|p| p.is_file()) {
+            match trusted(&path) {
+                Ok(()) => return Located::Trusted(path),
+                Err(why) => {
+                    rejected.get_or_insert((path, why));
+                }
+            }
+        }
+        match rejected {
+            Some((path, why)) => Located::Untrusted(path, why),
+            None => Located::Missing,
+        }
     }
     pub fn args(&self, work: &Path) -> Vec<String> {
         (self.args)(work)
@@ -57,18 +90,19 @@ impl OemTool {
 
 const DELL: OemTool = OemTool {
     tool: "Dell Command | Update",
-    locate: || {
-        first_file(&[
-            program_files("ProgramFiles", r"Dell\CommandUpdate\dcu-cli.exe"),
-            program_files("ProgramFiles(x86)", r"Dell\CommandUpdate\dcu-cli.exe"),
-        ])
-        .or_else(|| crate::util::find_in_path("dcu-cli"))
+    candidates: || {
+        let mut found = in_program_files(r"Dell\CommandUpdate\dcu-cli.exe", false);
+        found.extend(crate::util::find_in_path("dcu-cli"));
+        found
     },
     args: |work| {
         vec![
             "/applyUpdates".into(),
             "-silent".into(),
             "-reboot=disable".into(),
+            // Dell's own BitLocker handling, on top of ITriage's (it's the
+            // tool's default; said out loud here).
+            "-autoSuspendBitLocker=enable".into(),
             format!("-outputLog={}", work.join("dcu-apply.log").display()),
         ]
     },
@@ -83,11 +117,12 @@ const DELL: OemTool = OemTool {
     ],
     restart_codes: &[1, 5],
     get_it: "install Dell Command | Update from Dell's support site to get BIOS and firmware updates",
+    restart_unreported: false,
 };
 
 const HP: OemTool = OemTool {
     tool: "HP Image Assistant",
-    locate: locate_hpia,
+    candidates: hpia_candidates,
     args: |work| {
         vec![
             "/Operation:Analyze".into(),
@@ -108,16 +143,12 @@ const HP: OemTool = OemTool {
     ],
     restart_codes: &[3010],
     get_it: "download HP Image Assistant (HPIA) from HP's support site to get BIOS and firmware updates",
+    restart_unreported: false,
 };
 
 const LENOVO: OemTool = OemTool {
     tool: "Lenovo Thin Installer",
-    locate: || {
-        first_file(&[
-            program_files("ProgramFiles(x86)", r"Lenovo\ThinInstaller\ThinInstaller.exe"),
-            program_files("ProgramFiles", r"Lenovo\ThinInstaller\ThinInstaller.exe"),
-        ])
-    },
+    candidates: || in_program_files(r"Lenovo\ThinInstaller\ThinInstaller.exe", true),
     args: |_| {
         ["/CM", "-search", "A", "-action", "INSTALL", "-noicon", "-includerebootpackages", "1,3,4", "-noreboot"]
             .iter()
@@ -127,6 +158,9 @@ const LENOVO: OemTool = OemTool {
     exit_codes: &[(0, Severity::Ok, "completed")],
     restart_codes: &[],
     get_it: "install Lenovo Thin Installer for unattended BIOS and firmware updates",
+    // Run with -noreboot, it exits 0 whether or not a package it installed
+    // needs a restart.
+    restart_unreported: true,
 };
 
 /// How a manufacturer's BIOS and firmware get updated.
@@ -155,6 +189,9 @@ pub struct Route {
 pub enum ToolState {
     /// Installed and runnable unattended.
     Ready(PathBuf),
+    /// Installed where a standard user could have replaced it, so an
+    /// elevated ITriage won't start it. The path, and what's wrong with it.
+    Untrusted(PathBuf, String),
     /// Installed, but it has to be opened (Lenovo System Update).
     Installed(&'static str),
     Missing,
@@ -250,11 +287,12 @@ impl Route {
     pub fn state(&self) -> ToolState {
         match &self.via {
             Via::Runner(tool) => match tool.locate() {
-                Some(path) => ToolState::Ready(path),
-                None if self.winget_id == Some("Lenovo.SystemUpdate") && lenovo_system_update().is_some() => {
+                Located::Trusted(path) => ToolState::Ready(path),
+                Located::Untrusted(path, why) => ToolState::Untrusted(path, why),
+                Located::Missing if self.winget_id == Some("Lenovo.SystemUpdate") && lenovo_system_update().is_some() => {
                     ToolState::Installed("Lenovo System Update")
                 }
-                None => ToolState::Missing,
+                Located::Missing => ToolState::Missing,
             },
             _ => ToolState::Missing,
         }
@@ -262,10 +300,7 @@ impl Route {
 }
 
 fn lenovo_system_update() -> Option<PathBuf> {
-    first_file(&[
-        program_files("ProgramFiles(x86)", r"Lenovo\System Update\tvsu.exe"),
-        program_files("ProgramFiles", r"Lenovo\System Update\tvsu.exe"),
-    ])
+    in_program_files(r"Lenovo\System Update\tvsu.exe", true).into_iter().find(|p| p.is_file())
 }
 
 /// The tool name behind a winget id, for the three itriage will install.
@@ -303,46 +338,98 @@ pub fn install_tool(winget_id: &str, ctx: &crate::module::RunContext) -> Result<
     }
 }
 
-/// `%ProgramData%\itriage`, for vendor logs and downloaded packages.
+/// A fresh folder for one run of a vendor tool: its logs, reports and the
+/// packages it downloads and then runs as an administrator. So nobody else
+/// may write there, before or during the run: the folder is new, under a
+/// parent nobody else can rename, and locked to administrators before the
+/// tool is given its path.
+#[cfg(windows)]
 pub fn work_dir() -> Result<PathBuf, String> {
-    let base = std::env::var_os("ProgramData")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
-    let dir = base.join("itriage");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
-    Ok(dir)
+    use crate::win::dirs::{program_data, windows};
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let name = format!("work-{:x}-{:x}", crate::util::now_epoch(), (stamp as u64) ^ (u64::from(std::process::id()) << 32));
+    let mut problem = String::from("no folder could be created");
+    // The usual place, unless a user got there first and owns it.
+    for base in [program_data().join("itriage"), windows().join("Temp")] {
+        if let Err(e) = std::fs::create_dir_all(&base) {
+            problem = format!("can't create {}: {e}", base.display());
+            continue;
+        }
+        if let Err(why) = crate::trust::folder_base(&base) {
+            problem = why;
+            continue;
+        }
+        let dir = base.join(&name);
+        if let Err(e) = std::fs::create_dir(&dir) {
+            problem = format!("can't create {}: {e}", dir.display());
+            continue;
+        }
+        crate::win::trust::admins_only(&dir)?;
+        // Anything that slipped in between creating it and locking it.
+        let empty = std::fs::read_dir(&dir).map(|mut d| d.next().is_none()).unwrap_or(false);
+        if !empty {
+            return Err(format!("{} wasn't empty after it was created; not using it.", dir.display()));
+        }
+        return Ok(dir);
+    }
+    Err(format!("No safe folder for the tool's files: {problem}."))
 }
 
-fn program_files(var: &str, rel: &str) -> Option<PathBuf> {
-    std::env::var_os(var).map(|base| PathBuf::from(base).join(rel))
+/// May an elevated ITriage start this program?
+#[cfg(windows)]
+fn trusted(path: &Path) -> Result<(), String> {
+    crate::trust::program(path)
 }
 
-fn first_file(candidates: &[Option<PathBuf>]) -> Option<PathBuf> {
-    candidates.iter().flatten().find(|p| p.is_file()).cloned()
+#[cfg(not(windows))]
+fn trusted(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// `rel` under Program Files and Program Files (x86), in that order unless
+/// `x86_first`. Asked of Windows, not read from the environment.
+#[cfg(windows)]
+fn in_program_files(rel: &str, x86_first: bool) -> Vec<PathBuf> {
+    use crate::win::dirs::{program_files, program_files_x86};
+    let mut bases = vec![program_files(), program_files_x86()];
+    if x86_first {
+        bases.reverse();
+    }
+    bases.into_iter().flatten().map(|b| b.join(rel)).collect()
+}
+
+#[cfg(not(windows))]
+fn in_program_files(_rel: &str, _x86_first: bool) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// HPIA has no fixed install location: it's a self-extracting SoftPaq that
 /// lands in `C:\SWSetup\SP<number>\` by default, or wherever IT put it.
-fn locate_hpia() -> Option<PathBuf> {
+/// Program Files comes first, as the only one of these a standard user
+/// can't write to.
+#[cfg(windows)]
+fn hpia_candidates() -> Vec<PathBuf> {
     const EXE: &str = "HPImageAssistant.exe";
-    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
-    let root = PathBuf::from(format!("{drive}\\"));
-    let direct = [
-        program_files("ProgramFiles", &format!(r"HP\HPIA\{EXE}")),
-        Some(root.join("HP").join("HPIA").join(EXE)),
-    ];
-    if let Some(p) = first_file(&direct) {
-        return Some(p);
-    }
+    let root = PathBuf::from(format!("{}\\", crate::win::dirs::system_drive()));
+    let mut found = in_program_files(&format!(r"HP\HPIA\{EXE}"), false);
+    found.push(root.join("HP").join("HPIA").join(EXE));
     if let Ok(entries) = std::fs::read_dir(root.join("SWSetup")) {
         for entry in entries.flatten() {
-            let candidate = entry.path().join(EXE);
-            if entry.file_name().to_string_lossy().starts_with("SP") && candidate.is_file() {
-                return Some(candidate);
+            if entry.file_name().to_string_lossy().starts_with("SP") {
+                found.push(entry.path().join(EXE));
             }
         }
     }
-    crate::util::find_in_path("HPImageAssistant")
+    found.extend(crate::util::find_in_path("HPImageAssistant"));
+    found
+}
+
+#[cfg(not(windows))]
+fn hpia_candidates() -> Vec<PathBuf> {
+    Vec::new()
 }
 
 #[cfg(test)]

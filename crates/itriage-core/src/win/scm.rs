@@ -7,12 +7,13 @@ use windows::Win32::Foundation::{
     ERROR_MORE_DATA, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE,
 };
 use windows::Win32::System::Services::{
-    CloseServiceHandle, ControlService, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW,
+    CloseServiceHandle, ControlService, EnumDependentServicesW, EnumServicesStatusExW, OpenSCManagerW, OpenServiceW,
     QueryServiceConfig2W, QueryServiceConfigW, QueryServiceStatus, StartServiceW, ENUM_SERVICE_STATUS_PROCESSW,
     QUERY_SERVICE_CONFIGW, SC_ENUM_PROCESS_INFO, SC_HANDLE, SC_MANAGER_CONNECT, SC_MANAGER_ENUMERATE_SERVICE,
     SERVICE_AUTO_START, SERVICE_CONFIG_DELAYED_AUTO_START_INFO, SERVICE_CONFIG_TRIGGER_INFO,
-    SERVICE_CONTROL_STOP, SERVICE_DELAYED_AUTO_START_INFO, SERVICE_DEMAND_START, SERVICE_DISABLED,
-    SERVICE_PAUSED, SERVICE_QUERY_CONFIG, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START,
+    SERVICE_ACTIVE, SERVICE_CONTROL_STOP, SERVICE_DELAYED_AUTO_START_INFO, SERVICE_DEMAND_START, SERVICE_DISABLED,
+    SERVICE_ENUMERATE_DEPENDENTS, ENUM_SERVICE_STATUSW, SERVICE_PAUSED, SERVICE_QUERY_CONFIG, SERVICE_QUERY_STATUS,
+    SERVICE_RUNNING, SERVICE_START,
     SERVICE_START_PENDING, SERVICE_STATE_ALL, SERVICE_STATUS, SERVICE_STATUS_CURRENT_STATE,
     SERVICE_STATUS_PROCESS, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING, SERVICE_TRIGGER_INFO,
     SERVICE_WIN32,
@@ -96,6 +97,52 @@ pub fn stop(name: &str, timeout: Duration) -> Result<(), String> {
         }
         wait(&svc, name, SERVICE_STOPPED, timeout)
     }
+}
+
+/// The running services that depend on this one, in the order Windows says
+/// to stop them (the reverse of their start order).
+unsafe fn active_dependents(svc: &ScHandle, name: &str) -> Result<Vec<String>, String> {
+    let mut needed = 0u32;
+    let mut count = 0u32;
+    // Sizing call: fails with ERROR_MORE_DATA when there are any.
+    if EnumDependentServicesW(svc.0, SERVICE_ACTIVE, None, 0, &mut needed, &mut count).is_ok() || needed == 0 {
+        return Ok(Vec::new());
+    }
+    // u64 backing keeps the buffer aligned for the pointer-bearing records.
+    let mut backing = vec![0u64; needed as usize / 8 + 1];
+    EnumDependentServicesW(
+        svc.0,
+        SERVICE_ACTIVE,
+        Some(backing.as_mut_ptr() as *mut ENUM_SERVICE_STATUSW),
+        (backing.len() * 8) as u32,
+        &mut needed,
+        &mut count,
+    )
+    .map_err(|e| super::err(&format!("can't list what depends on {name}"), &e))?;
+    let entries = std::slice::from_raw_parts(backing.as_ptr() as *const ENUM_SERVICE_STATUSW, count as usize);
+    // The name pointers point into `backing`; copy them out now.
+    Ok(entries
+        .iter()
+        .filter_map(|e| e.lpServiceName.to_string().ok())
+        .filter(|n| !n.is_empty())
+        .collect())
+}
+
+/// Stop a service that other running services depend on: Windows refuses
+/// to stop it while they run, so they're stopped first. Returns them in
+/// the order to start them again once the service is back.
+pub fn stop_with_dependents(name: &str, timeout: Duration) -> Result<Vec<String>, String> {
+    // SAFETY: handles are wrapped and closed on drop.
+    let dependents = unsafe {
+        let (_scm, svc) = open(name, SERVICE_QUERY_STATUS | SERVICE_ENUMERATE_DEPENDENTS)?
+            .ok_or_else(|| format!("service {name} isn't installed"))?;
+        active_dependents(&svc, name)?
+    };
+    for dependent in &dependents {
+        stop(dependent, timeout)?;
+    }
+    stop(name, timeout)?;
+    Ok(dependents.into_iter().rev().collect())
 }
 
 unsafe fn wait(svc: &ScHandle, name: &str, want: SERVICE_STATUS_CURRENT_STATE, timeout: Duration) -> Result<(), String> {

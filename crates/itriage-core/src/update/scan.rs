@@ -157,6 +157,11 @@ mod imp {
             Some((route, _)) => match (&route.via, route.state()) {
                 (oem::Via::Runner(tool), oem::ToolState::Ready(_)) => Finding::ok(label, format!("{} is installed", tool.tool)),
                 (oem::Via::Runner(_), oem::ToolState::Installed(name)) => Finding::ok(label, format!("{name} is installed (open it to apply updates)")),
+                (oem::Via::Runner(tool), oem::ToolState::Untrusted(path, why)) => Finding::warn(
+                    label,
+                    format!("{} is installed where standard users can change it, so ITriage won't run it as an administrator", tool.tool),
+                )
+                .with_detail(format!("{}: {why}", path.display())),
                 (oem::Via::Runner(tool), _) => {
                     let mut f = Finding::info(label, format!("{} isn't installed; {}", route.name, tool.get_it));
                     if let Some(w) = route.winget_id {
@@ -181,7 +186,7 @@ mod imp {
     use crate::parse::pkg::fwupd_updates;
     use crate::update::pkgmgr::{reboot_required, PkgMgr};
     use crate::update::LIST_MAX;
-    use crate::util::{capture, cmd, command_exists, plural};
+    use crate::util::{cmd, command_exists, plural};
 
     pub fn scan(ctx: &RunContext) -> Result<Output, String> {
         let mut findings = Vec::new();
@@ -226,7 +231,7 @@ mod imp {
             ctx.log("Checking fwupd for firmware updates…");
             let mut c = cmd("fwupdmgr");
             c.args(["get-updates", "--json"]).env("LC_ALL", "C");
-            match capture(c) {
+            match crate::util::capture_for(c, std::time::Duration::from_secs(120)) {
                 Ok(out) => {
                     let ups = fwupd_updates(&out.stdout);
                     findings.push(Finding::new(

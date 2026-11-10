@@ -13,7 +13,7 @@ use std::path::PathBuf;
 pub fn managed_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        std::env::var_os("ProgramData").map(|p| PathBuf::from(p).join("itriage"))
+        Some(crate::win::dirs::program_data().join("itriage"))
     }
     #[cfg(not(windows))]
     {

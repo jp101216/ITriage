@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.6.
+/* ITriage frontend logic — v0.6.1.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.6";
+  const VERSION = "v0.6.1";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -796,10 +796,12 @@
   showEmpty();
   boot();
 
+  if (api.onCloseRequested) api.onCloseRequested(askBeforeClosing);
+
   pollTelemetry();
   setInterval(pollTelemetry, 1000);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pollTelemetry(); });
-  window.addEventListener("resize", () => requestAnimationFrame(paintTelemetry));
+  window.addEventListener("resize", () => requestAnimationFrame(() => { paintTelemetry(); tipClipped(); }));
 
   async function boot() {
     try { profile = await api.getProfile(); } catch (_) { /* no profile info */ }
@@ -1203,10 +1205,51 @@
   }
 
   async function relaunch() {
+    // Relaunching closes this copy, and with it whatever it's in the middle of.
+    if (running || fixBusy) {
+      toast("Something is still running. Wait for it to finish, or cancel it, before relaunching as administrator.");
+      return;
+    }
     try {
       await api.relaunchElevated(); // the Tauri app exits when this succeeds
     } catch (e) {
       toast(errText(e) || "Elevation was cancelled");
+    }
+  }
+
+  /** The window was asked to close while a run or a fix is going. */
+  let closeAsking = false;
+  async function askBeforeClosing() {
+    if (closeAsking) return;
+    closeAsking = true;
+    const what = fixBusy && !running
+      ? "<p>A fix is running. ITriage can close as soon as it finishes; stopping it part-way isn't safe.</p>"
+      : `<p>A run is in progress. Closing now would cut off whatever it's doing.</p>
+         <ul><li><b>Keep running</b> leaves it alone.</li>
+         <li><b>Stop and close</b> stops at the next safe point (an install that has started always finishes), saves what ran, then closes.</li></ul>`;
+    const stop = await modal({
+      title: `${I.warn} ITriage is still working`,
+      body: what,
+      actions: [
+        { label: "Keep running", value: false, focus: true },
+        { label: fixBusy && !running ? "Close when it finishes" : "Stop and close", hot: true, value: true },
+      ],
+    });
+    closeAsking = false;
+    try {
+      if (stop) {
+        if (running && !cancelRequested) {
+          cancelRequested = true;
+          runLabel.textContent = "STOPPING, THEN CLOSING";
+          statusText.textContent = "Stopping at the next safe point, then closing…";
+          syncRows();
+        }
+        await api.closeWhenDone();
+      } else {
+        await api.keepRunning();
+      }
+    } catch (e) {
+      toast(errText(e));
     }
   }
 
@@ -1304,6 +1347,15 @@
       }
     });
     paintTelemetry(); // fresh canvases need a frame
+    tipClipped();
+  }
+
+  /** In a short window a description shows two lines; the rest goes in its tooltip. */
+  function tipClipped() {
+    modulesEl.querySelectorAll(".mod .d").forEach((d) => {
+      if (d.scrollHeight > d.clientHeight + 1) d.title = d.textContent;
+      else d.removeAttribute("title");
+    });
   }
 
   function syncRows() {
@@ -1655,10 +1707,11 @@
     fixBusy = true;
     setFixButtons(false);
     slot.innerHTML = '<span class="fix-note busy"><span class="spin"></span>Running fix…</span>';
+    const again = !["restart-computer", "cancel-restart"].includes(f.action.id) && recheckMode(res) !== null;
     let message = null;
     try {
       message = await api.runFix(f.action.id, f.action.target || null, remoteSafe);
-      slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span><span class="fix-note busy">Re-checking…</span>`;
+      slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span>` + (again ? '<span class="fix-note busy">Re-checking…</span>' : "");
     } catch (e) {
       slot.innerHTML = `<span class="fix-note err">${I.xc}${esc(errText(e))}</span>`;
     } finally {
@@ -1669,7 +1722,7 @@
       toast(message);
       if (f.action.id === "restart-computer") restartState = "scheduled";
       if (f.action.id === "cancel-restart") restartState = null;
-      if (!["restart-computer", "cancel-restart"].includes(f.action.id)) await recheck(res.module_id, message);
+      if (again) await recheck(res, message);
     }
   }
 
@@ -1677,11 +1730,24 @@
     document.querySelectorAll(".fix-btn, .ss-fix").forEach((b) => { b.disabled = !on; });
   }
 
+  /** How a result may be re-checked after a fix. A check just runs again. A
+   *  module that changes the machine never does: nobody confirmed a second
+   *  run, so its preview is refreshed as a preview, and the record of a real
+   *  run is left as it is (null). */
+  function recheckMode(res) {
+    const m = catalogue.find((x) => x.id === res.module_id);
+    if (m && !m.mutating) return "check";
+    return res.preview ? "preview" : null;
+  }
+
   /** Run one module again (not saved to history) and swap its result in. */
-  async function recheck(moduleId, note) {
+  async function recheck(old, note) {
+    const moduleId = old.module_id;
+    const how = recheckMode(old);
+    if (!how) return null;
     let res;
     try {
-      res = await api.recheck(moduleId, { remoteSafe, target: destination.trim() || null });
+      res = await api.recheck(moduleId, { preview: how === "preview", remoteSafe, target: destination.trim() || null });
     } catch (e) {
       toast("Re-check failed: " + errText(e));
       return null;
@@ -2098,14 +2164,26 @@
     return { report, diff: live.diff };
   }
 
-  function doExport(fmt) {
+  async function doExport(fmt) {
     const { report, diff } = currentReport();
     if (!report.results.length) return;
-    if (fmt === "plain") copy(plainText(report, diff), "Ticket text copied");
-    else if (fmt === "transcript") copyTranscript(report, diff);
+    if (fmt === "plain") copy(await ticketText(report, diff, false), "Ticket text copied");
+    else if (fmt === "transcript") copy(await ticketText(report, diff, true), "Full transcript copied");
     else if (fmt === "md") copy(markdown(report, diff), "Markdown copied");
     else if (fmt === "json") copy(JSON.stringify(report, null, 2), "JSON report copied");
-    else if (fmt === "rich") copyRich(richHtml(report, diff), plainText(report, diff));
+    else if (fmt === "rich") copyRich(richHtml(report, diff), await ticketText(report, diff, false));
+  }
+
+  /** The plain-text report. In the app it's the engine's rendering, the same
+   *  text the command line prints and the history folder keeps, so a ticket
+   *  reads the same wherever it came from. plainText() below stands in for
+   *  it in the browser preview. */
+  async function ticketText(report, diff, withLogs) {
+    try {
+      return await api.reportText(report, diff, withLogs);
+    } catch (_) {
+      return plainText(report, diff, withLogs);
+    }
   }
 
   function hostLine(report) {
@@ -2193,16 +2271,6 @@
     });
     if (diff) lines.push(diffText(diff, report.host ? report.host.hostname : ""));
     return lines.join("\n");
-  }
-
-  async function copyTranscript(report, diff) {
-    let text;
-    try {
-      text = isTauri ? await api.reportText(report, diff, true) : plainText(report, diff, true);
-    } catch (_) {
-      text = plainText(report, diff, true);
-    }
-    copy(text, "Full transcript copied");
   }
 
   function markdown(report, diff) {
@@ -2441,9 +2509,9 @@
         <p>Calling or emailing the service desk? Copy the details and paste them into your message.</p>
         <button class="ss-copy" id="ssShare" type="button">${I.copy}Copy details for the service desk</button>
       </div>`;
-    el("ssShare").onclick = () => {
+    el("ssShare").onclick = async () => {
       const { report, diff } = currentReport();
-      copy(plainText(report, diff), "Details copied: paste them into your message");
+      copy(await ticketText(report, diff, false), "Details copied: paste them into your message");
     };
     box.querySelectorAll("[data-kb]").forEach((a) => wireKb(a));
     box.querySelectorAll(".ss-fix").forEach((b) => {
@@ -2475,7 +2543,7 @@
     }
     if (message != null) {
       toast(message);
-      await recheck(it.r.module_id, message);
+      await recheck(it.r, message);
       if (mode === "self") renderSelfResults();
     }
   }
@@ -2699,16 +2767,20 @@
     return String(s).replace(/[&<>"']/g, (c) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
+  /** The ticked checks from last time. Modules that change the machine are
+   *  never remembered: they're picked on purpose, each time. */
   function loadSelection() {
+    const changes = new Set(CATALOGUE.filter((m) => m.mutating).map((m) => m.id));
     const defaults = CATALOGUE.filter((m) => !m.mutating && !m.takes_target).map((m) => m.id);
     try {
       const saved = JSON.parse(localStorage.getItem(STORE_KEY) || "null");
-      if (Array.isArray(saved)) return saved.filter((x) => typeof x === "string");
+      if (Array.isArray(saved)) return saved.filter((x) => typeof x === "string" && !changes.has(x));
     } catch (_) { /* storage unavailable */ }
     return defaults;
   }
   function saveSelection() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify([...selected])); } catch (_) { /* ignore */ }
+    const checks = [...selected].filter((id) => !(catalogue.find((m) => m.id === id) || {}).mutating);
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(checks)); } catch (_) { /* ignore */ }
   }
   function loadDest() {
     try { return localStorage.getItem("itriage.destination.v1") || ""; } catch (_) { return ""; }
@@ -2752,6 +2824,7 @@
         const outcome = await invoke("run_modules", {
           selected: [id],
           record: false,
+          preview: !!(o && o.preview),
           remoteSafe: !!(o && o.remoteSafe),
           target: (o && o.target) || null,
         });
@@ -2766,6 +2839,9 @@
       reportText: (report, diff, logs) => invoke("report_text", { report, diff: diff || null, logs: !!logs }),
       openLink: (url) => invoke("open_link", { url }),
       openHistoryFolder: () => invoke("open_history_folder"),
+      onCloseRequested: (handler) => listen("close-requested", () => handler()),
+      closeWhenDone: () => invoke("close_when_done"),
+      keepRunning: () => invoke("keep_running"),
     };
   }
 
@@ -2820,7 +2896,7 @@
       if (!ports.includes(n)) ports.push(n);
     }
     if (ports.length > 16) throw "Up to 16 ports at a time.";
-    return { host, ports };
+    return { host, ports, explicit_ports: ports.length > 0 };
   }
 
   function mockApi() {
@@ -2878,7 +2954,12 @@
       let open = 0;
       ports.forEach((port) => {
         if (port === 3389 || port === 80) {
-          findings.push(F(`${t.host}:${port}`, `no connection: ${ip} ${port === 80 ? "refused" : "timed out"}`, "critical"));
+          // As in the engine: a port that was typed and is closed is the
+          // answer to the question; a default one is only information.
+          const why = `no connection: ${ip} ${port === 80 ? "refused" : "timed out"}`;
+          findings.push(t.explicit_ports
+            ? F(`${t.host}:${port}`, why, "critical")
+            : F(`${t.host}:${port}`, why, "info", "One of the default ports; not every host listens on it."));
         } else {
           open++;
           const ms = port === 445 ? 14 : port === 443 ? 21 : 17;
@@ -2994,7 +3075,13 @@
         return { report, saved: path, save_error: null, diff: report.cancelled || !comparable ? null : diffFor(results) };
       },
       cancel: async () => { cancelFlag = true; return true; },
-      recheck: async (id, o) => { await sleep(650); return id === "net.target" ? targetResult(o && o.target) : result(id, true); },
+      recheck: async (id, o) => {
+        await sleep(650);
+        // As in the engine: a re-check previews anything that changes the machine.
+        const m = CATALOGUE.find((x) => x.id === id);
+        if (m && m.mutating) return previewResult(m);
+        return id === "net.target" ? targetResult(o && o.target) : result(id, true);
+      },
       runFix: async (id, target, safe) => {
         await sleep(900 + Math.random() * 500);
         const spec = FIX_CATALOGUE.find((f) => f.id === id);

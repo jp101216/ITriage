@@ -38,3 +38,49 @@ pub fn run(script: &'static str, ctx: &RunContext, timeout: Duration) -> Result<
     };
     stream(c, &ctx.with_sink(&readable), timeout)
 }
+
+/// Every script ITriage can run, by name. A script is only ever one of these
+/// constants; listing them here lets a test check that each one parses.
+#[cfg(test)]
+pub(crate) fn all_scripts() -> Vec<(&'static str, &'static str)> {
+    use crate::fixes::{maintenance, netrepair};
+    vec![
+        ("NIC_POWER_READ", netrepair::NIC_POWER_READ),
+        ("NIC_POWER_OFF", netrepair::NIC_POWER_OFF),
+        ("RESTART_ADAPTERS", netrepair::RESTART_ADAPTERS),
+        ("PHYSICAL_UP", netrepair::PHYSICAL_UP),
+        ("SCCM_TRIGGERS", maintenance::SCCM_TRIGGERS),
+        ("BITLOCKER_STATUS", crate::bitlocker::STATUS),
+        ("BITLOCKER_SUSPEND", crate::bitlocker::SUSPEND),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Most of these scripts only run on a domain PC, a laptop or with a
+    /// vendor tool installed, none of which CI has. Parsing them here still
+    /// catches a typo before a technician does. Nothing is executed.
+    #[test]
+    fn every_script_parses() {
+        let dir = std::env::temp_dir().join(format!("itriage-ps-parse-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, script) in all_scripts() {
+            let file = dir.join(format!("{name}.ps1"));
+            std::fs::write(&file, format!("$ProgressPreference = 'SilentlyContinue'\n{script}")).unwrap();
+            let check = format!(
+                "$errors = $null; [void][System.Management.Automation.Language.Parser]::ParseFile('{}', [ref]$null, [ref]$errors); \
+                 if ($errors -and $errors.Count -gt 0) {{ $errors | ForEach-Object {{ $_.ToString() }}; exit 1 }}",
+                file.display()
+            );
+            let mut c = cmd("powershell.exe");
+            c.args(["-NoProfile", "-NonInteractive", "-Command", &check]);
+            let out = crate::util::capture(c).unwrap();
+            assert!(out.success(), "{name} doesn't parse: {}", out.combined());
+            assert!(script.contains("ITRIAGE-"), "{name} reports through a marker line");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

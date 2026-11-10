@@ -148,8 +148,15 @@ impl TriageModule for OptimizeDrives {
     }
 }
 
+/// The system drive (`C:`), asked of Windows, not read from the environment.
+#[cfg(windows)]
 pub(crate) fn system_drive() -> String {
-    std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into())
+    crate::win::dirs::system_drive()
+}
+
+#[cfg(not(windows))]
+pub(crate) fn system_drive() -> String {
+    "C:".into()
 }
 
 // ------------------------------------------------------------ fix.gpupdate
@@ -188,7 +195,7 @@ pub struct ConfigMgrCycles;
 /// The Tune-Up's three client actions. A missing or non-zero ReturnValue
 /// fails the row; a method that returns nothing counts as triggered.
 #[cfg_attr(not(windows), allow(dead_code))]
-const SCCM_TRIGGERS: &str = r#"
+pub(crate) const SCCM_TRIGGERS: &str = r#"
 $ErrorActionPreference = 'Stop'
 $schedules = [ordered]@{
   'Machine policy retrieval & evaluation' = '{00000000-0000-0000-0000-000000000021}'
@@ -324,9 +331,9 @@ pub fn cancel_restart() -> Result<String, String> {
 
 #[cfg(not(windows))]
 fn root(program: &str, args: &[&str]) -> Result<String, String> {
-    use crate::util::{capture, pkexec_error, privileged};
+    use crate::util::{capture_for, pkexec_error, privileged, PROMPTED};
     let (c, via_pkexec) = privileged(program, args)?;
-    let out = capture(c)?;
+    let out = capture_for(c, PROMPTED)?;
     if via_pkexec {
         if let Some(why) = pkexec_error(out.code) {
             return Err(why.to_string());

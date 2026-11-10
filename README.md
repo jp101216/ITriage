@@ -162,7 +162,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Network connectivity | IP Helper: adapters, route in use, gateway, DNS servers (each asked directly); a timed lookup, an outbound TCP probe, the public IP | `ip -j` (or `/proc/net/route`), `resolvectl` / `resolv.conf`, `curl` for the public IP |
 | Latency & packet loss | ICMP (IcmpSendEcho) to the gateway and first DNS server: round trip and loss | `ping` (iputils or BusyBox) |
 | Proxy settings | WinHTTP, and the signed-in user's proxy, PAC script or auto-detect | proxy environment variables, GNOME proxy settings |
-| Destination test | for a host you give: DNS, a TCP connect per port (every address it resolves to), the route and interface the PC picks (noting a VPN), ping | same |
+| Destination test | for a host you give: DNS, a TCP connect per port (every address it resolves to), the route and interface the PC picks (noting a VPN), ping. A port you typed that doesn't answer is critical; with none typed, the four defaults are tried and a closed one is only information | same |
 | Recent errors | **native Evt\* API**: System + Application, Critical/Error, last 24 h, grouped by provider + event ID | `journalctl -p err`, grouped by source + normalised message |
 | Clock & time sync | W32Time source, **SNTP offset** vs. the DC or configured server, time zone | `timedatectl`, SNTP vs. the timesyncd/chrony source |
 | Domain & Group Policy | domain join, **DC vs. cached-credential sign-in**, AD site, last computer policy refresh | n/a |
@@ -183,7 +183,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Purge ARP & NetBIOS caches | `netsh interface ip delete arpcache`, `nbtstat -R`, `nbtstat -RR` | `ip neigh flush all` | ✔ | locked |
 | TCP autotuning & NIC power | `netsh int tcp set global autotuninglevel=normal`; adapter sleep settings off | n/a | ✔ | locked |
 | Reset network stack | `netsh winsock reset`, `netsh int ip reset`, `netsh int ipv6 reset`; refused with any static address | n/a | ✔ | locked |
-| Restart adapters & renew DHCP | restart physical adapters that are up, wait for each, `ipconfig /release` and `/renew` | `nmcli device disconnect` / `connect` | ✔ | locked |
+| Restart adapters & renew DHCP | restart physical adapters that are up, wait for each, `ipconfig /release` and `/renew` | `nmcli connection up` on each connected device's connection: one request that NetworkManager carries out itself, so a session over that device can't leave it down | ✔ | locked |
 | Clear temp files | every profile's temp folder and `Windows\Temp` (your own without admin); older than 24 h; skips files in use and links | your own files in the temp folder; refuses as root | | runs |
 | Empty Recycle Bin | all drives, for the account ITriage runs as | `~/.local/share/Trash` | | runs |
 | Clean up & check system files | `DISM /StartComponentCleanup`, then `sfc /scannow` | n/a | ✔ | runs |
@@ -197,7 +197,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Module | Windows | Linux |
 |---|---|---|
 | Install OS & app updates | **WUA COM** download + install (optional/preview skipped), then `winget upgrade --all` | full non-interactive upgrade with the detected package manager |
-| Install drivers & firmware | the OEM tool (see the routing above), plus Windows Update drivers when there's no OEM tool (`[updates] windows_update_drivers = "always"` installs them after the tool too); won't run on battery | `fwupdmgr` (LVFS) |
+| Install drivers & firmware | BitLocker suspended for one restart, then the OEM tool (see the routing above), plus Windows Update drivers when there's no OEM tool (`[updates] windows_update_drivers = "always"` installs them after the tool too); won't run on battery | `fwupdmgr` (LVFS) |
 
 Install modules are split by risk, so you can patch the OS without also
 flashing a BIOS.
@@ -340,6 +340,7 @@ Every setting, with its default:
 | `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, each as `{ warn, crit }` |
 | `[privacy] redact_serial` | `false` | show REDACTED for the serial number (also `--redact-serial`) |
 | `[updates] windows_update_drivers` | `"auto"` | `"always"` installs Windows Update drivers after the OEM tool too |
+| `[updates] suspend_bitlocker` | `true` | before the manufacturer's tool runs, BitLocker is suspended for one restart, so a BIOS update doesn't leave the PC asking for its recovery key; if protection is on and can't be suspended, nothing is installed. `false` leaves BitLocker to the tool |
 | `[cleanup] temp_min_age_hours` | `24` | temp files changed more recently are kept |
 | `[history] keep` | `100` | saved runs kept; `0` keeps them all |
 | `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
@@ -359,11 +360,14 @@ the policy (and remote-safe mode) is checked again in the engine, whatever the
 UI showed. Every attempt, allowed, refused or failed, is written to the audit
 log (`audit.jsonl` in the app's state folder) **and** to the Windows
 Application event log (source `itriage`) or syslog. After a fix runs, the
-module re-checks itself so you see whether it worked.
+module re-checks itself so you see whether it worked. A fix never repeats a
+change, though: on a module that changes the machine, a preview is refreshed
+as a preview and the results of a real run stay as they were, and the engine
+turns any re-check of such a module into a preview whatever the UI asks for.
 
 | Fix | Offered when | Windows | Linux | Admin |
 |---|---|---|---|:-:|
-| Restart Print Spooler | the print service is down | stop + start Spooler | `systemctl restart cups` | ✔ |
+| Restart Print Spooler | the print service is down | stop + start Spooler, with any running services that depend on it (Fax, LPD) stopped first and started again after | `systemctl restart cups` | ✔ |
 | Clear print queue | jobs are stuck behind a printer error | stop Spooler, empty `spool\PRINTERS`, start | `cancel -a -x` | ✔ |
 | Resync clock | clock drift over 10 s | `w32tm /resync` (then `/rediscover`) | `chronyc makestep`, or restart timesyncd | ✔ |
 | Refresh Group Policy | policy older than 24 h | `gpupdate /force` (locked by remote-safe) | n/a | |
@@ -388,13 +392,19 @@ compared with the most comparable earlier run on that machine (see
 counts problems that are **new**, **resolved**, **still failing** or
 **changed**, and measurements that got **better** or **worse**. Findings are
 badged in place, and **Details** opens the full comparison with a
-before/after table.
+before/after table. A module that couldn't run in one of the two runs is
+listed under **Gaps**: its problems are neither resolved nor new, just not
+compared.
 
 * **History** lists saved runs. Open one to read it with its own comparison,
   or tick two and compare them.
 * **Open** loads a report exported elsewhere: another machine's run, or the
   command line's `--json` or `--out` output. It's added to the history, so the
-  next report from that machine is compared against it.
+  next report from that machine is compared against it. The list and the
+  "compare with the last run" lookup read a small index (`index.cache`,
+  rebuilt as needed) instead of every report. History file names are
+  built from the report's time and host name with everything but letters,
+  digits and hyphens replaced, so an opened report can't name a path.
 
 ## Ticket exports
 
@@ -467,6 +477,15 @@ at the next safe point: Windows Update stops between downloads and before the
 install batch (downloads stay cached), and winget is skipped. An install that
 has started always finishes, so nothing is left half-installed.
 
+Closing the window during a run or a fix asks first: **Keep running**, or
+**Stop and close**, which stops at the next safe point, saves what ran and
+then closes. **Relaunch as admin** is refused while anything is running.
+
+A check that hangs can't hold up the rest: every external command has a time
+limit (a minute for quick queries, longer for ones that wait on the network
+or on a password prompt). And a bug in one module is reported as that
+module's error, "stopped unexpectedly", while the others carry on.
+
 ## Live progress
 
 Modules can stream progress lines while they run (`RunContext::log`). The Tauri
@@ -508,7 +527,13 @@ The technician console is a HUD-style diagnostic console (red by default; see
   lit for the current OS, mini-glyphs (four of them live), a **DISRUPTIVE**
   badge on changes that remote-safe locks, and the destination field on the
   Destination test card. Modules the profile or remote-safe blocks show
-  **LOCKED** with the reason.
+  **LOCKED** with the reason. Ticked checks are remembered between sessions;
+  modules that change the machine never are.
+* **Short windows** (under 840 px tall: a 1366×768 laptop, or the window
+  dragged down to its 960×640 minimum): the telemetry strip becomes one row,
+  the header and the rail's fixed parts tighten, and module descriptions show
+  two lines with the rest in a tooltip, so the list keeps room for a few rows.
+  The default 1240×880 window is unchanged.
 * **Banners** above the results for a needed restart (with Restart in 60 s and
   Cancel restart), a preview, and the comparison with the last run; the run's
   summary line says "restart needed" or "preview" too.
@@ -557,6 +582,40 @@ section at the end adds what a palette can't (scanlines, cut corners, glass).
 
 The header always shows whether you're running elevated, and fix buttons that
 need admin rights say so before you click. A preview needs no rights.
+
+### What an elevated run will and won't trust
+
+Running as an administrator, ITriage starts other programs and obeys a
+machine-wide profile. If a standard user could replace any of those, they
+could get their own code run as an administrator. So:
+
+* **Windows' own tools** (`netsh`, `sfc`, `dism`, `powershell`…) are started
+  by full path from the system folder, which ITriage asks Windows for. It
+  never looks in its own folder, the current folder or `%SystemRoot%`.
+* **The manufacturer's tool** is only started from a place a standard user
+  can't write to: the file, its folder and every folder above it must be
+  owned by Administrators, SYSTEM or TrustedInstaller, with nobody else able
+  to change them. `C:\Program Files` passes. HP Image Assistant's default
+  `C:\SWSetup\SP…` doesn't, because Windows lets every signed-in user write
+  to folders made at the top of `C:\`; ITriage says where the tool is and
+  why it won't run it. Move it under `C:\Program Files\HP\HPIA`.
+* **The tool's working folder** (its logs, and the packages it downloads and
+  then runs) is made fresh for each run and locked to administrators before
+  the tool is given its path.
+* **The managed profile** only counts when administrators alone can change
+  the file. Standard users can create files under `%ProgramData%`, so a
+  `profile.toml` one of them dropped there is ignored, with a warning in the
+  header, instead of being obeyed (or, if broken, locking the app).
+* **The Windows setup** installs for all users, under `C:\Program Files`,
+  like the MSI. (Up to 0.6.0 the setup installed into the user's own
+  profile, where that user's other programs could replace `itriage.exe`.)
+* **On Linux**, programs run as root come from the system's folders
+  (`/usr/sbin`, `/usr/bin`…), never from a `PATH` that might begin with
+  `~/bin`, and `/etc/itriage/profile.toml` must be root-owned and not
+  writable by group or others.
+
+One thing this doesn't cover: `winget` is a per-user alias that Windows keeps
+in the profile of whoever is signed in, and ITriage starts it from there.
 
 ## Architecture
 
@@ -744,6 +803,11 @@ Digital Signatures**, or with
 * KB links open only if they're `https://`; history files can only be loaded
   from the history folder (other reports come in by content, through Open).
 * A run and a fix never overlap, and every fix attempt is audited.
+* An elevated run only starts programs, and only obeys a machine-wide
+  profile, that a standard user couldn't have put there (see
+  [Privilege model](#what-an-elevated-run-will-and-wont-trust)).
+* A report opened from a file is someone else's data: nothing in it is used
+  as a path or a command.
 * Releases carry SHA-256 checksums and GitHub build-provenance attestations,
   and the Windows installers are signed once [code signing](#code-signing) is
   set up. The signing job signs in to Azure with a short-lived OIDC token
@@ -757,18 +821,19 @@ Digital Signatures**, or with
   `-EncodedCommand` and never built from input. Where PowerShell is blocked,
   those steps report it and the rest of the run carries on.
 
-## Verification status (v0.6)
+## Verification status (v0.6.1)
 
 | What | How | Result |
 |---|---|---|
 | Workspace, Linux | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | Core crate, Windows | clippy-clean for `x86_64-pc-windows-msvc` via `-Zbuild-std` | clean |
-| Engine | 130 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison | all pass |
+| Engine | 151 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison, UTF-16 tool output split across reads, history file names from hostile reports, a module that couldn't run in one of two compared runs, command time limits, a module that panics, who may change a file, the managed-profile rule, BitLocker results, spooler dependents, the history index and destination grading | all pass |
 | Command line, Linux | every read-only module and the triage preset (with a destination) run for real; the Tune-up and update modules previewed; exit codes checked | working |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: the new commands exercised over IPC (presets, destination parsing, preview runs, remote-safe refusals, two triage runs compared, transcripts, fix validation, concurrent-run refusal) and the tune-up preview screen rendered | working |
 | Interface | the browser preview driven through every v0.5 flow (presets, preview, restart banner, destination, remote-safe locks, comparison, transcript, narrow layout), no console errors | working |
 | Themes | all nine screenshotted in Chromium idle, mid-run, after a triage run and at 400 px (no sideways scroll), and rendered in WebKitGTK 2.52 (the Linux app's engine); the default compared pixel by pixel with v0.5 (glow halos within 11/255); the picker's equip, cancel, Esc, keyboard and apply, a reload, the profile default, a saved pick beating it, an unknown name falling back, and the self-service view unchanged; no console errors | working |
-| Windows, CI | `windows-latest` (Windows Server 2025): 123 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); installers built | passing |
+| Fixes in 0.6.1 | each bug reproduced first, then re-run against the fix: the UI driven against a recording stand-in for the engine (a fix on a previewed change module re-checks as a preview, a fix on a real run re-runs nothing, change modules aren't ticked after a relaunch), and all nine themes measured at 1240×880, 1240×840, 1366×690, 1100×720 and 960×640 (the default layout is identical to 0.6.0 element for element; at 960×640 the module list goes from 40–66 px tall, under one row, to 245–269 px, two full rows in every theme; no sideways scroll, no console errors). The close prompt and the relaunch guard were driven the same way, and the destination test's default and typed ports were run for real on Linux | working |
+| Windows, CI | `windows-latest` (Windows Server 2025): 146 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); the trust check run against real files (a system tool passes, a file in the runner's temp folder doesn't), a folder locked to administrators and read back, Windows' tools found by full path, and every embedded PowerShell script parsed; installers built | passing |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 
 A CI runner is a server VM with no Wi-Fi, battery, printers or domain, so those

@@ -145,8 +145,7 @@ fn os_targets() -> (Vec<PathBuf>, Option<String>) {
             Some("other profiles and C:\\Windows\\Temp need administrator rights".into()),
         );
     }
-    let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let mut out = vec![PathBuf::from(root).join("Temp")];
+    let mut out = vec![crate::win::dirs::windows().join("Temp")];
     let drive = crate::fixes::maintenance::system_drive();
     if let Ok(users) = fs::read_dir(format!("{drive}\\Users")) {
         for u in users.flatten() {

@@ -15,6 +15,13 @@
 //!   them after the OEM tool too, as the script does.
 //! * On battery, nothing runs: a BIOS flash that loses power can brick a
 //!   board. Plug in and run it again.
+//! * Before the manufacturer's tool runs, BitLocker is suspended for one
+//!   restart (see [`crate::bitlocker`]), so a BIOS update doesn't leave the
+//!   PC asking for its recovery key. If protection is on and can't be
+//!   suspended, nothing is installed. A site profile can turn this off.
+//! * The tool is only started from a folder standard users can't write to
+//!   (see [`crate::trust`]), and its working folder is made fresh and locked
+//!   to administrators for each run.
 //!
 //! Linux: fwupd (LVFS), behind the same power check.
 
@@ -101,6 +108,15 @@ pub(crate) fn restart_finding(restart: bool) -> Finding {
     }
 }
 
+/// For a tool that doesn't report it (Lenovo Thin Installer run with
+/// `-noreboot`): say so, instead of a confident "no".
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn restart_unknown_finding() -> Finding {
+    Finding::warn("Restart required", "can't tell: the tool doesn't report it")
+        .with_detail("If it installed a BIOS, firmware or driver update, a restart finishes it. Its log lists what it installed.")
+        .with_action(crate::actions::offer("restart-computer", None))
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;
@@ -132,6 +148,15 @@ mod imp {
             (Via::Runner(_), ToolState::Installed(name)) => {
                 Finding::info(format!("OEM tool ({})", route.name), format!("{name} is installed: open it to review and apply BIOS and firmware updates"))
             }
+            (Via::Runner(tool), ToolState::Untrusted(path, why)) => Finding::warn(
+                format!("OEM tool ({})", route.name),
+                format!("{} is installed, but ITriage won't run it as an administrator from where it is", tool.tool),
+            )
+            .with_detail(format!(
+                "{}: {why}. A program there could have been swapped by anyone signed in. Move it under C:\\Program Files \
+                 (or have the folder's permissions limited to administrators) and run this again",
+                path.display()
+            )),
             (Via::Runner(tool), ToolState::Missing) => {
                 let mut f = Finding::info(format!("OEM tool ({})", route.name), format!("not installed ({})", tool.get_it));
                 if let Some(id) = route.winget_id {
@@ -163,7 +188,15 @@ mod imp {
         let (mut findings, route) = route_findings(true);
         let oem_runs = matches!(&route, Some((r, ToolState::Ready(_))) if matches!(r.via, Via::Runner(_)));
         if let Some((oem::Route { via: Via::Runner(tool), .. }, ToolState::Ready(path))) = &route {
-            let work = std::env::temp_dir();
+            if ctx.profile().updates.suspend_bitlocker {
+                ctx.log("Checking BitLocker…");
+                let (drive, state) = crate::bitlocker::status(ctx);
+                findings.push(crate::bitlocker::would_suspend(&drive, &state));
+            } else {
+                findings.push(Finding::info("BitLocker", "left as it is (the site profile turns suspending off)"));
+            }
+            // A real run makes a fresh, locked-down folder; this stands in for it.
+            let work = crate::win::dirs::program_data().join("itriage").join("work-…");
             findings.push(Finding::info(
                 "Would run",
                 format!("{} {}", path.display(), tool.args(&work).join(" ")),
@@ -196,17 +229,39 @@ mod imp {
 
         // --- The OEM tool, when there is one ---
         let mut oem_ran = false;
+        let mut restart_unknown = false;
         if let Some((oem::Route { via: Via::Runner(tool), name, .. }, ToolState::Ready(path))) = &route {
+            // --- BitLocker first: a firmware change with protection on
+            //     means a recovery-key prompt at the next start-up ---
+            if ctx.profile().updates.suspend_bitlocker {
+                ctx.log("Checking BitLocker before any firmware update…");
+                let suspended = crate::bitlocker::suspend(ctx);
+                let safe = suspended.safe_to_flash;
+                findings.push(suspended.finding);
+                if !safe {
+                    findings.push(restart_finding(false));
+                    return Ok(Output::new("Not started: BitLocker is on and couldn't be suspended", findings));
+                }
+            }
             ctx.log(format!("Running {}…", tool.tool));
             let work = oem::work_dir()?;
+            let pending_before = crate::host::pending_restart().unwrap_or_default();
             let mut c = cmd(path);
             c.args(tool.args(&work));
             let out = stream(c, ctx, Duration::from_secs(2 * 3600))?;
             let (severity, meaning) = tool.meaning(out.code);
-            restart |= tool.needs_restart(out.code);
+            // The tool's exit code, or Windows itself now saying a restart
+            // is pending when it wasn't before the tool ran.
+            let newly_pending = crate::host::pending_restart()
+                .unwrap_or_default()
+                .into_iter()
+                .any(|reason| !pending_before.contains(&reason));
+            let tool_restart = tool.needs_restart(out.code) || newly_pending;
+            restart |= tool_restart;
+            restart_unknown = tool.restart_unreported && !tool_restart && out.code == Some(0);
             findings.push(
                 Finding::new(tool.tool, format!("{meaning} ({})", exit_label(out.code)), severity)
-                    .with_detail(format!("Logs and reports: {}", work.display())),
+                    .with_detail(format!("Logs and reports: {} (administrators only)", work.display())),
             );
             summary_parts.push(format!("{name}: {meaning}"));
             oem_ran = true;
@@ -247,10 +302,16 @@ mod imp {
             findings.push(Finding::info("Windows Update drivers", "skipped: the OEM tool handles drivers"));
         }
 
-        findings.push(restart_finding(restart));
+        if restart_unknown && !restart {
+            findings.push(restart_unknown_finding());
+        } else {
+            findings.push(restart_finding(restart));
+        }
         let mut summary = if summary_parts.is_empty() { "Nothing to install".to_string() } else { summary_parts.join("; ") };
         if restart {
             summary.push_str("; restart required");
+        } else if restart_unknown {
+            summary.push_str("; restart if BIOS or firmware was installed");
         }
         Ok(Output::new(crate::triage::network::capitalize(&summary), findings).restart_required(restart))
     }

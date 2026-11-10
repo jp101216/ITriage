@@ -12,6 +12,11 @@
 //!
 //! A managed profile that fails to parse fails *closed*: itriage drops to
 //! read-only instead of silently running without the organisation's policy.
+//!
+//! A file in the managed place only counts as managed when administrators
+//! alone can change it (see [`crate::trust`]). On Windows, standard users
+//! can create files under `%ProgramData%`, so a `profile.toml` one of them
+//! dropped there is ignored, with a warning, rather than obeyed.
 
 use crate::model::{Finding, KbLink, ModuleInfo, ModuleResult, Severity};
 use serde::{Deserialize, Serialize};
@@ -254,11 +259,21 @@ pub struct Privacy {
     pub redact_serial: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct UpdateSettings {
     /// When Windows Update drivers install alongside the OEM tool.
     pub windows_update_drivers: DriverSource,
+    /// Suspend BitLocker for one restart before the manufacturer's tool
+    /// runs, so a BIOS update doesn't leave the PC asking for its recovery
+    /// key. On unless the profile turns it off.
+    pub suspend_bitlocker: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { windows_update_drivers: DriverSource::default(), suspend_bitlocker: true }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,17 +391,44 @@ pub struct Loaded {
 /// Find and load the active profile (see the module docs for the order).
 pub fn load() -> Loaded {
     let managed = crate::paths::managed_dir().map(|d| d.join("profile.toml"));
-    if let Some(path) = managed.filter(|p| p.is_file()) {
-        return match Profile::from_path(&path) {
-            Ok(p) => loaded(p, "managed", Some(path), None),
-            Err(e) => loaded(
-                Profile::fail_closed(),
-                "managed",
-                Some(path),
-                Some(format!("{e} Running read-only until the managed profile is fixed.")),
-            ),
-        };
+    load_from(managed.filter(|p| p.is_file()), crate::trust::profile)
+}
+
+/// `trusted` says whether the file in the managed place is really the
+/// organisation's: one that only administrators can change. One a user put
+/// there is ignored, with a warning. It doesn't get to set policy, and it
+/// doesn't get to lock the app either, which a broken managed profile does.
+fn load_from(managed: Option<PathBuf>, trusted: impl Fn(&Path) -> Result<(), String>) -> Loaded {
+    let mut ignored = None;
+    if let Some(path) = managed {
+        match trusted(&path) {
+            Ok(()) => {
+                return match Profile::from_path(&path) {
+                    Ok(p) => loaded(p, "managed", Some(path), None),
+                    Err(e) => loaded(
+                        Profile::fail_closed(),
+                        "managed",
+                        Some(path),
+                        Some(format!("{e} Running read-only until the managed profile is fixed.")),
+                    ),
+                };
+            }
+            Err(why) => {
+                ignored = Some(format!(
+                    "The profile at {} was ignored: {why}. Only a profile that administrators alone can change counts as the organisation's.",
+                    path.display()
+                ));
+            }
+        }
     }
+    let mut found = load_unmanaged();
+    if found.status.error.is_none() {
+        found.status.error = ignored;
+    }
+    found
+}
+
+fn load_unmanaged() -> Loaded {
     if let Some(path) = std::env::var_os("ITRIAGE_PROFILE").map(PathBuf::from) {
         return match Profile::from_path(&path) {
             Ok(p) => loaded(p, "env", Some(path), None),
@@ -680,6 +722,37 @@ mod tests {
         assert_eq!(json["ui"]["theme"], "minimal", "the frontend reads profile.ui.theme");
         // A theme this build doesn't know is the frontend's to ignore, not a broken profile.
         assert!(Profile::from_toml("[ui]\ntheme = \"vaporwave\"").is_ok());
+    }
+
+    #[test]
+    fn a_managed_profile_must_be_one_only_administrators_can_change() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-managed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("profile.toml");
+        std::fs::write(&path, "name = \"Ward PCs\"\n[policy]\nallow_changes = false\n").unwrap();
+
+        let real = load_from(Some(path.clone()), |_| Ok(()));
+        assert_eq!((real.status.source, real.status.name.as_str()), ("managed", "Ward PCs"));
+        assert!(!real.profile.policy.allow_changes && real.status.error.is_none());
+
+        // The same file, but a user could have written it: not obeyed, not
+        // allowed to lock the app, and the technician is told.
+        let planted = load_from(Some(path.clone()), |_| Err("it can be changed by Users".into()));
+        assert_ne!(planted.status.source, "managed");
+        assert!(planted.profile.policy.allow_changes, "a planted profile sets no policy");
+        let warning = planted.status.error.expect("the technician is told");
+        assert!(warning.contains("was ignored") && warning.contains("Users"), "{warning}");
+
+        // A broken profile that is the organisation's still fails closed.
+        std::fs::write(&path, "[policy]\nallow_changes = \"maybe\"").unwrap();
+        let broken = load_from(Some(path.clone()), |_| Ok(()));
+        assert!(!broken.profile.policy.allow_changes && broken.status.error.is_some());
+        // The same breakage from a user's file locks nothing.
+        assert!(load_from(Some(path), |_| Err("x".into())).profile.policy.allow_changes);
+        assert!(Profile::default().updates.suspend_bitlocker, "on unless a profile turns it off");
+        assert!(!Profile::from_toml("[updates]\nsuspend_bitlocker = false").unwrap().updates.suspend_bitlocker);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

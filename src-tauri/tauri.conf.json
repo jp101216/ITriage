@@ -1,6 +1,6 @@
 {
   "productName": "itriage",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "identifier": "com.jp101216.itriage",
   "build": {
     "frontendDist": "../src"
@@ -31,6 +31,11 @@
       "icons/128x128@2x.png",
       "icons/icon.png",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine"
+      }
+    }
   }
 }

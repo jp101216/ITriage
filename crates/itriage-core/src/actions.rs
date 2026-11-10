@@ -205,6 +205,24 @@ pub fn run(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool)
     outcome
 }
 
+/// A fix's message, with the services that had to be stopped and started
+/// along with it. One that didn't come back makes the whole fix an error:
+/// the technician needs to know something is now down.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn with_dependents(done: String, restarted: &[(String, Result<(), String>)]) -> Result<String, String> {
+    let ok: Vec<&str> = restarted.iter().filter(|(_, r)| r.is_ok()).map(|(n, _)| n.as_str()).collect();
+    let failed: Vec<String> = restarted
+        .iter()
+        .filter_map(|(n, r)| r.as_ref().err().map(|e| format!("{n} ({e})")))
+        .collect();
+    let also = if ok.is_empty() { String::new() } else { format!(" Also restarted, because they depend on it: {}.", ok.join(", ")) };
+    if failed.is_empty() {
+        Ok(format!("{done}{also}"))
+    } else {
+        Err(format!("{done}{also} But these were stopped for it and didn't start again: {}.", failed.join("; ")))
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use crate::parse::text::first_line;
@@ -218,21 +236,25 @@ mod imp {
         match id {
             "restart-spooler" => {
                 require_admin()?;
-                scm::stop("Spooler", WAIT)?;
+                // Fax, LPD and some vendors' print services depend on the
+                // spooler; Windows won't stop it while they run.
+                let dependents = scm::stop_with_dependents("Spooler", WAIT)?;
                 scm::start("Spooler", WAIT)?;
-                Ok("Print Spooler restarted.".into())
+                super::with_dependents("Print Spooler restarted.".into(), &start_again(&dependents))
             }
             "clear-print-queue" => {
                 require_admin()?;
-                scm::stop("Spooler", WAIT)?;
+                let dependents = scm::stop_with_dependents("Spooler", WAIT)?;
                 let removed = clear_spool_folder();
                 let started = scm::start("Spooler", WAIT);
+                // Whatever happened to the queue, bring back what was stopped.
+                let restarted = if started.is_ok() { start_again(&dependents) } else { Vec::new() };
                 let removed = removed?;
                 started?;
-                Ok(format!(
-                    "Removed {removed} spooled file{} and restarted the Print Spooler.",
-                    crate::util::plural(removed)
-                ))
+                super::with_dependents(
+                    format!("Removed {removed} spooled file{} and restarted the Print Spooler.", crate::util::plural(removed)),
+                    &restarted,
+                )
             }
             "resync-time" => {
                 require_admin()?;
@@ -295,10 +317,15 @@ mod imp {
         }
     }
 
+    /// Start the services that were stopped to let the spooler stop. Each
+    /// with how it went.
+    fn start_again(services: &[String]) -> Vec<(String, Result<(), String>)> {
+        services.iter().map(|s| (s.clone(), scm::start(s, WAIT))).collect()
+    }
+
     /// Delete everything in the spool folder while the spooler is stopped.
     fn clear_spool_folder() -> Result<usize, String> {
-        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-        let dir = std::path::Path::new(&root).join(r"System32\spool\PRINTERS");
+        let dir = crate::win::dirs::system32().join(r"spool\PRINTERS");
         let entries = std::fs::read_dir(&dir).map_err(|e| format!("can't open {}: {e}", dir.display()))?;
         let mut removed = 0;
         for entry in entries.flatten() {
@@ -314,7 +341,7 @@ mod imp {
 #[cfg(not(windows))]
 mod imp {
     use crate::parse::text::first_line;
-    use crate::util::{capture, command_exists, exit_label, pkexec_error, privileged};
+    use crate::util::{capture_for, command_exists, exit_label, pkexec_error, privileged, PROMPTED};
 
     pub fn run(id: &str, target: Option<&str>) -> Result<String, String> {
         match id {
@@ -344,7 +371,8 @@ mod imp {
     /// Run as root through pkexec (argument array, no shell).
     fn root(program: &str, args: &[&str]) -> Result<String, String> {
         let (c, via_pkexec) = privileged(program, args)?;
-        let out = capture(c)?;
+        // Long enough for someone to type a password into the prompt.
+        let out = capture_for(c, PROMPTED)?;
         if via_pkexec {
             if let Some(why) = pkexec_error(out.code) {
                 return Err(why.to_string());
@@ -391,6 +419,19 @@ mod tests {
         central.policy.allow_installs = false;
         let err = run("install-update", Some("c9cbc7a0-29e0-4f93-9e37-7d8d6c0f5b2a"), &central, false).unwrap_err();
         assert!(err.contains("centrally"), "{err}");
+    }
+
+    #[test]
+    fn a_fix_reports_the_services_it_had_to_restart() {
+        assert_eq!(with_dependents("Print Spooler restarted.".into(), &[]), Ok("Print Spooler restarted.".into()));
+        let both = [("Fax".to_string(), Ok(())), ("LPDSVC".to_string(), Ok(()))];
+        assert_eq!(
+            with_dependents("Print Spooler restarted.".into(), &both).unwrap(),
+            "Print Spooler restarted. Also restarted, because they depend on it: Fax, LPDSVC."
+        );
+        let one_down = [("Fax".to_string(), Ok(())), ("LPDSVC".to_string(), Err("LPDSVC is still starting after 30 s".to_string()))];
+        let err = with_dependents("Print Spooler restarted.".into(), &one_down).unwrap_err();
+        assert!(err.contains("Also restarted, because they depend on it: Fax.") && err.contains("didn't start again: LPDSVC (LPDSVC is still starting"), "{err}");
     }
 
     #[test]

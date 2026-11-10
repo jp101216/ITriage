@@ -211,7 +211,8 @@ mod imp {
             "--output-fields=PRIORITY,SYSLOG_IDENTIFIER,_SYSTEMD_UNIT,_COMM,MESSAGE",
         ])
         .env("LC_ALL", "C");
-        let out = capture(c)?;
+        // A large journal on a slow disk takes a while to search.
+        let out = crate::util::capture_for(c, std::time::Duration::from_secs(120))?;
 
         let mut groups: Vec<Group> = Vec::new();
         let mut index: HashMap<(String, String), usize> = HashMap::new();

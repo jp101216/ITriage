@@ -3,7 +3,7 @@
 
 use crate::parse::pkg::{apt_simulation, dnf_check_update, pacman_updates, zypper_updates, PkgUpdate};
 use crate::parse::text::first_line;
-use crate::util::{capture, cmd, command_exists};
+use crate::util::{capture_for, cmd, command_exists};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PkgMgr {
@@ -108,7 +108,8 @@ impl PkgMgr {
 fn run(argv: &[&str]) -> Result<crate::util::CmdOutput, String> {
     let mut c = cmd(argv[0]);
     c.args(&argv[1..]).env("LC_ALL", "C");
-    capture(c)
+    // Some of these refresh from the network first (dnf, checkupdates).
+    capture_for(c, std::time::Duration::from_secs(5 * 60))
 }
 
 fn expect(out: &crate::util::CmdOutput, ok_codes: &[i32], what: &str) -> Result<(), String> {

@@ -169,9 +169,25 @@ pub trait TriageModule: Send + Sync {
         let inner = ctx.with_sink(&tee);
 
         let start = Instant::now();
-        let outcome = if preview { self.preview(&inner) } else { self.execute(&inner) };
+        // A bug in one module mustn't take the rest of the run down with it:
+        // a panic becomes that module's error, and the next module starts.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if preview {
+                self.preview(&inner)
+            } else {
+                self.execute(&inner)
+            }
+        }))
+        .unwrap_or_else(|panic| {
+            let what = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| panic.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "no message".into());
+            Err(format!("This module stopped unexpectedly ({what}). That's a bug in ITriage, not a finding about this PC; the other modules carried on."))
+        });
         let duration_ms = start.elapsed().as_millis();
-        let log = lines.into_inner().unwrap_or_default();
+        let log = lines.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner());
 
         let mut result = match outcome {
             Ok(out) => ModuleResult {
@@ -416,6 +432,33 @@ mod tests {
         assert_eq!(r.error.as_deref(), Some(REMOTE_SAFE_REASON));
         let r = Fake { mutating: true, disruptive: false }.run(&ctx);
         assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn a_module_that_panics_fails_alone() {
+        struct Broken;
+        impl TriageModule for Broken {
+            fn info(&self) -> ModuleInfo {
+                ModuleInfo::new("system.broken", "Broken check", Category::System, "Panics")
+            }
+            fn execute(&self, ctx: &RunContext) -> Result<Output, String> {
+                ctx.log("about to go wrong");
+                let empty: Vec<u8> = Vec::new();
+                Ok(Output::new(format!("{}", empty[3]), Vec::new()))
+            }
+        }
+        let quiet = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let ctx = RunContext::silent();
+        let broken = Broken.run(&ctx);
+        let next = Fake { mutating: false, disruptive: false }.run(&ctx);
+        std::panic::set_hook(quiet);
+
+        let err = broken.error.clone().expect("the panic became this module's error");
+        assert!(err.contains("stopped unexpectedly") && err.contains("index out of bounds"), "{err}");
+        assert_eq!(broken.log, vec!["about to go wrong"], "what it logged before is kept");
+        assert!(next.error.is_none(), "the next module ran normally");
+        assert_eq!(exit_code(&[broken, next], false), 2, "and the run counts as incomplete");
     }
 
     #[test]
