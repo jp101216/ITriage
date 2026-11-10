@@ -32,6 +32,7 @@ pub mod actions;
 pub mod audit;
 pub mod bitlocker;
 pub mod cli;
+pub mod investigate;
 pub mod desk;
 pub mod host;
 pub mod insight;

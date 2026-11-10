@@ -27,6 +27,8 @@ use std::sync::OnceLock;
 #[serde(default)]
 pub struct Profile {
     pub name: String,
+    /// Workstation role used to judge whether a working-PC baseline applies.
+    pub role: String,
     pub description: String,
     pub policy: Policy,
     pub time: TimeSettings,
@@ -349,6 +351,8 @@ pub struct Requirements {
     pub app: Vec<AppReq>,
     pub endpoint: Vec<EndpointReq>,
     pub device: Vec<DeviceReq>,
+    /// Explicit application health URLs; no URLs are probed by default.
+    pub application: Vec<crate::investigate::applications::ApplicationProbe>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -522,7 +526,7 @@ impl Profile {
 
     pub fn requirement_count(&self) -> usize {
         let r = &self.require;
-        r.service.len() + r.app.len() + r.endpoint.len() + r.device.len()
+        r.service.len() + r.app.len() + r.endpoint.len() + r.device.len() + r.application.len()
     }
 
     /// Why the policy blocks a module, if it does.

@@ -12,6 +12,7 @@ use crate::model::ModuleInfo;
 use crate::module::{preset, registry, RunContext, PRESETS};
 use crate::profile::{self, Profile};
 use crate::report::{self, Report};
+use crate::investigate::{baseline, bundle, guided, recording, timeline};
 use std::path::PathBuf;
 
 pub const USAGE: &str = "\
@@ -32,6 +33,9 @@ SELECTING
   --target HOST[:PORTS]  Test one destination (adds the Destination test);
                          e.g. --target fileserver01:445,3389
   --ports LIST           Ports for --target (default 443,80,445,3389)
+  --runbook ID           Guided diagnostics: printing, vpn, sign-in, slow-app
+  --record SECONDS       Record an intermittent issue (5–1800 seconds)
+  --interval-ms MS       Recording interval (1000–10000; default 1000)
 
 SAFETY
   --what-if              Preview: modules that change the machine say what
@@ -56,6 +60,13 @@ OTHER COMMANDS
                          clear-saved-credentials, unlock-account NAME,
                          revert-tuneup…)
   --compare OLD NEW      Compare two saved reports from the same computer
+  --baseline GOOD NOW    Compare configuration with a working PC's report
+  --timeline REPORT      Show saved change / authentication events
+  --problem-at UTC       Limit --timeline to +/- 1 hour of an ISO UTC time
+  --bundle-preview FILE  Preview every file in a case made from a JSON report
+  --bundle FILE --out ZIP  Export that case (refuses to overwrite)
+  --include-logs         Include existing report logs in a case
+  --no-redact            Explicitly keep identifiers in a case
   --trends               How each measurement has moved over this computer's
                          saved runs (with --json, every point)
   -h, --help             Show this help
@@ -86,6 +97,16 @@ struct Args {
     trends: bool,
     fix: Option<(String, Option<String>)>,
     compare: Option<(PathBuf, PathBuf)>,
+    baseline: Option<(PathBuf, PathBuf)>,
+    timeline: Option<PathBuf>,
+    problem_at: Option<String>,
+    bundle: Option<PathBuf>,
+    bundle_preview: Option<PathBuf>,
+    include_logs: bool,
+    no_redact: bool,
+    runbook: Option<String>,
+    record: Option<u64>,
+    interval_ms: Option<u64>,
     modules: Vec<String>,
 }
 
@@ -125,6 +146,19 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--out" => a.out = Some(PathBuf::from(take("--out")?)),
             "--ticket" => a.ticket = Some(take("--ticket")?),
             "--trends" => a.trends = true,
+            "--include-logs" => a.include_logs = true,
+            "--no-redact" => a.no_redact = true,
+            "--runbook" => a.runbook = Some(take("--runbook")?),
+            "--record" => a.record = Some(take("--record")?.parse().map_err(|_|"--record needs a duration in seconds")?),
+            "--interval-ms" => a.interval_ms = Some(take("--interval-ms")?.parse().map_err(|_|"--interval-ms needs milliseconds")?),
+            "--bundle" => a.bundle = Some(PathBuf::from(take("--bundle")?)),
+            "--bundle-preview" => a.bundle_preview = Some(PathBuf::from(take("--bundle-preview")?)),
+            "--timeline" => a.timeline = Some(PathBuf::from(take("--timeline")?)),
+            "--problem-at" => a.problem_at = Some(take("--problem-at")?),
+            "--baseline" => {
+                let good = take("--baseline")?; let now = value(&mut it,"--baseline")?;
+                a.baseline = Some((PathBuf::from(good),PathBuf::from(now)));
+            }
             "--fix" => {
                 let id = take("--fix")?;
                 let target = it.next_if(|n| !n.starts_with("--")).cloned();
@@ -139,6 +173,13 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             _ => a.modules.push(arg.clone()),
         }
     }
+    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends];
+    if modes.iter().filter(|v|**v).count() > 1 { return Err("Choose one command mode at a time.".into()); }
+    if modes.iter().any(|v|*v) && (!a.modules.is_empty() || !a.presets.is_empty()) { return Err("A command mode cannot be combined with module or preset selections.".into()); }
+    if a.record.is_some_and(|v|!(5..=1800).contains(&v)) || a.interval_ms.is_some_and(|v|!(1000..=10000).contains(&v)) { return Err("Recording needs 5–1800 seconds and an interval of 1000–10000 ms.".into()); }
+    if a.interval_ms.is_some() && a.record.is_none() { return Err("--interval-ms needs --record.".into()); }
+    if a.problem_at.is_some() && a.timeline.is_none() { return Err("--problem-at needs --timeline.".into()); }
+    if (a.include_logs || a.no_redact) && a.bundle.is_none() && a.bundle_preview.is_none() { return Err("Case privacy options need --bundle or --bundle-preview.".into()); }
     Ok(a)
 }
 
@@ -168,6 +209,9 @@ pub fn main(argv: Vec<String>) -> i32 {
     }
     if let Some((old, new)) = &args.compare {
         return compare(old, new, args.json, args.out.as_deref());
+    }
+    if args.baseline.is_some() || args.timeline.is_some() || args.bundle.is_some() || args.bundle_preview.is_some() {
+        return match case_command(&args) { Ok(())=>0,Err(e)=>{ eprintln!("itriage: {e}"); 1 } };
     }
     if args.trends {
         return trends(args.json);
@@ -283,17 +327,27 @@ pub fn main(argv: Vec<String>) -> i32 {
     if let Some(t) = &target {
         ctx = ctx.with_target(t);
     }
-    let mut results = Vec::new();
-    for m in &modules {
-        if !args.quiet {
-            eprintln!("▶ {}", m.info().title);
+    let (results, trace, capture) = if let Some(id) = &args.runbook {
+        match guided::run(id,|m,_,_,reason| { if !quiet { eprintln!("▶ {} · {reason}",m.info().title); } Some(m.run(&ctx)) }) {
+            Ok((results,trace))=>(results,Some(trace),None),
+            Err(e)=>{ eprintln!("itriage: {e}"); return 1; }
         }
-        results.push(m.run(&ctx));
-    }
+    } else if let Some(seconds) = args.record {
+        let config = recording::Config { seconds,interval_ms:args.interval_ms.unwrap_or(1000) };
+        match recording::record(config,target.as_ref(),&ctx,&std::sync::Mutex::new(Vec::new()),|_|{}) {
+            Ok(capture)=>(vec![recording::result(&capture)],None,Some(capture)),
+            Err(e)=>{ eprintln!("itriage: {e}"); return 1; }
+        }
+    } else {
+        let mut results = Vec::new();
+        for m in &modules { if !quiet { eprintln!("▶ {}",m.info().title); } results.push(m.run(&ctx)); }
+        (results,None,None)
+    };
     crate::audit::run_finished(&results, false, ticket.as_deref());
 
     let profile_name = (status.source != "built-in").then(|| status.name.clone());
-    let report = Report::new(host, profile_name, results, false).with_ticket(ticket.as_deref());
+    let mut report = Report::new(host, profile_name, results, false).with_ticket(ticket.as_deref()).with_role(&profile.role);
+    report.runbook = trace; report.recording = capture;
     let ids: Vec<String> = report.results.iter().map(|r| r.module_id.clone()).collect();
     let diff = report::previous(&report.host.hostname, &report.generated, &ids).map(|old| report::diff(&old, &report));
     let mut code = report.exit_code.unwrap_or(1);
@@ -396,6 +450,29 @@ fn trends(json: bool) -> i32 {
 
 /// Compare-NetTriage: two saved runs of one computer, as text (or JSON),
 /// and with `--out` as a JSON file with the text beside it.
+fn case_command(args: &Args) -> Result<(),String> {
+    let text = if let Some((good,now)) = &args.baseline {
+        serde_json::to_string_pretty(&baseline::compare(&report::load(good)?,&report::load(now)?)?).map_err(|e|e.to_string())?
+    } else if let Some(path) = args.bundle.as_ref().or(args.bundle_preview.as_ref()) {
+        let report = report::load(path)?;
+        let prepared = bundle::prepare(&report,&bundle::Options { include_logs:args.include_logs,redact_identifiers:!args.no_redact,custom_terms:Vec::new() })?;
+        if args.bundle.is_some() {
+            let path = args.out.as_ref().ok_or("--bundle requires --out CASE.zip. Use --bundle-preview first to review the contents.")?;
+            prepared.write_new(path)?; println!("Case saved: {}",path.display()); return Ok(());
+        }
+        serde_json::to_string_pretty(&prepared.preview).map_err(|e|e.to_string())?
+    } else if let Some(path) = &args.timeline {
+        let report = report::load(path)?;
+        let rows = if let Some(at) = &args.problem_at {
+            let at = crate::parse::time::iso8601_utc_to_epoch(at).ok_or("Use an ISO 8601 UTC problem time.")?;
+            timeline::near(&report,at,3600)
+        } else { timeline::rows(&report) };
+        serde_json::to_string_pretty(&rows).map_err(|e|e.to_string())?
+    } else { return Err("No case command selected.".into()); };
+    if let Some(path) = &args.out { std::fs::write(path,&text).map_err(|e|format!("Can't write {}: {e}",path.display()))?; }
+    println!("{text}"); Ok(())
+}
+
 fn compare(old: &std::path::Path, new: &std::path::Path, json: bool, out: Option<&std::path::Path>) -> i32 {
     let load = |p: &std::path::Path| report::load(p);
     let (a, b) = match (load(old), load(new)) {

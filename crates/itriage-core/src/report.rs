@@ -50,6 +50,14 @@ pub struct Report {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub likely: Vec<Insight>,
     pub results: Vec<ModuleResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<crate::investigate::recording::Recording>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runbook: Option<crate::investigate::guided::RunbookTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::investigate::baseline::Comparison>,
 }
 
 fn schema_default() -> u32 {
@@ -69,6 +77,10 @@ impl Report {
             ticket: None,
             likely: crate::insight::likely_causes(&results),
             results,
+            role: None,
+            recording: None,
+            runbook: None,
+            baseline: None,
         }
     }
 
@@ -78,11 +90,19 @@ impl Report {
         self
     }
 
+    pub fn with_role(mut self, role: &str) -> Self {
+        self.role = (!role.trim().is_empty()).then(|| role.trim().chars().take(100).collect());
+        self
+    }
+
     /// Rebuild derived fields after a check has replaced one of the results.
     /// The original run time and cancellation state still describe this run.
     pub fn refresh(&mut self) {
         self.exit_code = Some(crate::module::exit_code(&self.results, self.cancelled));
         self.likely = crate::insight::likely_causes(&self.results);
+        if let Some(trace) = &mut self.runbook {
+            if trace.finished { trace.conclusion = crate::investigate::guided::conclusion(&self.results); }
+        }
     }
 
     pub fn worst(&self) -> Severity {
@@ -802,6 +822,16 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
     if let Some(t) = &report.ticket {
         out.push(format!("Ticket: {t}"));
     }
+    if let Some(role) = &report.role { out.push(format!("Workstation role: {role}")); }
+    if let Some(trace) = &report.runbook {
+        out.push(format!("Troubleshooting: {} — {}", trace.id, trace.conclusion));
+        for (i,step) in trace.steps.iter().enumerate() { out.push(format!("  Phase {}: {} [{}]",i+1,step.reason,step.modules.join(", "))); }
+    }
+    if let Some(recording) = &report.recording {
+        out.push(format!("Recording: {} sample(s), {} marker(s), started {}",recording.samples.len(),recording.markers.len(),recording.started));
+        for marker in &recording.markers { out.push(format!("  {}: {}",epoch_to_rfc3339(marker.at_ms/1000),marker.label)); }
+    }
+    if let Some(baseline) = &report.baseline { out.push(format!("Working-PC baseline: {} -> {}: {} configuration difference(s)",baseline.baseline_host,baseline.current_host,baseline.differences.len())); }
     if report.cancelled {
         out.push("The run was cancelled before every module finished.".into());
     }

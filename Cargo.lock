@@ -1516,11 +1516,15 @@ dependencies = [
 name = "itriage-core"
 version = "0.7.1"
 dependencies = [
+ "crc32fast",
  "libc",
+ "regex",
  "serde",
  "serde_json",
+ "sha2",
  "sysinfo",
  "toml 1.2.1+spec-1.1.0",
+ "url",
  "windows 0.62.2",
 ]
 

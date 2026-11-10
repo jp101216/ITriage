@@ -18,9 +18,51 @@ use windows::Win32::NetworkManagement::IpHelper::{
 use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Networking::WinHttp::{
     WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest, WinHttpQueryHeaders, WinHttpReadData,
-    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+    WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetTimeouts, WinHttpSetOption, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
     WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_FLAG_SECURE, WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE,
 };
+
+/// A bounded, credential-free application request. Windows validates the
+/// certificate normally; neither redirects nor automatic authentication run.
+pub fn application_probe(url: &url::Url, timeout: Duration) -> Result<crate::investigate::applications::HttpProbe, String> {
+    use windows::Win32::Networking::WinHttp::{WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_DISABLE_AUTHENTICATION, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS};
+    let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
+    let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    let ms = timeout.as_millis().clamp(500, 15_000) as i32;
+    let error = |stage: &str, e: windows::core::Error| {
+        let code = e.code().0 as u32 & 0xffff;
+        match code {
+            12037 => "TLS certificate has expired or is not yet valid.".to_string(),
+            12038 => "TLS certificate host name mismatch.".to_string(),
+            12045 => "TLS certificate authority is not trusted.".to_string(),
+            12175 => "TLS certificate or secure-channel validation failed.".to_string(),
+            12007 => "The server or proxy name could not be resolved.".to_string(),
+            12002 => format!("Timed out while {stage}."),
+            _ => format!("Failed while {stage} (Windows error {code})."),
+        }
+    };
+    // SAFETY: all handles are owned wrappers and every pointer refers to a
+    // live local buffer. WinHTTP performs ordinary TLS validation.
+    unsafe {
+        let session = Handle(WinHttpOpen(&HSTRING::from("ITriage application diagnostic"), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0));
+        if session.0.is_null() { return Err("WinHTTP automatic proxy discovery is unavailable.".into()); }
+        WinHttpSetTimeouts(session.0, ms, ms, ms, ms).map_err(|e| error("setting timeouts", e))?;
+        let connect = Handle(WinHttpConnect(session.0, &HSTRING::from(host), url.port_or_known_default().unwrap_or(443), 0));
+        if connect.0.is_null() { return Err("Could not create the application connection.".into()); }
+        let flags = if url.scheme() == "https" { WINHTTP_FLAG_SECURE } else { Default::default() };
+        let request = Handle(WinHttpOpenRequest(connect.0, &HSTRING::from("GET"), &HSTRING::from(path), PCWSTR::null(), PCWSTR::null(), std::ptr::null(), flags));
+        if request.0.is_null() { return Err("Could not create the application request.".into()); }
+        let disabled = WINHTTP_DISABLE_AUTHENTICATION | WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS;
+        WinHttpSetOption(Some(request.0), WINHTTP_OPTION_DISABLE_FEATURE, Some(&disabled.to_le_bytes())).map_err(|e| error("disabling automatic credentials and redirects", e))?;
+        let start = std::time::Instant::now();
+        WinHttpSendRequest(request.0, None, None, 0, 0, 0).map_err(|e| error("connecting, negotiating TLS or sending the request", e))?;
+        WinHttpReceiveResponse(request.0, std::ptr::null_mut()).map_err(|e| error("receiving the HTTP headers", e))?;
+        let first_byte_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let (mut status, mut length, mut index) = (0u32, 4u32, 0u32);
+        WinHttpQueryHeaders(request.0, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, PCWSTR::null(), Some(&mut status as *mut _ as *mut _), &mut length, &mut index).map_err(|e| error("reading HTTP status", e))?;
+        Ok(crate::investigate::applications::HttpProbe { status: status as u16, first_byte_ms, client: "WinHTTP automatic proxy; no automatic authentication, cookies or redirects. Timing includes proxy discovery and TLS." })
+    }
+}
 use windows::Win32::Networking::WinSock::{
     AF_INET, AF_INET6, AF_UNSPEC, IN6_ADDR, IN6_ADDR_0, IN_ADDR, IN_ADDR_0, SOCKADDR_IN, SOCKADDR_IN6,
     SOCKADDR_IN6_0, SOCKADDR_INET, SOCKET_ADDRESS,
