@@ -29,6 +29,14 @@ windows_update_drivers = "always"
 # BitLocker is suspended for one restart before the manufacturer's tool runs
 # (the default). Set false to leave that to the tool.
 # suspend_bitlocker = false
+# A tag in the header says when a newer ITriage is out (one request a day to
+# GitHub; nothing is downloaded). Set false to switch it off.
+# notify = false
+
+[security]
+# Your own PCs: you're the administrator, and that's fine (the default).
+# user_may_be_admin = true
+# require_encryption = true   # make an unencrypted system drive critical on every PC
 
 [history]
 keep = 0   # keep every run

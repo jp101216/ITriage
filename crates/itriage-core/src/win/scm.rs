@@ -243,6 +243,44 @@ pub fn services() -> Result<Vec<Service>, String> {
     }
 }
 
+/// Services that log on as an ordinary account, with that account: the
+/// ones whose stored password goes stale when the account's password
+/// changes. Built-in identities (LocalSystem, NT AUTHORITY, NT SERVICE) are
+/// left out.
+pub fn logon_accounts() -> Result<Vec<(String, String, String)>, String> {
+    // SAFETY: SCM handles are wrapped so they're closed on every path; the
+    // config buffer is sized by the API and outlives the strings read from it.
+    unsafe {
+        let scm = OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE)
+            .map_err(|e| super::err("can't open the Service Control Manager", &e))?;
+        let scm = ScHandle(scm);
+        let mut out = Vec::new();
+        for (name, display_name, _) in enumerate(scm.0)? {
+            let wide = HSTRING::from(name.as_str());
+            let Ok(handle) = OpenServiceW(scm.0, &wide, SERVICE_QUERY_CONFIG) else { continue };
+            let handle = ScHandle(handle);
+            let mut needed = 0u32;
+            let _ = QueryServiceConfigW(handle.0, None, 0, &mut needed);
+            if needed == 0 {
+                continue;
+            }
+            let mut backing = vec![0u64; needed as usize / 8 + 1];
+            let config = backing.as_mut_ptr() as *mut QUERY_SERVICE_CONFIGW;
+            if QueryServiceConfigW(handle.0, Some(config), (backing.len() * 8) as u32, &mut needed).is_err() {
+                continue;
+            }
+            let account = (*config).lpServiceStartName;
+            let account = if account.is_null() { String::new() } else { account.to_string().unwrap_or_default() };
+            let low = account.to_ascii_lowercase();
+            let built_in = low.is_empty() || low == "localsystem" || low.starts_with("nt authority\\") || low.starts_with("nt service\\");
+            if !built_in {
+                out.push((name, display_name, account));
+            }
+        }
+        Ok(out)
+    }
+}
+
 unsafe fn enumerate(scm: SC_HANDLE) -> Result<Vec<(String, String, SERVICE_STATUS_PROCESS)>, String> {
     let mut out = Vec::new();
     let mut resume = 0u32;

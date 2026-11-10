@@ -7,10 +7,12 @@ desktop app that is also a command line. The app has two views:
 
 * **Technician console.** Pick checks, repairs and updates (or a preset), run
   them, and get streamed, severity-coded results with one-click fixes and
-  knowledge-base links. Every run is saved, and the next run on that machine
-  shows what changed, measurements included. Results export as ticket text, a
-  full transcript, rich text for TeamDynamix, Markdown, or JSON. Nine themes,
-  from the red HUD to a flat, quiet one.
+  knowledge-base links. The report opens with the **likely cause**, worked
+  out from the findings. Every run is saved under its **ticket number**, the
+  next run on that machine shows what changed, and **Trends** charts any
+  measurement across them. Results export as ticket text, a full transcript,
+  rich text for TeamDynamix, Markdown, or JSON. Nine themes, from the red HUD
+  to a flat, quiet one.
 * **Self-service check.** A calm page for the person at the PC: their computer
   name up front (with a copy button), one "Check my computer" button, results
   in plain words, a few safe fixes, and "Copy details for the service desk".
@@ -49,6 +51,13 @@ ITriage carries over the four maintained scripts of
 | `Invoke-UpdateSystem.ps1` | the **Drivers & firmware** preset (`--preset updates`), plus an install button beside each pending update |
 
 A preset is a starting point: pick it, then tick or untick modules.
+
+Two presets have no script behind them, and change nothing:
+
+| Preset | For | Runs |
+|---|---|---|
+| **Account lockout** (`--preset lockout`) | "I keep getting locked out" and "I can't sign in" | Sign-in & account lockouts, Domain & Group Policy, Clock & time sync, Network connectivity |
+| **Health check** (`--preset health`) | "Is this PC sound?" | System information, Disk space & latency, Drive health & reliability, Security posture, Battery health, Available updates |
 
 ### Invoke-NetTriage → Slowness triage
 
@@ -157,6 +166,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | System information | sysinfo, SMBIOS (firmware table, registry fallback), console user (WTS), pending restart from Servicing, Windows Update and pending file renames | sysinfo, `/sys/class/dmi`, `loginctl`, `reboot-required` / `needs-restarting` |
 | Disk space & latency | free space per volume (warns at 15% free); latency and queue length from the `PhysicalDisk` performance counters | same; latency from `/proc/diskstats` |
 | Memory usage | RAM and page file (warns at 80% used) | RAM and swap |
+| Drive health & reliability | each drive's health, and (as administrator) wear, temperature and uncorrected errors and SMART's own failure prediction; then 30 days of the System and Application logs: blue screens with their stop codes, unexpected shutdowns, disk errors, and the apps that crash or hang most | drives from `/sys/block`; health and NVMe wear from `smartctl` as root; disk errors from the kernel journal; crashes from `coredumpctl` |
 | Top processes | overall CPU load (warns at 75%), busiest processes, biggest memory users | same |
 | Services | **native SCM**: Automatic services not running, exit codes decoded | `systemctl`: failed units and `is-system-running` |
 | Network connectivity | IP Helper: adapters, route in use, gateway, DNS servers (each asked directly); a timed lookup, an outbound TCP probe, the public IP | `ip -j` (or `/proc/net/route`), `resolvectl` / `resolv.conf`, `curl` for the public IP |
@@ -166,11 +176,13 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Recent errors | **native Evt\* API**: System + Application, Critical/Error, last 24 h, grouped by provider + event ID | `journalctl -p err`, grouped by source + normalised message |
 | Clock & time sync | W32Time source, **SNTP offset** vs. the DC or configured server, time zone | `timedatectl`, SNTP vs. the timesyncd/chrony source |
 | Domain & Group Policy | domain join, **DC vs. cached-credential sign-in**, AD site, last computer policy refresh | n/a |
+| Sign-in & account lockouts | the signed-in account on its domain controller (**NetAPI**): locked, disabled, wrong-password count, password expiry (warns 14 days out), the lockout policy (a Microsoft Entra ID account lives in the cloud, so for those it says so and checks the rest); mapped drives and whether their servers answer; and [what on this PC keeps locking it](#account-lockouts) | `passwd -S`, `chage`, `faillock`, Kerberos ticket, network mounts |
 | Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers | CUPS `lpstat` |
 | Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers | USB devices from sysfs |
 | Wi-Fi & VPN | **WLAN API**: SSID, signal (warns at 70%), security, radio, channel, link rates; Cisco Secure Client and Zscaler clients and tunnels | `nmcli`, VPN clients and tunnel interfaces |
 | Machine certificates | LocalMachine\My expiry; warns 14 days out | n/a |
 | Battery health | design vs. full-charge capacity (`powercfg /batteryreport`), cycles | sysfs `power_supply` |
+| Security posture | BitLocker on the system drive, Defender real-time protection and definition age (warns at 3 days), other antivirus and EDR sensors, the firewall per profile (critical when it's off for the profile in use), Secure Boot, TPM, UAC, and who is an administrator of the PC | LUKS under the root file system, endpoint agents, firewalld / ufw / nftables, Secure Boot, TPM, sudo and wheel members |
 | Required & clinical apps | the profile's required apps and minimum versions, plus a watchlist of clinical clients | dpkg / rpm / pacman packages |
 | Site services & endpoints | the profile's required services; its servers checked by DNS + TCP, in parallel, with connect times | systemd units; same |
 | Available updates | **WUA COM** search (KB, MSRC severity) with an install button per update, Windows Update drivers, pending restart, winget, current BIOS, the OEM tool's state | apt/dnf/pacman/zypper (no root), fwupd, reboot required |
@@ -181,7 +193,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 |---|---|---|:-:|:-:|
 | Flush & re-register DNS | `ipconfig /flushdns`, then `/registerdns` when elevated | `resolvectl flush-caches` | | runs |
 | Purge ARP & NetBIOS caches | `netsh interface ip delete arpcache`, `nbtstat -R`, `nbtstat -RR` | `ip neigh flush all` | ✔ | locked |
-| TCP autotuning & NIC power | `netsh int tcp set global autotuninglevel=normal`; adapter sleep settings off | n/a | ✔ | locked |
+| TCP autotuning & NIC power | `netsh int tcp set global autotuninglevel=normal`; adapter sleep settings off. What they were is saved first, and **Revert tune-up** puts them back | n/a | ✔ | locked |
 | Reset network stack | `netsh winsock reset`, `netsh int ip reset`, `netsh int ipv6 reset`; refused with any static address | n/a | ✔ | locked |
 | Restart adapters & renew DHCP | restart physical adapters that are up, wait for each, `ipconfig /release` and `/renew` | `nmcli connection up` on each connected device's connection: one request that NetworkManager carries out itself, so a session over that device can't leave it down | ✔ | locked |
 | Clear temp files | every profile's temp folder and `Windows\Temp` (your own without admin); older than 24 h; skips files in use and links | your own files in the temp folder; refuses as root | | runs |
@@ -218,6 +230,45 @@ clinical PC. A few details:
   Imprivata, Epic Hyperspace/Hyperdrive, Dragon Medical/PowerMic, common VPN
   clients and EDR agents. It only reports what's installed; requirements come
   from the profile.
+
+### Account lockouts
+
+After a password change, anything still holding the old password keeps trying
+it, and every try counts toward the lockout. **Sign-in & account lockouts**
+reads the account's state from a domain controller (or from the PC, for a
+local account) and then looks for the holders on the PC itself:
+
+| It looks for | How | Fix offered |
+|---|---|---|
+| Credentials saved under the account's name | Credential Manager, names only: the secrets are never read | **Remove saved credentials** |
+| Another session of the same person, left disconnected | the session list (WTS) | **Sign out the session** (technicians) |
+| Services that log on as the account | the Service Control Manager | none: the finding says where to enter the new password |
+| Scheduled tasks with a stored password | Task Scheduler | none, likewise |
+| Failed sign-ins to this PC in the last 24 hours, by what made them (a service, a task, Remote Desktop, the keyboard) and why | Security log event 4625; needs administrator rights | |
+
+A locked account also gets **Unlock** (technicians; it needs an account
+allowed to unlock users, which is usually the one you relaunch as
+administrator with). The report says plainly that unlocking doesn't last
+while a source remains.
+
+What it can't see is the same thing on another device: a phone's mail app, a
+Wi-Fi or VPN profile, a second PC. When nothing on this PC explains a
+lockout, it says so and points at those, and at event 4740 on the domain
+controller, which names the computer each lockout came from. Saved
+credentials belong to each user, so they're only listed when ITriage runs as
+the person affected, not relaunched as another administrator.
+
+### Likely cause
+
+Every report opens with up to three lines saying what is most likely wrong:
+"Weak Wi-Fi (42%) is the most likely reason for a slow or dropping
+connection", "A drive is failing", "The account is locked out". They come
+from a fixed list of rules over the findings (`insight.rs`), not a guess: each
+names the findings it rests on and what to do next, and when several apply
+the one that explains the most comes first (a failing drive before a full
+one, no network before slow DNS). A preview or a module that couldn't run
+proves nothing and is ignored. After a one-click fix re-checks a module, the
+lines are worked out again.
 
 ### Fewer false positives in the Services check
 
@@ -337,10 +388,13 @@ Every setting, with its default:
 | `[network] target_ports` | `[443, 80, 445, 3389]` | the destination test's ports when none are given |
 | `[network] tcp_timeout_ms` | `1500` | per TCP check, shared by every address a name resolves to |
 | `[network] ping_count`, `ping_timeout_ms` | `4`, `1000` | ICMP echoes per probe and the wait for each |
-| `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, each as `{ warn, crit }` |
+| `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), each as `{ warn, crit }` |
+| `[security] require_encryption` | unset | unset: an unencrypted laptop is a warning and a desktop is only noted. `true`: critical on every PC. `false`: only noted |
+| `[security] user_may_be_admin` | `true` | `false` flags a signed-in user who is an administrator of the PC |
 | `[privacy] redact_serial` | `false` | show REDACTED for the serial number (also `--redact-serial`) |
 | `[updates] windows_update_drivers` | `"auto"` | `"always"` installs Windows Update drivers after the OEM tool too |
 | `[updates] suspend_bitlocker` | `true` | before the manufacturer's tool runs, BitLocker is suspended for one restart, so a BIOS update doesn't leave the PC asking for its recovery key; if protection is on and can't be suspended, nothing is installed. `false` leaves BitLocker to the tool |
+| `[updates] notify` | `true` | a tag in the header when a newer ITriage is out: one request a day to GitHub, nothing downloaded. Also off whenever `public_probes` is off |
 | `[cleanup] temp_min_age_hours` | `24` | temp files changed more recently are kept |
 | `[history] keep` | `100` | saved runs kept; `0` keeps them all |
 | `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
@@ -377,16 +431,26 @@ turns any re-check of such a module into a preview whatever the UI asks for.
 | Cancel restart | after a scheduled restart | `shutdown /a` | `shutdown -c` | Linux |
 | Install this update | beside each pending Windows update | download and install that one update | n/a | ✔ |
 | Install the OEM tool | the manufacturer's tool is missing | `winget install` of that tool (needs `allow_installs`) | n/a | ✔ |
+| Remove saved credentials | credentials are saved under the signed-in account's name | removes those entries from Credential Manager; other accounts' are left alone | n/a | |
+| Sign out the session | the same person has a disconnected session on the PC | signs that session out, and only if it's still disconnected | n/a | ✔ |
+| Unlock the account | the account is locked out | clears the lockout on the domain controller (or the PC, for a local account) | resets the `faillock` count | ✔ |
+| Revert tune-up | TCP autotuning & NIC power changed something | puts TCP autotuning and the adapters' sleep settings back as they were (locked by remote-safe) | n/a | ✔ |
 
 Targets are validated before use (a service name, a Windows Update ID, one of
-the known OEM tool IDs), and on Linux every privileged command is an argument
-array passed to `pkexec`, never a shell string.
+the known OEM tool IDs, a session number, an account name), and on Linux every
+privileged command is an argument array passed to `pkexec`, never a shell
+string. Fixes that install something, or act on someone's sign-in, are for
+technicians: the self-service view never offers them.
 
 ## Run history and compare
 
 Every run is saved as a JSON report, with a plain-text transcript beside it, in
 the history folder (`%LOCALAPPDATA%\itriage\history` or
-`~/.local/share/itriage/history`, last 100 kept). When a run finishes, it's
+`~/.local/share/itriage/history`, last 100 kept). Type a **ticket number**
+beside the run options and it goes on the report, on the end of the file name
+(`20261109T140211Z_WS-FLINT-07_INC0012345.json`), into History, and into the
+audit log with the run and with every fix and change made during it. It isn't
+remembered between sessions. When a run finishes, it's
 compared with the most comparable earlier run on that machine (see
 [Compare-NetTriage](#compare-nettriage--before-and-after) above): a banner
 counts problems that are **new**, **resolved**, **still failing** or
@@ -401,10 +465,17 @@ compared.
 * **Open** loads a report exported elsewhere: another machine's run, or the
   command line's `--json` or `--out` output. It's added to the history, so the
   next report from that machine is compared against it. The list and the
-  "compare with the last run" lookup read a small index (`index.cache`,
+  "compare with the last run" lookup read a small index (`index.v2.cache`,
   rebuilt as needed) instead of every report. History file names are
   built from the report's time and host name with everything but letters,
   digits and hyphens replaced, so an opened report can't name a path.
+
+* **Trends** (in History, or `--trends`) follows one measurement across the
+  PC's saved runs: free space, disk latency, Wi-Fi signal, gateway round
+  trip, uptime, blue screens, definition age, days until the password
+  expires, and every other number a check takes. The chart reads with a
+  pointer or the arrow keys, and the same numbers are there as a table. It
+  comes from the index, so no report is opened.
 
 ## Ticket exports
 
@@ -418,8 +489,8 @@ compared.
 * **Markdown**: for Teams, GitHub and wikis;
 * **JSON report**: re-opens in ITriage.
 
-Each includes the host, OS, privilege level, profile, the before/after summary
-and KB links.
+Each includes the host, OS, privilege level, profile, the ticket number, the
+likely cause, the before/after summary and KB links.
 
 ## Command line
 
@@ -449,13 +520,15 @@ itriage [OPTIONS] [MODULE...]
   profile's policy still applies to them.
 
   --list                 List modules and presets, then exit
-  --preset NAME          triage, tuneup or updates
+  --preset NAME          triage, tuneup, updates, lockout or health
   --target HOST[:PORTS]  Test one destination (adds the Destination test)
   --ports LIST           Ports for --target (default 443,80,445,3389)
   --what-if              Preview: changes say what they would do, and don't
   --remote-safe          Refuse anything that could drop a remote session or
                          restart the PC (--no-remote-safe overrides the profile)
   --redact-serial        Show REDACTED instead of the serial number
+  --ticket REF           The ticket this run is for: on the report, in its
+                         file name and in the audit log
   --json                 Print the full JSON report instead of text
   --log                  Include each module's transcript in the text
   --out PATH             Also write the JSON report (or comparison) to PATH,
@@ -464,6 +537,8 @@ itriage [OPTIONS] [MODULE...]
   --quiet                No progress lines on stderr
   --fix ID [TARGET]      Run one one-click fix
   --compare OLD NEW      Compare two saved reports from the same computer
+  --trends               How each measurement has moved over this computer's
+                         saved runs (with --json, every point)
 ```
 
 Progress goes to stderr and the report to stdout, so `> report.txt` captures
@@ -519,10 +594,13 @@ The technician console is a HUD-style diagnostic console (red by default; see
   `[ROOT]`, with an Elevate button on Windows), and STATUS (`READY`,
   `RUNNING`, then `COMPLETE`, `CAUTION`, `ALERT` or `CANCELLED`).
 * **Profile tag** (`MANAGED`, `PERSONAL`, `TEST` or `DEFAULT`), PREVIEW and
-  REMOTE-SAFE tags when those modes are on, and a switch to the self-service
-  view.
-* **Presets** above the module list, and the **PREVIEW** and **REMOTE-SAFE**
-  switches beside the run button (which reads "Run preview" in preview).
+  REMOTE-SAFE tags when those modes are on, an **UPDATE** tag when a newer
+  release is out (it opens the release page; nothing is downloaded), and a
+  switch to the self-service view.
+* **Presets** above the module list, on one line that scrolls sideways when
+  the rail is narrower than they are, and the **PREVIEW** and **REMOTE-SAFE**
+  switches and the **ticket** field beside the run button (which reads "Run
+  preview" in preview).
 * **Module cards** with short codes (`[SYS-INF]`, `[NET-LAT]` …), WIN/LIN chips
   lit for the current OS, mini-glyphs (four of them live), a **DISRUPTIVE**
   badge on changes that remote-safe locks, and the destination field on the
@@ -535,8 +613,8 @@ The technician console is a HUD-style diagnostic console (red by default; see
   two lines with the rest in a tooltip, so the list keeps room for a few rows.
   The default 1240×880 window is unchanged.
 * **Banners** above the results for a needed restart (with Restart in 60 s and
-  Cancel restart), a preview, and the comparison with the last run; the run's
-  summary line says "restart needed" or "preview" too.
+  Cancel restart), a preview, the likely cause, and the comparison with the
+  last run; the run's summary line says "restart needed" or "preview" too.
 * Findings carry **fix buttons**, **KB links**, **NEW / WORSE / BETTER / STILL**
   badges and measurement changes (`+26 ms`) after a compare.
 
@@ -630,7 +708,9 @@ ITriage/
 │   │   ├── profile.rs          # site profiles: discovery, policy, settings, requirements, KB rules
 │   │   ├── actions.rs          # one-click fixes: policy-checked, validated, audited
 │   │   ├── audit.rs            # audit.jsonl + Windows event log / syslog
-│   │   ├── report.rs           # saved runs, history, before/after comparison, text rendering
+│   │   ├── report.rs           # saved runs, history and its index, before/after comparison,
+│   │   │                       #   trends, ticket numbers, text rendering
+│   │   ├── insight.rs          # "likely cause": fixed rules over the findings
 │   │   ├── host.rs  paths.rs  util.rs  telemetry.rs
 │   │   ├── parse/              # PURE parsers, unit-tested on any OS: SMBIOS, ping, routes,
 │   │   │                       #   diskstats, DNS replies, SNTP, versions, printer status, battery
@@ -638,12 +718,14 @@ ITriage/
 │   │   ├── win/                # thin native Windows wrappers (windows crate): WUA, SCM, Evt*,
 │   │   │                       #   IP Helper, WinHTTP, PDH, SMBIOS, WTS, spooler, SetupAPI, WLAN,
 │   │   │                       #   Crypt32, NetAPI, registry, and the fixed PowerShell runner
-│   │   ├── triage/             # system, disk, memory, processes, services, network, eventlog
+│   │   ├── triage/             # system, disk, memory, reliability, processes, services, network, eventlog
 │   │   ├── net/                # latency, proxy, destination test, and the network layer
-│   │   ├── desk/               # time, domain, printers, devices, wifi, certs, battery
+│   │   ├── desk/               # time, domain, account (sign-in & lockouts), printers, devices,
+│   │   │                       #   wifi, certs, battery
+│   │   ├── security/           # posture: encryption, antivirus, firewall, Secure Boot, admins
 │   │   ├── site/               # required apps, required services + endpoints
-│   │   ├── fixes/              # dns, netrepair, temp, maintenance (the Tune-up modules)
-│   │   └── update/             # scan, apply, firmware, winget, oem (table-driven), pkgmgr
+│   │   ├── fixes/              # dns, netrepair, temp, maintenance (the Tune-up modules), undo
+│   │   └── update/             # scan, apply, firmware, winget, oem (table-driven), pkgmgr, notice
 │   └── examples/triage.rs      # the command line, for `cargo run --example`
 ├── profiles/                   # example site profiles
 ├── src-tauri/                  # desktop shell: commands + events (and the CLI switch)
@@ -797,7 +879,15 @@ Digital Signatures**, or with
   `8.8.8.8:53` and the public IP from `ifconfig.me`, falling back to
   `api.ipify.org`, all switchable in the profile), ICMP echoes to the gateway
   and DNS server, a destination you type, the SNTP probe, the profile's
-  endpoints, and update checks.
+  endpoints, the account check's questions to a domain controller and its
+  connects to mapped drives' servers, and update checks.
+* The one request ITriage makes by itself is the update notice: once a day,
+  GitHub's public releases API is asked for the latest version number. The
+  link the UPDATE tag opens is built from that number inside ITriage, so a
+  tampered answer can't point anywhere else. `[updates] notify = false`
+  switches it off, and so does turning off public probes.
+* Saved credentials are listed by name and owner only. The secret each one
+  holds is never read, copied or logged.
 * Fixed procedures only. No input is ever interpolated into a shell command;
   a profile can switch fixes off but can't add commands.
 * KB links open only if they're `https://`; history files can only be loaded
@@ -813,31 +903,39 @@ Digital Signatures**, or with
   set up. The signing job signs in to Azure with a short-lived OIDC token
   that only the `release` environment can get, so no signing secret is stored
   in GitHub.
-* Windows checks use native APIs rather than spawning PowerShell, which is
-  faster and still works where PowerShell is locked down. Three Tune-up steps
-  need cmdlets with no plain API (adapter power settings and adapter restarts
-  through the NetAdapter module, and the Configuration Manager client's
-  triggers). They run short scripts compiled into ITriage, passed with
-  `-EncodedCommand` and never built from input. Where PowerShell is blocked,
-  those steps report it and the rest of the run carries on.
+* Most Windows checks use native APIs rather than spawning PowerShell, which
+  is faster and still works where PowerShell is locked down. The exceptions
+  are things only cmdlets expose: Security posture (Defender, the firewall
+  profiles, BitLocker, local administrators), Drive health & reliability (the
+  Storage module and the event queries), the scheduled-task part of the
+  account check, and three Tune-up steps (adapter power settings, adapter
+  restarts, the Configuration Manager client's triggers) with their undo.
+  They run short scripts compiled into ITriage, passed with `-EncodedCommand`
+  and never built from input; the one script that takes data (which adapters
+  to restore) reads it from an environment variable, after ITriage has
+  checked it. Where PowerShell is blocked, those checks say so and the rest
+  of the run carries on.
 
-## Verification status (v0.6.1)
+## Verification status (v0.7.0)
 
 | What | How | Result |
 |---|---|---|
 | Workspace, Linux | `cargo clippy --workspace --all-targets -- -D warnings` | clean |
 | Core crate, Windows | clippy-clean for `x86_64-pc-windows-msvc` via `-Zbuild-std` | clean |
-| Engine | 151 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison, UTF-16 tool output split across reads, history file names from hostile reports, a module that couldn't run in one of two compared runs, command time limits, a module that panics, who may change a file, the managed-profile rule, BitLocker results, spooler dependents, the history index and destination grading | all pass |
+| Engine | 196 unit tests: parsers (SMBIOS, ping, routes, diskstats, DNS replies, SNTP, versions, printers, battery, nmcli, Device Manager codes, winget, event XML, journald, package managers), destination parsing, thresholds, presets and exit codes, previews, temp cleanup on a throwaway folder, profiles and policy, fix validation, history and the before/after comparison, UTF-16 tool output split across reads, history file names from hostile reports, a module that couldn't run in one of two compared runs, command time limits, a module that panics, who may change a file, the managed-profile rule, BitLocker results, spooler dependents, the history index and destination grading, the likely-cause rules, security posture and drive-health grading from recorded script output, account names, lockout sources and 4625 events, ticket numbers in file names, trends, the tune-up undo's validation, and the update notice | all pass |
 | Command line, Linux | every read-only module and the triage preset (with a destination) run for real; the Tune-up and update modules previewed; exit codes checked | working |
 | Desktop app, Linux | built and run against WebKitGTK 4.1: the new commands exercised over IPC (presets, destination parsing, preview runs, remote-safe refusals, two triage runs compared, transcripts, fix validation, concurrent-run refusal) and the tune-up preview screen rendered | working |
 | Interface | the browser preview driven through every v0.5 flow (presets, preview, restart banner, destination, remote-safe locks, comparison, transcript, narrow layout), no console errors | working |
 | Themes | all nine screenshotted in Chromium idle, mid-run, after a triage run and at 400 px (no sideways scroll), and rendered in WebKitGTK 2.52 (the Linux app's engine); the default compared pixel by pixel with v0.5 (glow halos within 11/255); the picker's equip, cancel, Esc, keyboard and apply, a reload, the profile default, a saved pick beating it, an unknown name falling back, and the self-service view unchanged; no console errors | working |
 | Fixes in 0.6.1 | each bug reproduced first, then re-run against the fix: the UI driven against a recording stand-in for the engine (a fix on a previewed change module re-checks as a preview, a fix on a real run re-runs nothing, change modules aren't ticked after a relaunch), and all nine themes measured at 1240×880, 1240×840, 1366×690, 1100×720 and 960×640 (the default layout is identical to 0.6.0 element for element; at 960×640 the module list goes from 40–66 px tall, under one row, to 245–269 px, two full rows in every theme; no sideways scroll, no console errors). The close prompt and the relaunch guard were driven the same way, and the destination test's default and typed ports were run for real on Linux | working |
-| Windows, CI | `windows-latest` (Windows Server 2025): 146 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage preset with a destination, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only); the trust check run against real files (a system tool passes, a file in the runner's temp folder doesn't), a folder locked to administrators and read back, Windows' tools found by full path, and every embedded PowerShell script parsed; installers built | passing |
+| Windows, CI | `windows-latest` (Windows Server 2025), elevated, workgroup: 194 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage, lockout and health presets, a ticketed run, `--trends`, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only). New in 0.7.0 and run for real there: Security posture (Defender, firewall, Secure Boot, administrators), Drive health & reliability (drives, counters, 30 days of events), Sign-in & account lockouts on a local account (NetAPI account and policy reads, Credential Manager and session listings, the Security log query), the tune-up's settings read, and a script result with accents, another script and an emoji sent through the pipe. Also: the trust check against real files, a folder locked to administrators and read back, Windows' tools found by full path, and every embedded PowerShell script parsed; installers built | passing |
+| New in 0.7.0, interface | the browser preview driven end to end (a ticketed run, the likely-cause banner, the three new cards, a fix and the re-worked likely cause, exports, History, Trends by pointer and keyboard with its table, both new presets, the update tag, self-service) and the commands it sends checked against a recording stand-in for the engine; all nine themes at six window sizes with no console errors and no sideways scroll; the default window in the default theme measures as it did in 0.6 | working |
+| New in 0.7.0, desktop app on Linux | the built app clicked through under a virtual display: a ticketed run of 20 modules against the real engine (the ticket in the saved file's name and the audit log), the likely cause, History, Trends from the real index, and the update check (it asked GitHub, was told v0.6.0, and showed nothing; with a newer version recorded it showed the tag) | working |
+| Account checks on a domain; the new fixes | **not yet run**: no test machine was joined to a domain, and Remove saved credentials, Sign out the session, Unlock and Revert tune-up's restore step were never run against real state. Nor was anything run as a standard user on Windows (CI is elevated) or under Constrained Language mode | ⚠ next step |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 
 A CI runner is a server VM with no Wi-Fi, battery, printers or domain, so those
-checks report "none" there. The paths that need hardware (WLAN, battery report,
+checks report "none" there, and its account is a local one. The paths that need hardware (WLAN, battery report,
 spooler with real printers, SetupAPI problem codes, domain and Group Policy)
 need a pass on a real workstation, and so do the Tune-up repairs, the update
 installs and the OEM tools' flags and exit codes, which come from vendor
@@ -852,6 +950,7 @@ RUSTC_BOOTSTRAP=1 cargo clippy -Zbuild-std=std,panic_abort \
 
 ## Next ideas
 
+* The account that locked out, traced to its source computer from the domain controller's own log (needs rights there).
 * Per-percent Windows Update download progress (`IDownloadProgressChangedCallback`).
 * Gateway and DNS latency over the destination's route, as NetTriage does, rather than the default route.
 * Secure-channel check for domain trust (needs elevation).

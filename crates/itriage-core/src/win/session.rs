@@ -18,11 +18,24 @@ pub fn console_user() -> Option<String> {
     if session == u32::MAX {
         return None;
     }
+    session_user(session)
+}
+
+/// `DOMAIN\user` of whoever owns a session, if anyone is signed in to it.
+pub fn session_user(session: u32) -> Option<String> {
     let name = query(session, WTSUserName).filter(|n| !n.is_empty())?;
     Some(match query(session, WTSDomainName).filter(|d| !d.is_empty()) {
         Some(domain) => format!("{domain}\\{name}"),
         None => name,
     })
+}
+
+/// The session ITriage itself is running in.
+pub fn current_session() -> Option<u32> {
+    let mut id = 0u32;
+    // SAFETY: plain query about this process.
+    unsafe { windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut id) }.ok()?;
+    Some(id)
 }
 
 fn query(session: u32, class: WTS_INFO_CLASS) -> Option<String> {

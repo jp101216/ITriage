@@ -31,6 +31,7 @@ pub struct RunContext<'a> {
     preview: bool,
     remote_safe: bool,
     target: Option<&'a Target>,
+    ticket: Option<&'a str>,
 }
 
 impl<'a> RunContext<'a> {
@@ -42,6 +43,7 @@ impl<'a> RunContext<'a> {
             preview: false,
             remote_safe: false,
             target: None,
+            ticket: None,
         }
     }
 
@@ -73,6 +75,17 @@ impl<'a> RunContext<'a> {
     pub fn with_target(mut self, target: &'a Target) -> Self {
         self.target = Some(target);
         self
+    }
+
+    /// The ticket this run is for; it goes into the audit trail with every
+    /// change a module makes.
+    pub fn with_ticket(mut self, ticket: Option<&'a str>) -> Self {
+        self.ticket = ticket;
+        self
+    }
+
+    pub fn ticket(&self) -> Option<&str> {
+        self.ticket
     }
 
     /// Report one line of progress ("Downloading 2/5: …").
@@ -211,7 +224,7 @@ pub trait TriageModule: Send + Sync {
         };
         ctx.profile().annotate(&mut result);
         if mutating && !preview {
-            crate::audit::module_ran(&result);
+            crate::audit::module_ran(&result, ctx.ticket());
         }
         result
     }
@@ -227,6 +240,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::triage::system::SystemInfo),
         Box::new(crate::triage::disk::DiskUsage),
         Box::new(crate::triage::memory::MemoryUsage),
+        Box::new(crate::triage::reliability::Reliability),
         // --- Processes & services ---
         Box::new(crate::triage::processes::TopProcesses),
         Box::new(crate::triage::services::ServiceHealth),
@@ -240,11 +254,14 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         // --- Workstation (service desk) ---
         Box::new(crate::desk::time::ClockSync),
         Box::new(crate::desk::domain::DomainPolicy),
+        Box::new(crate::desk::account::SignInAccount),
         Box::new(crate::desk::printers::Printers),
         Box::new(crate::desk::devices::Devices),
         Box::new(crate::desk::wifi::WifiVpn),
         Box::new(crate::desk::certs::MachineCerts),
         Box::new(crate::desk::battery::BatteryHealth),
+        // --- Security ---
+        Box::new(crate::security::posture::SecurityPosture),
         // --- Site & clinical (driven by the site profile) ---
         Box::new(crate::site::apps::SiteApps),
         Box::new(crate::site::checks::SiteChecks),
@@ -286,12 +303,13 @@ pub fn catalogue(profile: &Profile, remote_safe: bool) -> Vec<ModuleInfo> {
         .collect()
 }
 
-/// A ready-made selection, one per PowerShell toolkit script.
+/// A ready-made selection: one per PowerShell toolkit script, plus two for
+/// questions the toolkit has no script for.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Preset {
     pub id: &'static str,
     pub title: &'static str,
-    /// The script it stands in for.
+    /// The script it stands in for; empty when there isn't one.
     pub script: &'static str,
     pub description: &'static str,
     pub modules: &'static [&'static str],
@@ -324,6 +342,20 @@ pub const PRESETS: &[Preset] = &[
         script: "Invoke-UpdateSystem",
         description: "Identity and BIOS, what's pending, then drivers, BIOS and firmware through the manufacturer's tool and Windows Update.",
         modules: &["system.info", "update.scan", "update.firmware"],
+    },
+    Preset {
+        id: "lockout",
+        title: "Account lockout",
+        script: "",
+        description: "Why an account keeps locking or can't sign in: its state on the domain controller, what on this PC still holds an old password, the domain connection, the clock and the network. Changes nothing.",
+        modules: &["desk.account", "desk.domain", "desk.time", "net.connectivity"],
+    },
+    Preset {
+        id: "health",
+        title: "Health check",
+        script: "",
+        description: "Is this PC sound: drive health and crashes, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
+        modules: &["system.info", "system.disk", "system.reliability", "sec.posture", "desk.battery", "update.scan"],
     },
 ];
 
@@ -491,5 +523,11 @@ mod tests {
         assert!(preset("TuneUp").is_some());
         let tuneup = preset("tuneup").unwrap();
         assert!(!tuneup.modules.contains(&"fix.restart") && !tuneup.modules.contains(&"fix.recycle"), "opt-in, as in the script");
+        // The presets without a script only look: nothing in them changes the machine.
+        let mutating: Vec<String> = registry().iter().map(|m| m.info()).filter(|i| i.mutating).map(|i| i.id).collect();
+        for p in PRESETS.iter().filter(|p| p.script.is_empty()) {
+            assert!(p.modules.iter().all(|m| !mutating.iter().any(|x| x == m)), "{} is read-only", p.id);
+        }
+        assert!(preset("lockout").unwrap().modules.contains(&"desk.account"));
     }
 }

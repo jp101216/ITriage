@@ -84,6 +84,18 @@ pub fn exit_label(code: Option<i32>) -> String {
     }
 }
 
+/// Run `work` on its own thread and wait at most `timeout` for it. `None`
+/// when it hasn't finished: the thread is left to end by itself. For calls
+/// that can't be given a time limit of their own (a domain controller that
+/// has stopped answering).
+pub fn within<T: Send + 'static>(timeout: Duration, work: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx.recv_timeout(timeout).ok()
+}
+
 // --------------------------------------------------------------- PATH lookup
 
 /// Find an executable on PATH without spawning `where`/`which` (from a GUI app

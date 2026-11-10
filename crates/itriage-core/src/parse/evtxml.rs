@@ -29,6 +29,36 @@ pub fn parse_system(xml: &str) -> Option<EvtSystem> {
     })
 }
 
+/// The named values in an event's `<EventData>`: `<Data Name='TargetUserName'>jparker</Data>`.
+/// Unnamed and empty entries are skipped.
+pub fn event_data(xml: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let Some(start) = find_tag(xml, "EventData") else {
+        return out;
+    };
+    let body = &xml[start..];
+    let body = &body[..body.find("</EventData>").unwrap_or(body.len())];
+    let mut rest = body;
+    while let Some(at) = find_tag(rest, "Data") {
+        let element = &rest[at..];
+        let Some(open_end) = element.find('>') else { break };
+        let name = attr(&element[..=open_end], "Data", "Name");
+        if element[..open_end].ends_with('/') {
+            rest = &element[open_end + 1..];
+            continue;
+        }
+        let Some(close) = element.find("</Data>") else { break };
+        if let Some(name) = name {
+            let value = unescape(element[open_end + 1..close].trim());
+            if !value.is_empty() {
+                out.push((name, value));
+            }
+        }
+        rest = &element[close + "</Data>".len()..];
+    }
+    out
+}
+
 /// Value of `name` on the first `<tag …>` element; handles ' or " quoting.
 fn attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     let start = find_tag(xml, tag)?;
@@ -107,6 +137,22 @@ mod tests {
         assert_eq!(s.provider, "Service Control Manager");
         assert_eq!(s.event_id, 7031);
         assert_eq!(s.level, 2);
+    }
+
+    #[test]
+    fn reads_event_data() {
+        let xml = "<Event><System><Provider Name='Microsoft-Windows-Security-Auditing'/><EventID>4625</EventID></System>\
+            <EventData><Data Name='TargetUserName'>jparker</Data><Data Name='TargetDomainName'>CORP</Data>\
+            <Data Name='LogonType'>3</Data><Data Name='Empty'/><Data Name='ProcessName'>C:\\Program Files\\A &amp; B\\app.exe</Data>\
+            <Data>unnamed</Data><Data Name='IpAddress'>-</Data></EventData></Event>";
+        let data = event_data(xml);
+        let get = |k: &str| data.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str());
+        assert_eq!(get("TargetUserName"), Some("jparker"));
+        assert_eq!(get("LogonType"), Some("3"));
+        assert_eq!(get("ProcessName"), Some(r"C:\Program Files\A & B\app.exe"));
+        assert_eq!(get("Empty"), None);
+        assert_eq!(data.len(), 5);
+        assert!(event_data("<Event><System/></Event>").is_empty());
     }
 
     #[test]

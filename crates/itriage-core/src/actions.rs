@@ -22,6 +22,8 @@ pub struct FixSpec {
     pub disruptive: bool,
     /// Installs software: the policy's `allow_installs` must be on too.
     pub install: bool,
+    /// Offered to technicians only: the self-service view never shows it.
+    pub technician_only: bool,
 }
 
 pub const FIXES: &[FixSpec] = &[
@@ -32,6 +34,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: false,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "clear-print-queue",
@@ -40,6 +43,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: false,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "resync-time",
@@ -48,6 +52,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: false,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "gpupdate",
@@ -56,6 +61,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: true,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "start-service",
@@ -64,6 +70,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: true,
         disruptive: false,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "flush-dns",
@@ -72,6 +79,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: false,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "restart-computer",
@@ -80,6 +88,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: true,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "cancel-restart",
@@ -88,6 +97,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: false,
         disruptive: false,
         install: false,
+        technician_only: false,
     },
     FixSpec {
         id: "install-oem-tool",
@@ -96,6 +106,7 @@ pub const FIXES: &[FixSpec] = &[
         targeted: true,
         disruptive: false,
         install: true,
+        technician_only: true,
     },
     FixSpec {
         id: "install-update",
@@ -104,6 +115,43 @@ pub const FIXES: &[FixSpec] = &[
         targeted: true,
         disruptive: false,
         install: true,
+        technician_only: true,
+    },
+    FixSpec {
+        id: "clear-saved-credentials",
+        label: "Remove saved credentials",
+        description: "Removes the credentials saved in Credential Manager under the signed-in account's name (file servers, Remote Desktop hosts, Office sign-ins). Windows asks for the password the next time each is used. Other accounts' saved credentials are left alone.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: false,
+    },
+    FixSpec {
+        id: "logoff-session",
+        label: "Sign out the session",
+        description: "Signs out this person's disconnected session on this PC. Programs still open in it are closed, and unsaved work in it is lost.",
+        targeted: true,
+        disruptive: false,
+        install: false,
+        technician_only: true,
+    },
+    FixSpec {
+        id: "unlock-account",
+        label: "Unlock the account",
+        description: "Clears the account's lockout. It needs an account that's allowed to unlock users. If something is still using the old password, the account locks again.",
+        targeted: true,
+        disruptive: false,
+        install: false,
+        technician_only: true,
+    },
+    FixSpec {
+        id: "revert-tuneup",
+        label: "Revert tune-up",
+        description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts.",
+        targeted: false,
+        disruptive: true,
+        install: false,
+        technician_only: true,
     },
 ];
 
@@ -114,9 +162,9 @@ pub fn spec(id: &str) -> Option<&'static FixSpec> {
 /// Does this fix need administrator/root rights on this OS?
 pub fn requires_admin(id: &str) -> bool {
     if cfg!(windows) {
-        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart")
+        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart" | "clear-saved-credentials")
     } else {
-        !matches!(id, "gpupdate" | "flush-dns")
+        !matches!(id, "gpupdate" | "flush-dns" | "clear-saved-credentials")
     }
 }
 
@@ -126,6 +174,8 @@ pub fn offer(id: &str, target: Option<&str>) -> FixRef {
     let spec = spec(id).unwrap_or_else(|| panic!("unknown fix id {id}"));
     let label = match target {
         Some(t) if id == "start-service" => format!("Start {t}"),
+        Some(t) if id == "logoff-session" => format!("Sign out session {t}"),
+        Some(t) if id == "unlock-account" => format!("Unlock {t}"),
         Some(t) if id == "install-oem-tool" => crate::update::oem::tool_name(t)
             .map(|n| format!("Install {n}"))
             .unwrap_or_else(|| spec.label.to_string()),
@@ -152,6 +202,8 @@ fn validate_target(id: &str, target: &str) -> Result<(), String> {
         "start-service" => valid_service_name(target),
         "install-oem-tool" => crate::update::oem::tool_name(target).is_some(),
         "install-update" => valid_update_id(target),
+        "logoff-session" => target.len() <= 6 && !target.is_empty() && target.chars().all(|c| c.is_ascii_digit()),
+        "unlock-account" => crate::desk::account::valid_account_name(target),
         _ => true,
     };
     if ok {
@@ -160,6 +212,8 @@ fn validate_target(id: &str, target: &str) -> Result<(), String> {
         Err(match id {
             "install-oem-tool" => format!("`{target}` isn't one of the OEM tools ITriage installs."),
             "install-update" => format!("`{target}` isn't a Windows Update identity."),
+            "logoff-session" => format!("`{target}` isn't a session number."),
+            "unlock-account" => format!("`{target}` isn't an account name."),
             _ => format!("`{target}` isn't a valid service name."),
         })
     }
@@ -178,6 +232,13 @@ pub fn valid_service_name(name: &str) -> bool {
 /// policy and remote-safe mode, run it, and audit the outcome. Blocking; an
 /// update install can take many minutes.
 pub fn run(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool) -> Result<String, String> {
+    run_for(id, target, profile, remote_safe, None)
+}
+
+/// [`run`], with the ticket the fix is for, which goes into the audit trail.
+pub fn run_for(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool, ticket: Option<&str>) -> Result<String, String> {
+    let ticket = ticket.and_then(crate::report::clean_ticket);
+    let ticket = ticket.as_deref();
     let spec = spec(id).ok_or_else(|| format!("Unknown fix `{id}`."))?;
     if spec.targeted && target.is_none() {
         return Err(format!("The {} fix needs a target.", spec.label));
@@ -197,11 +258,11 @@ pub fn run(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool)
     };
     if let Some(why) = blocked {
         let outcome = Err(why.to_string());
-        crate::audit::fix_ran(id, target, &outcome);
+        crate::audit::fix_ran(id, target, &outcome, ticket);
         return outcome;
     }
     let outcome = imp::run(id, target);
-    crate::audit::fix_ran(id, target, &outcome);
+    crate::audit::fix_ran(id, target, &outcome, ticket);
     outcome
 }
 
@@ -313,6 +374,15 @@ mod imp {
                 require_admin()?;
                 crate::win::wua::install_update(target.ok_or("No update named.")?, &crate::module::RunContext::silent())
             }
+            "revert-tuneup" => crate::fixes::undo::revert(),
+            "clear-saved-credentials" => crate::desk::account::clear_saved_credentials(),
+            "logoff-session" => {
+                require_admin()?;
+                crate::desk::account::logoff_session(target.ok_or("No session named.")?)
+            }
+            // No local elevation check: what it needs is the right to unlock
+            // users in the directory, which the call itself reports on.
+            "unlock-account" => crate::desk::account::unlock_account(target.ok_or("No account named.")?),
             other => Err(format!("Fix `{other}` isn't available on Windows.")),
         }
     }
@@ -364,6 +434,10 @@ mod imp {
             "cancel-restart" => crate::fixes::maintenance::cancel_restart(),
             "gpupdate" => Err("Group Policy is a Windows feature.".into()),
             "install-oem-tool" | "install-update" => Err("That's a Windows Update / winget fix; on Linux, use Install OS & app updates.".into()),
+            "revert-tuneup" => crate::fixes::undo::revert(),
+            "clear-saved-credentials" => crate::desk::account::clear_saved_credentials(),
+            "logoff-session" => crate::desk::account::logoff_session(target.ok_or("No session named.")?),
+            "unlock-account" => crate::desk::account::unlock_account(target.ok_or("No account named.")?),
             other => Err(format!("Fix `{other}` isn't available on Linux.")),
         }
     }
@@ -394,6 +468,7 @@ mod tests {
     fn every_fix_can_be_offered() {
         for f in FIXES {
             let r = offer(f.id, f.targeted.then_some("Spooler"));
+            assert!(f.description.len() > 20 && !f.label.is_empty());
             assert_eq!(r.id, f.id);
         }
         assert_eq!(offer("start-service", Some("W32Time")).label, "Start W32Time");
@@ -432,6 +507,29 @@ mod tests {
         let one_down = [("Fax".to_string(), Ok(())), ("LPDSVC".to_string(), Err("LPDSVC is still starting after 30 s".to_string()))];
         let err = with_dependents("Print Spooler restarted.".into(), &one_down).unwrap_err();
         assert!(err.contains("Also restarted, because they depend on it: Fax.") && err.contains("didn't start again: LPDSVC (LPDSVC is still starting"), "{err}");
+    }
+
+    #[test]
+    fn account_fixes_validate_what_they_act_on() {
+        assert!(validate_target("logoff-session", "3").is_ok());
+        for bad in ["", "-1", "3; reboot", "1234567", "three"] {
+            assert!(validate_target("logoff-session", bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_target("unlock-account", r"CORP\\jparker").is_ok());
+        assert!(validate_target("unlock-account", "--reset").is_err());
+        assert!(validate_target("unlock-account", "a;b").is_err());
+        assert_eq!(offer("unlock-account", Some(r"CORP\\jparker")).label, r"Unlock CORP\\jparker");
+        assert_eq!(offer("logoff-session", Some("3")).label, "Sign out session 3");
+        assert!(!requires_admin("clear-saved-credentials"), "it acts on the user's own saved credentials");
+        // Fixes that act on someone else's sign-in aren't for the self-service view.
+        for id in ["logoff-session", "unlock-account", "install-update", "install-oem-tool"] {
+            assert!(spec(id).unwrap().technician_only, "{id}");
+        }
+        assert!(!spec("clear-saved-credentials").unwrap().technician_only);
+        let open = Profile::default();
+        assert!(run("logoff-session", Some("x"), &open, false).unwrap_err().contains("session number"));
+        let locked = Profile::fail_closed();
+        assert!(run("unlock-account", Some("jparker"), &locked, false).unwrap_err().contains("policy"));
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! return plain Rust data. Interpretation (what counts as a problem, how to
 //! word it) lives in the triage/update modules, and text parsing in `parse`.
 
+pub mod account;
 pub mod apps;
 pub mod certs;
 pub mod com;

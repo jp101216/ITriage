@@ -17,6 +17,10 @@
 //! * `run_fix`: one policy-checked, audited one-click fix.
 //! * `list_history`, `load_report`, `import_report`, `compare_with_previous`,
 //!   `compare_reports`, `report_text`: the report viewer and comparisons.
+//! * `trends`: every measurement over this computer's saved runs.
+//! * `likely_causes`: the "likely cause" lines for a set of results (after a
+//!   re-check changes them).
+//! * `check_update`: whether a newer release exists. It only tells.
 //! * `open_link` (https only), `open_history_folder`, `relaunch_elevated`.
 //! * `get_telemetry`: one live sample for the HUD charts, polled about once a second.
 //! * `close_when_done` / `keep_running`: the answer to "something is still
@@ -32,9 +36,11 @@
 //! Given any command-line arguments, the binary runs the command line
 //! (`itriage --help`) instead of opening a window.
 
+use itriage_core::report::TrendSeries;
+use itriage_core::update::notice::{self, Notice};
 use itriage_core::{
-    actions, audit, catalogue, host, host_context, profile, registry, report, HostContext, ModuleInfo, Preset,
-    ProfileStatus, Report, ReportDiff, ReportMeta, RunContext, Sampler, Target, Telemetry, PRESETS,
+    actions, audit, catalogue, host, host_context, insight, profile, registry, report, HostContext, Insight, ModuleInfo,
+    ModuleResult, Preset, ProfileStatus, Report, ReportDiff, ReportMeta, RunContext, Sampler, Target, Telemetry, PRESETS,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -116,6 +122,7 @@ struct FixInfo {
     description: &'static str,
     requires_admin: bool,
     disruptive: bool,
+    technician_only: bool,
 }
 
 #[tauri::command]
@@ -128,6 +135,7 @@ fn list_fixes() -> Vec<FixInfo> {
             description: f.description,
             requires_admin: actions::requires_admin(f.id),
             disruptive: f.disruptive,
+            technician_only: f.technician_only,
         })
         .collect()
 }
@@ -196,7 +204,8 @@ struct RunOutcome {
 /// the last comparable one; re-checking one module after a fix passes false.
 /// `preview` makes modules that change the machine say what they'd do
 /// instead; `remote_safe` refuses the ones that could drop the session;
-/// `target` is the destination for the Destination test.
+/// `target` is the destination for the Destination test; `ticket` is the
+/// ticket reference the run is for (report, file name, audit trail).
 ///
 /// A re-check is never confirmed by anyone, so it never changes the machine:
 /// with `record` false, modules that would are previewed whatever `preview`
@@ -211,6 +220,7 @@ async fn run_modules(
     preview: Option<bool>,
     remote_safe: Option<bool>,
     target: Option<String>,
+    ticket: Option<String>,
 ) -> Result<RunOutcome, String> {
     let target = match target.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => Some(Target::parse(t, &app.profile.network.target_ports)?),
@@ -224,6 +234,7 @@ async fn run_modules(
     let record = record.unwrap_or(true);
     let preview = preview.unwrap_or(false) || !record;
     let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
+    let ticket = ticket.as_deref().and_then(report::clean_ticket);
 
     // Modules do blocking I/O (COM calls, subprocesses, sockets) and some run
     // for many minutes, so keep them off the async runtime's worker threads.
@@ -258,7 +269,8 @@ async fn run_modules(
                 .with_cancel(&cancel)
                 .with_profile(&profile)
                 .preview(preview)
-                .remote_safe(remote_safe);
+                .remote_safe(remote_safe)
+                .with_ticket(ticket.as_deref());
             if let Some(t) = &target {
                 ctx = ctx.with_target(t);
             }
@@ -268,8 +280,8 @@ async fn run_modules(
         }
 
         let cancelled = cancel.load(Ordering::SeqCst);
-        audit::run_finished(&results, cancelled);
-        let report = Report::new(host_context(), profile_name, results, cancelled);
+        audit::run_finished(&results, cancelled, ticket.as_deref());
+        let report = Report::new(host_context(), profile_name, results, cancelled).with_ticket(ticket.as_deref());
         let (mut saved, mut save_error, mut diff) = (None, None, None);
         if record && !report.results.is_empty() {
             if !cancelled {
@@ -316,13 +328,14 @@ async fn run_fix(
     id: String,
     target: Option<String>,
     remote_safe: Option<bool>,
+    ticket: Option<String>,
 ) -> Result<String, String> {
     let busy = claim(&app, Some(window))?;
     let profile = app.profile.clone();
     let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
     tauri::async_runtime::spawn_blocking(move || {
         let _busy = busy;
-        actions::run(&id, target.as_deref(), &profile, remote_safe)
+        actions::run_for(&id, target.as_deref(), &profile, remote_safe, ticket.as_deref())
     })
     .await
     .map_err(|e| format!("The fix stopped unexpectedly: {e}"))?
@@ -385,6 +398,30 @@ async fn compare_reports(a: Report, b: Report) -> Result<ReportDiff, String> {
 #[tauri::command]
 async fn report_text(report: Report, diff: Option<ReportDiff>, logs: Option<bool>) -> String {
     report::render_text(&report, diff.as_ref(), logs.unwrap_or(false))
+}
+
+/// Every measurement taken in at least two saved runs of a computer (this
+/// one unless another is named), oldest first.
+#[tauri::command]
+async fn trends(hostname: Option<String>) -> Vec<TrendSeries> {
+    tauri::async_runtime::spawn_blocking(move || report::trends(&hostname.unwrap_or_else(|| host_context().hostname)))
+        .await
+        .unwrap_or_default()
+}
+
+/// The "likely cause" lines for a set of results: the report's own, worked
+/// out again after a re-check has replaced one of them.
+#[tauri::command]
+fn likely_causes(results: Vec<ModuleResult>) -> Vec<Insight> {
+    insight::likely_causes(&results)
+}
+
+/// Is a newer ITriage out? At most one request a day, and none when the
+/// site profile turns the notice (or public probes) off.
+#[tauri::command]
+async fn check_update(app: State<'_, App>) -> Result<Option<Notice>, String> {
+    let profile = app.profile.clone();
+    Ok(tauri::async_runtime::spawn_blocking(move || notice::check(&profile)).await.unwrap_or(None))
 }
 
 #[tauri::command]
@@ -455,6 +492,9 @@ fn main() {
             compare_with_previous,
             compare_reports,
             report_text,
+            trends,
+            likely_causes,
+            check_update,
             open_link,
             open_history_folder
         ])

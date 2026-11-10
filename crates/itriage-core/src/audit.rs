@@ -50,8 +50,13 @@ pub fn record(kind: &str, id: u32, ok: bool, message: &str, data: Value) {
     system_log(id, ok, message);
 }
 
+/// " for ticket INC0012345", or nothing.
+fn for_ticket(ticket: Option<&str>) -> String {
+    ticket.map(|t| format!(" for ticket {t}")).unwrap_or_default()
+}
+
 /// A finished run: which modules ran and the worst result.
-pub fn run_finished(results: &[ModuleResult], cancelled: bool) {
+pub fn run_finished(results: &[ModuleResult], cancelled: bool, ticket: Option<&str>) {
     let worst = results
         .iter()
         .map(|r| r.status())
@@ -59,37 +64,38 @@ pub fn run_finished(results: &[ModuleResult], cancelled: bool) {
         .unwrap_or(Severity::Ok);
     let ids: Vec<&str> = results.iter().map(|r| r.module_id.as_str()).collect();
     let message = format!(
-        "ITriage run {}: {} module(s), worst result {:?}{}",
+        "ITriage run {}{}: {} module(s), worst result {:?}{}",
         if cancelled { "cancelled" } else { "finished" },
+        for_ticket(ticket),
         results.len(),
         worst,
         if ids.is_empty() { String::new() } else { format!(" ({})", ids.join(", ")) }
     );
-    record("run", event_id::RUN, true, &message, json!({ "modules": ids, "cancelled": cancelled }));
+    record("run", event_id::RUN, true, &message, json!({ "modules": ids, "cancelled": cancelled, "ticket": ticket }));
 }
 
 /// A module that changes the machine has finished.
-pub fn module_ran(result: &ModuleResult) {
+pub fn module_ran(result: &ModuleResult, ticket: Option<&str>) {
     let ok = result.error.is_none();
     let message = match &result.error {
-        None => format!("ITriage module {} ran: {}", result.module_id, result.summary),
-        Some(e) => format!("ITriage module {} failed: {e}", result.module_id),
+        None => format!("ITriage module {} ran{}: {}", result.module_id, for_ticket(ticket), result.summary),
+        Some(e) => format!("ITriage module {} failed{}: {e}", result.module_id, for_ticket(ticket)),
     };
-    record("module", event_id::MODULE, ok, &message, json!({ "module": result.module_id }));
+    record("module", event_id::MODULE, ok, &message, json!({ "module": result.module_id, "ticket": ticket }));
 }
 
 /// A one-click fix has run.
-pub fn fix_ran(id: &str, target: Option<&str>, outcome: &Result<String, String>) {
+pub fn fix_ran(id: &str, target: Option<&str>, outcome: &Result<String, String>, ticket: Option<&str>) {
     let what = match target {
         Some(t) => format!("{id} ({t})"),
         None => id.to_string(),
     };
     let (ok, message) = match outcome {
-        Ok(m) => (true, format!("ITriage fix {what} succeeded: {m}")),
-        Err(e) => (false, format!("ITriage fix {what} failed: {e}")),
+        Ok(m) => (true, format!("ITriage fix {what} succeeded{}: {m}", for_ticket(ticket))),
+        Err(e) => (false, format!("ITriage fix {what} failed{}: {e}", for_ticket(ticket))),
     };
     let event = if ok { event_id::FIX_OK } else { event_id::FIX_FAILED };
-    record("fix", event, ok, &message, json!({ "fix": id, "target": target }));
+    record("fix", event, ok, &message, json!({ "fix": id, "target": target, "ticket": ticket }));
 }
 
 /// Append a JSON line, rotating the file at about 5 MB.

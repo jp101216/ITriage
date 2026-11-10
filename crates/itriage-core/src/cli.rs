@@ -26,8 +26,9 @@ USAGE
 
 SELECTING
   --list                 List modules and presets, then exit
-  --preset NAME          triage (Invoke-NetTriage), tuneup (Invoke-EndpointTuneUp)
-                         or updates (Invoke-UpdateSystem)
+  --preset NAME          triage (Invoke-NetTriage), tuneup (Invoke-EndpointTuneUp),
+                         updates (Invoke-UpdateSystem), lockout (why an account
+                         keeps locking) or health (drives, crashes, security)
   --target HOST[:PORTS]  Test one destination (adds the Destination test);
                          e.g. --target fileserver01:445,3389
   --ports LIST           Ports for --target (default 443,80,445,3389)
@@ -40,6 +41,8 @@ SAFETY
   --redact-serial        Show REDACTED instead of the serial number
 
 OUTPUT
+  --ticket REF           The ticket this run is for: shown on the report,
+                         added to its file name and written to the audit log
   --json                 Print the full JSON report instead of text
   --log                  Include each module's transcript in the text
   --out PATH             Also write the JSON report (or comparison) to PATH,
@@ -49,8 +52,12 @@ OUTPUT
 
 OTHER COMMANDS
   --fix ID [TARGET]      Run one one-click fix (restart-spooler, flush-dns,
-                         restart-computer, cancel-restart, start-service NAME…)
+                         restart-computer, cancel-restart, start-service NAME,
+                         clear-saved-credentials, unlock-account NAME,
+                         revert-tuneup…)
   --compare OLD NEW      Compare two saved reports from the same computer
+  --trends               How each measurement has moved over this computer's
+                         saved runs (with --json, every point)
   -h, --help             Show this help
 
 EXIT CODES
@@ -75,6 +82,8 @@ struct Args {
     target: Option<String>,
     ports: Option<String>,
     out: Option<PathBuf>,
+    ticket: Option<String>,
+    trends: bool,
     fix: Option<(String, Option<String>)>,
     compare: Option<(PathBuf, PathBuf)>,
     modules: Vec<String>,
@@ -114,6 +123,8 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--target" => a.target = Some(take("--target")?),
             "--ports" => a.ports = Some(take("--ports")?),
             "--out" => a.out = Some(PathBuf::from(take("--out")?)),
+            "--ticket" => a.ticket = Some(take("--ticket")?),
+            "--trends" => a.trends = true,
             "--fix" => {
                 let id = take("--fix")?;
                 let target = it.next_if(|n| !n.starts_with("--")).cloned();
@@ -158,8 +169,11 @@ pub fn main(argv: Vec<String>) -> i32 {
     if let Some((old, new)) = &args.compare {
         return compare(old, new, args.json, args.out.as_deref());
     }
+    if args.trends {
+        return trends(args.json);
+    }
     if let Some((id, target)) = &args.fix {
-        return match crate::actions::run(id, target.as_deref(), &profile, remote_safe) {
+        return match crate::actions::run_for(id, target.as_deref(), &profile, remote_safe, args.ticket.as_deref()) {
             Ok(msg) => {
                 println!("{msg}");
                 0
@@ -260,10 +274,12 @@ pub fn main(argv: Vec<String>) -> i32 {
             eprintln!("    · {line}");
         }
     };
+    let ticket = args.ticket.as_deref().and_then(report::clean_ticket);
     let mut ctx = RunContext::new(&log)
         .with_profile(&profile)
         .preview(args.what_if)
-        .remote_safe(remote_safe);
+        .remote_safe(remote_safe)
+        .with_ticket(ticket.as_deref());
     if let Some(t) = &target {
         ctx = ctx.with_target(t);
     }
@@ -274,10 +290,10 @@ pub fn main(argv: Vec<String>) -> i32 {
         }
         results.push(m.run(&ctx));
     }
-    crate::audit::run_finished(&results, false);
+    crate::audit::run_finished(&results, false, ticket.as_deref());
 
     let profile_name = (status.source != "built-in").then(|| status.name.clone());
-    let report = Report::new(host, profile_name, results, false);
+    let report = Report::new(host, profile_name, results, false).with_ticket(ticket.as_deref());
     let ids: Vec<String> = report.results.iter().map(|r| r.module_id.clone()).collect();
     let diff = report::previous(&report.host.hostname, &report.generated, &ids).map(|old| report::diff(&old, &report));
     let mut code = report.exit_code.unwrap_or(1);
@@ -341,8 +357,41 @@ fn list(profile: &Profile, remote_safe: bool) {
     println!();
     println!("Presets:");
     for p in PRESETS {
-        println!("  --preset {:<8} {} ({}): {}", p.id, p.title, p.script, p.modules.join(" "));
+        let script = if p.script.is_empty() { String::new() } else { format!(" ({})", p.script) };
+        println!("  --preset {:<8} {}{script}: {}", p.id, p.title, p.modules.join(" "));
     }
+}
+
+/// How each measurement has moved over this computer's saved runs.
+fn trends(json: bool) -> i32 {
+    let host = crate::host_context().hostname;
+    let series = report::trends(&host);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&series).expect("trends serialize"));
+        return 0;
+    }
+    if series.is_empty() {
+        println!("No trends yet for {host}: a measurement needs at least two saved runs.");
+        return 0;
+    }
+    println!("Trends for {host}, oldest to newest");
+    for s in &series {
+        let (first, last) = (&s.points[0], &s.points[s.points.len() - 1]);
+        let word = match report::movement(&s.unit, s.higher_is_worse, first.value, last.value) {
+            report::Trend::Same => "about the same",
+            report::Trend::Worse => "worse",
+            report::Trend::Better => "better",
+        };
+        println!(
+            "{:<28} {:<34} {} → {} over {} runs ({word})",
+            s.module,
+            s.label,
+            report::metric_text(first.value, &s.unit),
+            report::metric_text(last.value, &s.unit),
+            s.points.len()
+        );
+    }
+    0
 }
 
 /// Compare-NetTriage: two saved runs of one computer, as text (or JSON),
@@ -419,6 +468,8 @@ mod tests {
         let c = args(&["--compare", "a.json", "b.json"]);
         assert_eq!(c.compare.unwrap().1, PathBuf::from("b.json"));
         assert_eq!(args(&["--no-remote-safe"]).remote_safe, Some(false));
+        assert_eq!(args(&["--ticket", "INC0012345", "--trends"]).ticket.as_deref(), Some("INC0012345"));
+        assert!(args(&["--ticket=INC1", "--trends"]).trends);
         assert!(parse(&["--bogus".to_string()]).is_err());
         assert!(parse(&["--target".to_string()]).is_err());
     }

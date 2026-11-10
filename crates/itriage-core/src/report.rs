@@ -9,6 +9,7 @@
 //! that make a comparison incomplete.
 
 use crate::host::HostContext;
+use crate::insight::Insight;
 use crate::model::{ModuleResult, Severity};
 use crate::parse::time::epoch_to_rfc3339;
 use crate::util::now_epoch;
@@ -39,6 +40,13 @@ pub struct Report {
     /// See [`crate::module::exit_code`]. Absent before 0.5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// The ticket this run was for, as the technician typed it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
+    /// What's most likely wrong, worked out from the findings (see
+    /// [`crate::insight`]). Empty before 0.7 and when nothing is.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub likely: Vec<Insight>,
     pub results: Vec<ModuleResult>,
 }
 
@@ -56,8 +64,16 @@ impl Report {
             profile,
             cancelled,
             exit_code: Some(crate::module::exit_code(&results, cancelled)),
+            ticket: None,
+            likely: crate::insight::likely_causes(&results),
             results,
         }
+    }
+
+    /// Attach the ticket number, cleaned up (see [`clean_ticket`]).
+    pub fn with_ticket(mut self, ticket: Option<&str>) -> Self {
+        self.ticket = ticket.and_then(clean_ticket);
+        self
     }
 
     pub fn worst(&self) -> Severity {
@@ -69,6 +85,14 @@ impl Report {
     }
 }
 
+/// A ticket reference as it's kept: letters, digits and the few marks
+/// ticket systems use, at most 40 characters. `None` when nothing is left.
+pub fn clean_ticket(text: &str) -> Option<String> {
+    let kept: String = text.trim().chars().filter(|c| c.is_alphanumeric() || "-_#./: ".contains(*c)).take(40).collect();
+    let kept = kept.trim().to_string();
+    (!kept.is_empty()).then_some(kept)
+}
+
 /// A saved report, as listed in the history panel.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReportMeta {
@@ -78,6 +102,7 @@ pub struct ReportMeta {
     pub modules: usize,
     pub worst: Severity,
     pub cancelled: bool,
+    pub ticket: Option<String>,
 }
 
 pub fn history_dir() -> Option<PathBuf> {
@@ -98,17 +123,19 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
     // else's data: neither may name a folder or a drive.
     let stamp = file_part(&report.generated.replace([':', '-'], ""), "", "run");
     let host = file_part(&report.host.hostname, "-", "host");
+    // The ticket goes on the end, so sorting by name is still by time.
+    let ticket = report.ticket.as_deref().map(|t| format!("_{}", file_part(t, "-", "ticket"))).unwrap_or_default();
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
     // Two runs in the same second must not overwrite each other, but saving
     // the same report again (re-importing it) shouldn't duplicate it.
-    let mut path = dir.join(format!("{stamp}_{host}.json"));
+    let mut path = dir.join(format!("{stamp}_{host}{ticket}.json"));
     let mut n = 1;
     while path.exists() {
         if std::fs::read_to_string(&path).is_ok_and(|old| old == json) {
             return Ok(path);
         }
         n += 1;
-        path = dir.join(format!("{stamp}_{host}~{n}.json"));
+        path = dir.join(format!("{stamp}_{host}{ticket}~{n}.json"));
     }
     std::fs::write(&path, json).map_err(|e| format!("Can't write {}: {e}", path.display()))?;
     // The transcript is a convenience; the JSON is the record.
@@ -165,7 +192,9 @@ fn json_files(dir: &Path) -> Vec<PathBuf> {
 /// parse every report (with their full logs) each time. It's a cache: built
 /// from the reports, rebuilt for any whose file has changed, and safe to
 /// delete.
-const INDEX_FILE: &str = "index.cache";
+const INDEX_FILE: &str = "index.v2.cache";
+/// The index of 0.6, without measurements or tickets. Removed when seen.
+const OLD_INDEX_FILE: &str = "index.cache";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct IndexEntry {
@@ -179,6 +208,28 @@ struct IndexEntry {
     cancelled: bool,
     /// The modules that really ran (not as a preview).
     checks: Vec<String>,
+    #[serde(default)]
+    ticket: Option<String>,
+    /// Every measurement the run took, for the trend charts.
+    #[serde(default)]
+    metrics: Vec<IndexMetric>,
+}
+
+/// One measurement in the index. Short names: there are a few dozen per run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct IndexMetric {
+    #[serde(rename = "m")]
+    module_id: String,
+    #[serde(rename = "l")]
+    label: String,
+    #[serde(rename = "v")]
+    value: f64,
+    #[serde(rename = "u")]
+    unit: String,
+    #[serde(rename = "w")]
+    higher_is_worse: bool,
+    #[serde(rename = "s")]
+    severity: Severity,
 }
 
 type Index = std::collections::BTreeMap<String, IndexEntry>;
@@ -194,6 +245,24 @@ impl IndexEntry {
             worst: report.worst(),
             cancelled: report.cancelled,
             checks: report.results.iter().filter(|r| !r.preview).map(|r| r.module_id.clone()).collect(),
+            ticket: report.ticket.clone(),
+            metrics: report
+                .results
+                .iter()
+                .filter(|r| !r.preview && r.error.is_none())
+                .flat_map(|r| {
+                    r.findings.iter().filter_map(|f| {
+                        f.metric.as_ref().map(|m| IndexMetric {
+                            module_id: r.module_id.clone(),
+                            label: f.label.clone(),
+                            value: m.value,
+                            unit: m.unit.clone(),
+                            higher_is_worse: m.higher_is_worse,
+                            severity: f.severity,
+                        })
+                    })
+                })
+                .collect(),
         }
     }
 }
@@ -235,6 +304,7 @@ fn indexed(dir: &Path) -> Vec<(PathBuf, IndexEntry)> {
             let _ = std::fs::rename(&tmp, &index_path);
         }
         let _ = std::fs::remove_file(&tmp);
+        let _ = std::fs::remove_file(dir.join(OLD_INDEX_FILE));
     }
     out
 }
@@ -254,10 +324,77 @@ fn list_in(dir: &Path) -> Vec<ReportMeta> {
             modules: e.modules,
             worst: e.worst,
             cancelled: e.cancelled,
+            ticket: e.ticket,
         })
         .collect();
     metas.sort_by(|a, b| b.generated.cmp(&a.generated));
     metas
+}
+
+// ----------------------------------------------------------------- trends
+
+/// One measurement over this computer's saved runs.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrendSeries {
+    pub module_id: String,
+    /// The module's title, for the picker.
+    pub module: String,
+    pub label: String,
+    pub unit: String,
+    pub higher_is_worse: bool,
+    /// Oldest first.
+    pub points: Vec<TrendPoint>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TrendPoint {
+    pub generated: String,
+    pub value: f64,
+    pub severity: Severity,
+}
+
+/// How many runs back a trend reaches.
+pub const TREND_RUNS: usize = 60;
+
+/// Every measurement taken in at least two of `hostname`'s saved runs, as a
+/// series over time. Read from the index, so no report is opened.
+pub fn trends(hostname: &str) -> Vec<TrendSeries> {
+    history_dir().map(|dir| trends_in(&dir, hostname)).unwrap_or_default()
+}
+
+fn trends_in(dir: &Path, hostname: &str) -> Vec<TrendSeries> {
+    let mut runs: Vec<IndexEntry> = indexed(dir)
+        .into_iter()
+        .map(|(_, e)| e)
+        .filter(|e| e.hostname.eq_ignore_ascii_case(hostname) && !e.cancelled)
+        .collect();
+    runs.sort_by(|a, b| a.generated.cmp(&b.generated));
+    if runs.len() > TREND_RUNS {
+        runs.drain(..runs.len() - TREND_RUNS);
+    }
+    let modules: Vec<(String, String)> = crate::module::registry().iter().map(|m| m.info()).map(|i| (i.id, i.title)).collect();
+    let mut series: Vec<TrendSeries> = Vec::new();
+    for run in &runs {
+        for m in &run.metrics {
+            let point = TrendPoint { generated: run.generated.clone(), value: m.value, severity: m.severity };
+            match series.iter_mut().find(|s| s.module_id == m.module_id && s.label == m.label && s.unit == m.unit) {
+                Some(s) => s.points.push(point),
+                None => series.push(TrendSeries {
+                    module: modules.iter().find(|(id, _)| *id == m.module_id).map_or_else(|| m.module_id.clone(), |(_, title)| title.clone()),
+                    module_id: m.module_id.clone(),
+                    label: m.label.clone(),
+                    unit: m.unit.clone(),
+                    higher_is_worse: m.higher_is_worse,
+                    points: vec![point],
+                }),
+            }
+        }
+    }
+    series.retain(|s| s.points.len() >= 2);
+    // In checklist order, so the picker reads like the report.
+    let order = |id: &str| modules.iter().position(|(m, _)| m == id).unwrap_or(usize::MAX);
+    series.sort_by(|a, b| order(&a.module_id).cmp(&order(&b.module_id)).then(a.label.cmp(&b.label)));
+    series
 }
 
 pub fn load(path: &Path) -> Result<Report, String> {
@@ -433,6 +570,12 @@ fn trend(m: &crate::model::Metric, before: f64, after: f64) -> Trend {
     }
 }
 
+/// Has a measurement really moved from `before` to `after`, and which way?
+/// The same judgement the comparison makes, for a first and last point.
+pub fn movement(unit: &str, higher_is_worse: bool, before: f64, after: f64) -> Trend {
+    trend(&crate::model::Metric { value: after, unit: unit.to_string(), higher_is_worse }, before, after)
+}
+
 /// What changed between two runs. Problems (warning and above) are compared
 /// by severity, so values that always move, like uptime, don't create noise;
 /// measured numbers are compared separately. Only modules that ran both
@@ -606,6 +749,7 @@ pub fn metric_text(value: f64, unit: &str) -> String {
     match unit {
         "%" => format!("{v}%"),
         "% free" => format!("{v}% free"),
+        "days" if v == "1" => "1 day".to_string(),
         "" => v,
         u => format!("{v} {u}"),
     }
@@ -629,6 +773,9 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
         .collect::<Vec<_>>()
         .join(" · "),
     ];
+    if let Some(t) = &report.ticket {
+        out.push(format!("Ticket: {t}"));
+    }
     if report.cancelled {
         out.push("The run was cancelled before every module finished.".into());
     }
@@ -643,7 +790,9 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
     }
     out.push("=".repeat(60));
 
-    // Key findings first, the way NetTriage's ServiceNow summary opens.
+    out.extend(crate::insight::render(&report.likely));
+
+    // Key findings next, the way NetTriage's ServiceNow summary opens.
     let mut key = Vec::new();
     for r in &report.results {
         if let Some(e) = &r.error {
@@ -1050,6 +1199,97 @@ mod tests {
         // The lookup for "the last comparable run" goes through it too.
         let found = previous_in(&dir, "WS-1", "2026-11-05T09:00:00Z", &["system.disk".to_string()]).unwrap();
         assert_eq!(found.generated, first.generated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn measurements_read_naturally() {
+        assert_eq!(metric_text(38.0, "ms"), "38 ms");
+        assert_eq!(metric_text(4.5, "days"), "4.5 days");
+        assert_eq!(metric_text(1.0, "days"), "1 day");
+        assert_eq!(metric_text(8.0, "% free"), "8% free");
+        assert_eq!(metric_text(2.0, ""), "2");
+    }
+
+    #[test]
+    fn a_ticket_follows_the_run_everywhere() {
+        assert_eq!(clean_ticket("  INC0012345 ").as_deref(), Some("INC0012345"));
+        assert_eq!(clean_ticket("REQ/2026/0042 #7").as_deref(), Some("REQ/2026/0042 #7"));
+        assert_eq!(clean_ticket("x\n<script>\"y\";").as_deref(), Some("xscripty"), "only what a ticket reference is made of");
+        assert_eq!(clean_ticket(&"9".repeat(200)).unwrap().len(), 40);
+        assert_eq!(clean_ticket("  \t "), None);
+
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-ticket-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut run = report(vec![result("system.disk", vec![Finding::ok("C:\\", "50% used")], None)]).with_ticket(Some(" INC0012345 "));
+        run.generated = "2026-11-03T09:00:00Z".into();
+        assert_eq!(run.ticket.as_deref(), Some("INC0012345"));
+        let path = save_in(&dir, &run, 0).unwrap();
+        assert_eq!(path.file_name().unwrap().to_str().unwrap(), "20261103T090000Z_WS-1_INC0012345.json");
+        assert_eq!(list_in(&dir)[0].ticket.as_deref(), Some("INC0012345"));
+        let text = render_text(&run, None, false);
+        assert!(text.lines().nth(2) == Some("Ticket: INC0012345"), "{text}");
+        assert_eq!(load(&path).unwrap().ticket.as_deref(), Some("INC0012345"));
+
+        // A ticket made of path characters still can't name a folder.
+        let mut odd = report(vec![result("system.disk", vec![], None)]).with_ticket(Some("../../x"));
+        odd.generated = "2026-11-04T09:00:00Z".into();
+        let path = save_in(&dir, &odd, 0).unwrap();
+        assert_eq!(path.parent().unwrap(), dir);
+        assert!(report(vec![]).with_ticket(None).ticket.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_likely_cause_leads_the_ticket_text() {
+        let run = report(vec![result("desk.wifi", vec![Finding::warn("Signal", "42% · weak")], None)]);
+        assert_eq!(run.likely.len(), 1);
+        let text = render_text(&run, None, false);
+        let (likely, key) = (text.find("LIKELY CAUSE").unwrap(), text.find("KEY FINDINGS").unwrap());
+        assert!(likely < key, "{text}");
+        assert!(text.contains("- Weak Wi-Fi (42%) is the most likely reason"));
+        // Reports from before 0.7 have neither field and still open.
+        let mut value = serde_json::to_value(&run).unwrap();
+        value.as_object_mut().unwrap().remove("likely");
+        let old: Report = serde_json::from_value(value).unwrap();
+        assert!(old.likely.is_empty() && old.ticket.is_none());
+        assert!(!render_text(&old, None, false).contains("LIKELY CAUSE"));
+    }
+
+    #[test]
+    fn trends_follow_a_measurement_across_runs() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-trend-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let run = |when: &str, host: &str, free: f64, signal: Option<f64>| {
+            let mut findings = vec![Finding::ok("C:\\", format!("{free}% free")).with_metric(free, "% free", false)];
+            let mut results = Vec::new();
+            if let Some(s) = signal {
+                results.push(result("desk.wifi", vec![Finding::warn("Signal", format!("{s}%")).with_metric(s, "%", false)], None));
+            }
+            findings.push(Finding::info("Volumes", "1"));
+            results.insert(0, result("system.disk", findings, None));
+            let mut r = report(results);
+            r.generated = when.into();
+            r.host.hostname = host.into();
+            save_in(&dir, &r, 0).unwrap();
+        };
+        run("2026-11-03T09:00:00Z", "WS-1", 22.0, Some(40.0));
+        run("2026-11-01T09:00:00Z", "WS-1", 31.0, None);
+        run("2026-11-02T09:00:00Z", "ws-1", 27.0, None);
+        run("2026-11-02T10:00:00Z", "OTHER", 80.0, Some(90.0));
+
+        let series = trends_in(&dir, "WS-1");
+        assert_eq!(series.len(), 1, "the signal was only measured once: {series:?}");
+        let disk = &series[0];
+        assert_eq!((disk.module_id.as_str(), disk.module.as_str(), disk.label.as_str(), disk.unit.as_str()), ("system.disk", "Disk space & latency", "C:\\", "% free"));
+        assert!(!disk.higher_is_worse);
+        assert_eq!(disk.points.iter().map(|p| p.value).collect::<Vec<_>>(), vec![31.0, 27.0, 22.0], "oldest first, this computer only");
+        assert!(trends_in(&dir, "nobody").is_empty());
+        // The index of 0.6 is replaced, not read.
+        std::fs::write(dir.join(OLD_INDEX_FILE), "{}").unwrap();
+        std::fs::remove_file(dir.join(INDEX_FILE)).unwrap();
+        assert_eq!(trends_in(&dir, "WS-1").len(), 1);
+        assert!(!dir.join(OLD_INDEX_FILE).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

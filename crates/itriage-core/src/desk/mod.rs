@@ -2,6 +2,7 @@
 //! first on a shared or clinical PC. All read-only; problems they find carry
 //! one-click fixes from `crate::actions` where a safe one exists.
 
+pub mod account;
 pub mod battery;
 pub mod certs;
 pub mod devices;

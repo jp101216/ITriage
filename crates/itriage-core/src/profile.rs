@@ -34,6 +34,7 @@ pub struct Profile {
     pub thresholds: Thresholds,
     pub privacy: Privacy,
     pub updates: UpdateSettings,
+    pub security: SecuritySettings,
     pub cleanup: CleanupSettings,
     pub history: HistorySettings,
     pub ui: UiSettings,
@@ -233,6 +234,10 @@ pub struct Thresholds {
     pub network_rtt_ms: Band,
     pub dns_ms: Band,
     pub packet_loss_pct: Band,
+    /// Days since the antivirus definitions were last updated.
+    pub definitions_age_days: Band,
+    /// Days until the signed-in user's password expires. Lower is worse.
+    pub password_expiry_days: Band,
 }
 
 impl Default for Thresholds {
@@ -248,6 +253,8 @@ impl Default for Thresholds {
             network_rtt_ms: Band::new(80.0, 150.0),
             dns_ms: Band::new(100.0, 300.0),
             packet_loss_pct: Band::new(1.0, 10.0),
+            definitions_age_days: Band::new(3.0, 7.0),
+            password_expiry_days: Band::new(14.0, 3.0),
         }
     }
 }
@@ -268,11 +275,33 @@ pub struct UpdateSettings {
     /// runs, so a BIOS update doesn't leave the PC asking for its recovery
     /// key. On unless the profile turns it off.
     pub suspend_bitlocker: bool,
+    /// Tell the technician when a newer ITriage has been released. One
+    /// request a day to GitHub; it downloads and installs nothing. Also off
+    /// whenever `[network] public_probes` is off.
+    pub notify: bool,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { windows_update_drivers: DriverSource::default(), suspend_bitlocker: true }
+        Self { windows_update_drivers: DriverSource::default(), suspend_bitlocker: true, notify: true }
+    }
+}
+
+/// What the security posture check expects of this site's PCs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecuritySettings {
+    /// Must the system drive be encrypted? Absent: a laptop without
+    /// encryption is a warning and a desktop is only noted. `true` makes it
+    /// critical everywhere; `false` only notes it.
+    pub require_encryption: Option<bool>,
+    /// `false` flags a signed-in user who is an administrator of the PC.
+    pub user_may_be_admin: bool,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self { require_encryption: None, user_may_be_admin: true }
     }
 }
 
@@ -703,10 +732,19 @@ mod tests {
         assert!(clinical.policy.remote_safe && !clinical.network.public_probes);
         assert_eq!(clinical.network.tcp_probe_target(), Some(("ehr-gateway.example.org".into(), 443)));
         assert_eq!(clinical.thresholds.wifi_signal_pct, Band::new(70.0, 50.0), "commented bands keep the defaults");
+        assert_eq!(clinical.security.require_encryption, Some(true));
+        assert!(!clinical.security.user_may_be_admin && !clinical.updates.notify);
+        assert!(clinical.fix_allowed("clear-saved-credentials", None) && clinical.fix_allowed("unlock-account", Some(r"CORP\jparker")));
+        assert!(!clinical.fix_allowed("restart-computer", None), "not on its list");
         let lab = Profile::from_toml(include_str!("../../../profiles/home-lab.toml")).unwrap();
         assert_eq!(lab.updates.windows_update_drivers, DriverSource::Always);
         assert_eq!(lab.network.target_ports, vec![22, 443, 445, 8006]);
         assert_eq!(lab.history.keep, 0);
+        assert!(lab.security.user_may_be_admin && lab.security.require_encryption.is_none() && lab.updates.notify, "the defaults");
+        assert_eq!(lab.thresholds.password_expiry_days, Band::new(14.0, 3.0));
+        let strict = Profile::from_toml("[thresholds]\ndefinitions_age_days = { warn = 1, crit = 2 }\n[security]\nrequire_encryption = false").unwrap();
+        assert_eq!(strict.thresholds.definitions_age_days.high(1.0), Severity::Warning);
+        assert_eq!(strict.security.require_encryption, Some(false));
         let ints = Profile::from_toml("[thresholds]\nuptime_days = { warn = 3, crit = 5 }").unwrap();
         assert_eq!(ints.thresholds.uptime_days, Band::new(3.0, 5.0), "whole numbers work in bands");
     }

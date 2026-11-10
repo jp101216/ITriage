@@ -51,7 +51,10 @@ jobs:
 
       # Runs every read-only module for real on the runner. On windows-latest
       # this is what exercises the native SCM, Event Log, token, registry, IP
-      # Helper, WinHTTP, PDH, SMBIOS and WUA code paths. Findings never fail
+      # Helper, WinHTTP, PDH, SMBIOS, WUA, NetAPI, Credential Manager and
+      # session code paths, and the PowerShell behind the security, drive
+      # health and account checks. The last three lines run the two presets
+      # without a script, a ticket (file name, audit log) and the trends. Findings never fail
       # the job, and neither does exit code 2 (a check that can't run on a
       # runner); a crash or exit 1 does. The second run diffs against the
       # first, so the history and compare code runs too.
@@ -62,6 +65,9 @@ jobs:
           smoke cargo run -q -p itriage-core --example triage
           smoke cargo run -q -p itriage-core --example triage -- --json > smoke-${{ runner.os }}.json
           smoke cargo run -q -p itriage-core --example triage -- --preset triage --target github.com:443,80 --no-history
+          smoke cargo run -q -p itriage-core --example triage -- --preset lockout --ticket CI-SMOKE
+          smoke cargo run -q -p itriage-core --example triage -- --preset health --ticket CI-SMOKE --quiet > /dev/null
+          cargo run -q -p itriage-core --example triage -- --trends
 
       # The changing presets in preview (what-if): every module that would
       # change the machine says what it would do and changes nothing.

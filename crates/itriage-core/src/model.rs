@@ -37,6 +37,8 @@ pub enum Category {
     Eventlog,
     /// Service-desk workstation checks: time, domain, printers, devices, Wi-Fi, certs, battery.
     Workstation,
+    /// Security posture: encryption, antivirus, firewall, Secure Boot, administrators.
+    Security,
     /// Site-profile driven checks: required apps, services and endpoints.
     Site,
     /// Network-stack repair (the Endpoint Tune-Up network phase).
@@ -54,6 +56,7 @@ impl Category {
             Category::Processes => "Processes & services",
             Category::Eventlog => "Event log",
             Category::Workstation => "Workstation",
+            Category::Security => "Security",
             Category::Site => "Site & clinical",
             Category::Repair => "Network repair",
             Category::Fixes => "Cleanup & maintenance",

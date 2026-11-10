@@ -25,6 +25,12 @@ fixes = [
   "flush-dns",
   "start-service:Spooler",
   "start-service:W32Time",
+  # Account lockouts. The first is the person's own to use (it's offered in
+  # the self-service view); the next two are only ever offered to technicians.
+  "clear-saved-credentials",
+  "logoff-session",
+  "unlock-account",
+  "revert-tuneup",
 ]
 # Open in the simple self-service view. Set technician_view = false to keep
 # the app in self-service mode (a kiosk for end users).
@@ -68,10 +74,25 @@ tcp_probe = "ehr-gateway.example.org:443"
 # network_rtt_ms  = { warn = 80,  crit = 150 }   # DNS servers and destinations
 # dns_ms          = { warn = 100, crit = 300 }
 # packet_loss_pct = { warn = 1,   crit = 10 }
+# definitions_age_days = { warn = 3,  crit = 7 }   # days since antivirus definitions updated
+# password_expiry_days = { warn = 14, crit = 3 }   # days until the password expires; lower is worse
 
 [privacy]
 # Show REDACTED instead of the serial number in results and exports.
 redact_serial = false
+
+[security]
+# What the Security posture check expects here. Every PC holding patient data
+# is encrypted, so an unencrypted system drive is critical on any of them
+# (left out, only an unencrypted laptop is a warning).
+require_encryption = true
+# People don't administer their own clinical PCs: flag a signed-in user who does.
+user_may_be_admin = false
+
+[updates]
+# ITriage itself is deployed centrally too, so technicians aren't told about
+# new releases. (It's also off whenever public_probes is off, as it is above.)
+notify = false
 
 [cleanup]
 # Temp files created or changed more recently than this are kept.
