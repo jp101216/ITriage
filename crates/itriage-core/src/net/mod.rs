@@ -307,6 +307,11 @@ pub fn egress_ip(urls: &[String], timeout: Duration) -> Result<IpAddr, String> {
     Err(last)
 }
 
+/// GET an https:// URL as text, through the system's proxy settings.
+pub fn http_get(url: &str, timeout: Duration) -> Result<String, String> {
+    imp::http_get(url, timeout)
+}
+
 /// The lookup services to try: the configured one, then api.ipify.org as
 /// NetTriage does when the default is in use. Empty disables the lookup.
 pub fn egress_urls(configured: &str) -> Vec<String> {

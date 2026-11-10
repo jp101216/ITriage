@@ -212,27 +212,33 @@ pub fn drive_findings(disks: &[Disk], predicted: &[String], error: &str, elevate
                 severity = s;
             }
         };
+        // What's wrong leads the line; the description follows.
+        let mut wrong: Vec<String> = Vec::new();
         let mut notes = Vec::new();
-        let health = d.health.to_ascii_lowercase();
-        let mut parts = vec![match health.as_str() {
-            "healthy" => "healthy".to_string(),
+        // Failing, as opposed to merely hot.
+        let mut replace = false;
+        let mut parts = Vec::new();
+        match d.health.to_ascii_lowercase().as_str() {
+            "healthy" => parts.push("healthy".to_string()),
             "warning" => {
                 worse(Severity::Warning);
-                "Windows reports a warning".to_string()
+                replace = true;
+                wrong.push("Windows reports a warning".to_string());
             }
             "unhealthy" => {
                 worse(Severity::Critical);
-                "unhealthy".to_string()
+                replace = true;
+                wrong.push("unhealthy".to_string());
             }
             "" => {
                 worse(Severity::Info);
-                "health not reported".to_string()
+                parts.push("health not reported".to_string());
             }
             other => {
                 worse(Severity::Info);
-                other.to_string()
+                parts.push(other.to_string());
             }
-        }];
+        }
         if !d.status.is_empty() && !d.status.eq_ignore_ascii_case("OK") {
             parts.push(d.status.to_lowercase());
         }
@@ -246,36 +252,42 @@ pub fn drive_findings(disks: &[Disk], predicted: &[String], error: &str, elevate
             parts.push(human_bytes(d.size));
         }
         if let Some(wear) = d.wear.filter(|w| (0..=255).contains(w)) {
-            parts.push(format!("{wear}% of its rated life used"));
-            if wear >= 90 {
-                worse(Severity::Critical);
-                notes.push("The drive is at the end of its rated life.".to_string());
-            } else if wear >= 70 {
-                worse(Severity::Warning);
-            }
-        }
-        if let Some(t) = d.temperature.filter(|t| *t > 0) {
-            parts.push(format!("{t} °C"));
-            if t >= 70 {
-                worse(Severity::Warning);
-                notes.push("It's running hot; check the fan and vents.".to_string());
+            let used = format!("{wear}% of its rated life used");
+            if wear >= 70 {
+                worse(if wear >= 90 { Severity::Critical } else { Severity::Warning });
+                replace = true;
+                wrong.push(used);
+                if wear >= 90 {
+                    notes.push("The drive is at the end of its rated life.".to_string());
+                }
+            } else {
+                parts.push(used);
             }
         }
         let errors = d.read_errors.unwrap_or(0) + d.write_errors.unwrap_or(0);
         if errors > 0 {
             worse(Severity::Warning);
-            notes.push(format!(
-                "{} read and {} write errors it couldn't correct.",
-                d.read_errors.unwrap_or(0),
-                d.write_errors.unwrap_or(0)
-            ));
+            replace = true;
+            wrong.push(format!("{errors} error{} it couldn't correct", plural(errors as usize)));
+            notes.push(format!("{} reading, {} writing.", d.read_errors.unwrap_or(0), d.write_errors.unwrap_or(0)));
+        }
+        if let Some(t) = d.temperature.filter(|t| *t > 0) {
+            if t >= 70 {
+                worse(Severity::Warning);
+                wrong.push(format!("running hot at {t} °C"));
+                notes.push("Check the fan and vents; a drive this hot slows itself down to cool off.".to_string());
+            } else {
+                parts.push(format!("{t} °C"));
+            }
         }
         if let Some(h) = d.power_on_hours.filter(|h| *h > 0) {
             notes.push(format!("Powered on for {} days in total.", h / 24));
         }
-        if severity.rank() >= Severity::Warning.rank() {
+        if replace {
             notes.insert(0, "Back up this drive's data and plan to replace it.".to_string());
         }
+        wrong.extend(parts);
+        let parts = wrong;
         let mut f = Finding::new(label, parts.join(" · "), severity).with_detail(notes.join(" "));
         if let Some(wear) = d.wear.filter(|w| (0..=255).contains(w)) {
             f = f.with_metric(wear as f64, "%", true);
@@ -504,7 +516,7 @@ pub fn summary(findings: &[Finding]) -> String {
     if problems.is_empty() {
         format!("No failing drives, crashes or disk errors in {DAYS} days")
     } else {
-        problems.join(" · ").to_lowercase()
+        problems.join(" · ")
     }
 }
 
@@ -729,12 +741,20 @@ mod tests {
         assert_eq!(one(disk("Healthy", Some(74))).severity, Severity::Warning);
         let worn = one(disk("Healthy", Some(96)));
         assert_eq!(worn.severity, Severity::Critical);
+        assert_eq!(worn.value, "96% of its rated life used · healthy", "what's wrong leads the line");
         assert!(worn.detail.unwrap().starts_with("Back up this drive's data and plan to replace it. The drive is at the end"));
         assert_eq!(one(disk("Warning", None)).severity, Severity::Warning);
-        assert_eq!(one(disk("Unhealthy", None)).severity, Severity::Critical);
-        let hot = one(Disk { temperature: Some(74), read_errors: Some(3), write_errors: Some(0), ..disk("Healthy", Some(5)) });
-        assert_eq!(hot.severity, Severity::Warning);
-        assert!(hot.detail.as_deref().unwrap().contains("3 read and 0 write errors"));
+        let bad = one(disk("Unhealthy", None));
+        assert_eq!((bad.severity, bad.value.as_str()), (Severity::Critical, "unhealthy"));
+        let errors = one(Disk { read_errors: Some(3), write_errors: Some(0), ..disk("Healthy", Some(5)) });
+        assert_eq!(errors.severity, Severity::Warning);
+        assert_eq!(errors.value, "3 errors it couldn't correct · healthy · 5% of its rated life used");
+        assert!(errors.detail.as_deref().unwrap().contains("3 reading, 0 writing."));
+        // A hot drive needs air, not replacing (seen on a CI runner at 72 °C).
+        let hot = one(Disk { temperature: Some(72), ..disk("Healthy", Some(0)) });
+        assert_eq!((hot.severity, hot.value.as_str()), (Severity::Warning, "running hot at 72 °C · healthy · 0% of its rated life used"));
+        assert!(!hot.detail.as_deref().unwrap().contains("replace"), "{:?}", hot.detail);
+        assert_eq!(one(Disk { temperature: Some(41), ..disk("Healthy", None) }).value, "healthy · 41 °C");
 
         let twins = drive_findings(&[disk("Healthy", None), disk("Healthy", None)], &["SCSI\\Disk&Ven_KINGSTON\\4&1".into()], "", true);
         assert_eq!(twins[0].label, "Failure predicted (SMART)");
@@ -812,7 +832,7 @@ mod tests {
         assert_eq!(app_crash_finding(&apps[9..], NOW).severity, Severity::Info);
         assert_eq!(app_crash_finding(&[], NOW).severity, Severity::Ok);
         let all = windows_findings(&Facts { apps, disks: vec![Disk { name: "x".into(), health: "Healthy".into(), wear: Some(1), ..Disk::default() }], ..Facts::default() }, NOW, true);
-        assert_eq!(summary(&all), "app crashes: 10 crashes and 1 hang across 2 apps");
+        assert_eq!(summary(&all), "App crashes: 10 crashes and 1 hang across 2 apps");
     }
 
     #[test]

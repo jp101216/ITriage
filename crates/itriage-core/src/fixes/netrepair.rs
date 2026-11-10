@@ -118,11 +118,16 @@ impl TriageModule for NetworkTuning {
     fn preview(&self, ctx: &RunContext) -> Result<Output, String> {
         let mut out = would("would normalise TCP and adapter power settings", &["netsh int tcp set global autotuninglevel=normal"]);
         out.findings.extend(imp::powershell_rows(NIC_POWER_READ, ctx));
+        out.findings.push(Finding::info("Undo", "what these settings are now is saved first, so Revert tune-up can put them back"));
+        // Settings saved by an earlier run can still be put back.
+        out.findings.extend(super::undo::load().as_ref().and_then(super::undo::offer_finding));
         Ok(out)
     }
 
     fn execute(&self, ctx: &RunContext) -> Result<Output, String> {
         crate::util::require_admin_here()?;
+        // What the settings are now, so the run can be undone.
+        let saved = imp::remember_tuning(ctx);
         let mut findings = vec![
             step(ctx, "TCP receive autotuning", "netsh", &["int", "tcp", "set", "global", "autotuninglevel=normal"], &[0], OnError::Fail, WAIT).finding,
         ];
@@ -133,6 +138,7 @@ impl TriageModule for NetworkTuning {
         } else {
             format!("{failed} of {} steps failed", findings.len())
         };
+        findings.extend(saved);
         Ok(Output::new(summary, findings))
     }
 }
@@ -390,6 +396,19 @@ mod imp {
         Ok(Output::new(summary, findings))
     }
 
+    /// Save the settings `fix.tcp` is about to change, and return the row
+    /// that offers to put them back. Failing to read them never stops the
+    /// tune-up; it only means this run can't be undone.
+    pub fn remember_tuning(ctx: &RunContext) -> Option<Finding> {
+        match crate::fixes::undo::read(ctx) {
+            Ok(before) => crate::fixes::undo::remember(&before).as_ref().and_then(crate::fixes::undo::offer_finding),
+            Err(e) => {
+                ctx.log(format!("Couldn't save the current settings for undo: {e}"));
+                Some(Finding::info("Undo", "not available for this run: the current settings couldn't be read first"))
+            }
+        }
+    }
+
     pub fn powershell_rows(script: &'static str, ctx: &RunContext) -> Vec<Finding> {
         match crate::win::ps::run(script, ctx, Duration::from_secs(180)) {
             Ok(out) => match crate::fixes::rows(&out.stdout) {
@@ -462,6 +481,11 @@ mod imp {
     #[allow(dead_code)]
     pub fn powershell_rows(_script: &'static str, _ctx: &RunContext) -> Vec<Finding> {
         Vec::new()
+    }
+
+    #[allow(dead_code)]
+    pub fn remember_tuning(_ctx: &RunContext) -> Option<Finding> {
+        None
     }
 
     /// NetworkManager devices that are connected and physical, each with

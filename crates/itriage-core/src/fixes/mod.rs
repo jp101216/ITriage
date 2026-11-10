@@ -12,6 +12,7 @@ pub mod dns;
 pub mod maintenance;
 pub mod netrepair;
 pub mod temp;
+pub mod undo;
 
 use crate::model::{Finding, Severity};
 use crate::module::RunContext;

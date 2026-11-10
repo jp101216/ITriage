@@ -80,6 +80,8 @@ pub(crate) fn all_scripts() -> Vec<(&'static str, &'static str)> {
         ("POSTURE", crate::security::posture::POSTURE),
         ("RELIABILITY", crate::triage::reliability::RELIABILITY),
         ("STORED_PASSWORD_TASKS", crate::desk::account::STORED_PASSWORD_TASKS),
+        ("TUNING_READ", crate::fixes::undo::TUNING_READ),
+        ("ADAPTERS_RESTORE", crate::fixes::undo::ADAPTERS_RESTORE),
     ]
 }
 

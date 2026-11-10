@@ -11,6 +11,7 @@
 
 pub mod apply;
 pub mod firmware;
+pub mod notice;
 pub mod scan;
 
 pub(crate) mod oem;

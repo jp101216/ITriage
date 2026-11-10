@@ -144,6 +144,15 @@ pub const FIXES: &[FixSpec] = &[
         install: false,
         technician_only: true,
     },
+    FixSpec {
+        id: "revert-tuneup",
+        label: "Revert tune-up",
+        description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts.",
+        targeted: false,
+        disruptive: true,
+        install: false,
+        technician_only: true,
+    },
 ];
 
 pub fn spec(id: &str) -> Option<&'static FixSpec> {
@@ -223,6 +232,13 @@ pub fn valid_service_name(name: &str) -> bool {
 /// policy and remote-safe mode, run it, and audit the outcome. Blocking; an
 /// update install can take many minutes.
 pub fn run(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool) -> Result<String, String> {
+    run_for(id, target, profile, remote_safe, None)
+}
+
+/// [`run`], with the ticket the fix is for, which goes into the audit trail.
+pub fn run_for(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool, ticket: Option<&str>) -> Result<String, String> {
+    let ticket = ticket.and_then(crate::report::clean_ticket);
+    let ticket = ticket.as_deref();
     let spec = spec(id).ok_or_else(|| format!("Unknown fix `{id}`."))?;
     if spec.targeted && target.is_none() {
         return Err(format!("The {} fix needs a target.", spec.label));
@@ -242,11 +258,11 @@ pub fn run(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool)
     };
     if let Some(why) = blocked {
         let outcome = Err(why.to_string());
-        crate::audit::fix_ran(id, target, &outcome);
+        crate::audit::fix_ran(id, target, &outcome, ticket);
         return outcome;
     }
     let outcome = imp::run(id, target);
-    crate::audit::fix_ran(id, target, &outcome);
+    crate::audit::fix_ran(id, target, &outcome, ticket);
     outcome
 }
 
@@ -358,6 +374,7 @@ mod imp {
                 require_admin()?;
                 crate::win::wua::install_update(target.ok_or("No update named.")?, &crate::module::RunContext::silent())
             }
+            "revert-tuneup" => crate::fixes::undo::revert(),
             "clear-saved-credentials" => crate::desk::account::clear_saved_credentials(),
             "logoff-session" => {
                 require_admin()?;
@@ -417,6 +434,7 @@ mod imp {
             "cancel-restart" => crate::fixes::maintenance::cancel_restart(),
             "gpupdate" => Err("Group Policy is a Windows feature.".into()),
             "install-oem-tool" | "install-update" => Err("That's a Windows Update / winget fix; on Linux, use Install OS & app updates.".into()),
+            "revert-tuneup" => crate::fixes::undo::revert(),
             "clear-saved-credentials" => crate::desk::account::clear_saved_credentials(),
             "logoff-session" => crate::desk::account::logoff_session(target.ok_or("No session named.")?),
             "unlock-account" => crate::desk::account::unlock_account(target.ok_or("No account named.")?),
