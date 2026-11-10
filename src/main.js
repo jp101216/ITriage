@@ -1655,10 +1655,11 @@
     fixBusy = true;
     setFixButtons(false);
     slot.innerHTML = '<span class="fix-note busy"><span class="spin"></span>Running fix…</span>';
+    const again = !["restart-computer", "cancel-restart"].includes(f.action.id) && recheckMode(res) !== null;
     let message = null;
     try {
       message = await api.runFix(f.action.id, f.action.target || null, remoteSafe);
-      slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span><span class="fix-note busy">Re-checking…</span>`;
+      slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span>` + (again ? '<span class="fix-note busy">Re-checking…</span>' : "");
     } catch (e) {
       slot.innerHTML = `<span class="fix-note err">${I.xc}${esc(errText(e))}</span>`;
     } finally {
@@ -1669,7 +1670,7 @@
       toast(message);
       if (f.action.id === "restart-computer") restartState = "scheduled";
       if (f.action.id === "cancel-restart") restartState = null;
-      if (!["restart-computer", "cancel-restart"].includes(f.action.id)) await recheck(res.module_id, message);
+      if (again) await recheck(res, message);
     }
   }
 
@@ -1677,11 +1678,24 @@
     document.querySelectorAll(".fix-btn, .ss-fix").forEach((b) => { b.disabled = !on; });
   }
 
+  /** How a result may be re-checked after a fix. A check just runs again. A
+   *  module that changes the machine never does: nobody confirmed a second
+   *  run, so its preview is refreshed as a preview, and the record of a real
+   *  run is left as it is (null). */
+  function recheckMode(res) {
+    const m = catalogue.find((x) => x.id === res.module_id);
+    if (m && !m.mutating) return "check";
+    return res.preview ? "preview" : null;
+  }
+
   /** Run one module again (not saved to history) and swap its result in. */
-  async function recheck(moduleId, note) {
+  async function recheck(old, note) {
+    const moduleId = old.module_id;
+    const how = recheckMode(old);
+    if (!how) return null;
     let res;
     try {
-      res = await api.recheck(moduleId, { remoteSafe, target: destination.trim() || null });
+      res = await api.recheck(moduleId, { preview: how === "preview", remoteSafe, target: destination.trim() || null });
     } catch (e) {
       toast("Re-check failed: " + errText(e));
       return null;
@@ -2475,7 +2489,7 @@
     }
     if (message != null) {
       toast(message);
-      await recheck(it.r.module_id, message);
+      await recheck(it.r, message);
       if (mode === "self") renderSelfResults();
     }
   }
@@ -2752,6 +2766,7 @@
         const outcome = await invoke("run_modules", {
           selected: [id],
           record: false,
+          preview: !!(o && o.preview),
           remoteSafe: !!(o && o.remoteSafe),
           target: (o && o.target) || null,
         });
@@ -2994,7 +3009,13 @@
         return { report, saved: path, save_error: null, diff: report.cancelled || !comparable ? null : diffFor(results) };
       },
       cancel: async () => { cancelFlag = true; return true; },
-      recheck: async (id, o) => { await sleep(650); return id === "net.target" ? targetResult(o && o.target) : result(id, true); },
+      recheck: async (id, o) => {
+        await sleep(650);
+        // As in the engine: a re-check previews anything that changes the machine.
+        const m = CATALOGUE.find((x) => x.id === id);
+        if (m && m.mutating) return previewResult(m);
+        return id === "net.target" ? targetResult(o && o.target) : result(id, true);
+      },
       runFix: async (id, target, safe) => {
         await sleep(900 + Math.random() * 500);
         const spec = FIX_CATALOGUE.find((f) => f.id === id);

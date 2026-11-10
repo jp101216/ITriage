@@ -147,6 +147,10 @@ struct RunOutcome {
 /// `preview` makes modules that change the machine say what they'd do
 /// instead; `remote_safe` refuses the ones that could drop the session;
 /// `target` is the destination for the Destination test.
+///
+/// A re-check is never confirmed by anyone, so it never changes the machine:
+/// with `record` false, modules that would are previewed whatever `preview`
+/// says.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn run_modules(
@@ -168,7 +172,7 @@ async fn run_modules(
     let cancel = app.cancel.clone();
     let profile_name = (app.status.source != "built-in").then(|| app.status.name.clone());
     let record = record.unwrap_or(true);
-    let preview = preview.unwrap_or(false);
+    let preview = preview.unwrap_or(false) || !record;
     let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
 
     // Modules do blocking I/O (COM calls, subprocesses, sockets) and some run
