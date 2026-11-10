@@ -94,13 +94,10 @@ pub fn save(report: &Report, keep: usize) -> Result<PathBuf, String> {
 
 fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
-    let stamp = report.generated.replace([':', '-'], "");
-    let host: String = report
-        .host
-        .hostname
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' })
-        .collect();
+    // Both parts come from the report, and an opened report is someone
+    // else's data: neither may name a folder or a drive.
+    let stamp = file_part(&report.generated.replace([':', '-'], ""), "", "run");
+    let host = file_part(&report.host.hostname, "-", "host");
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
     // Two runs in the same second must not overwrite each other, but saving
     // the same report again (re-importing it) shouldn't duplicate it.
@@ -120,6 +117,22 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
         prune(dir, keep);
     }
     Ok(path)
+}
+
+/// A piece of a history file name: letters and digits (plus `also`), the
+/// rest replaced, and never empty or overlong. "20261107T141203Z" and
+/// "WS-FLINT-07" come through unchanged.
+fn file_part(text: &str, also: &str, fallback: &str) -> String {
+    let part: String = text
+        .chars()
+        .take(64)
+        .map(|c| if c.is_ascii_alphanumeric() || also.contains(c) { c } else { '_' })
+        .collect();
+    if part.is_empty() {
+        fallback.to_string()
+    } else {
+        part
+    }
 }
 
 fn prune(dir: &Path, keep: usize) {
@@ -375,9 +388,20 @@ pub fn diff(old: &Report, new: &Report) -> ReportDiff {
             continue;
         }
 
+        // A module that couldn't run has no findings, which says nothing
+        // about them: last time's problems aren't resolved, and this time's
+        // aren't new. Only the failure itself is compared.
         match (&o.error, &n.error) {
-            (None, Some(e)) => changes.push(change(ERROR_LABEL, ChangeKind::New, None, Some(Severity::Critical), e, None)),
-            (Some(e), None) => changes.push(change(ERROR_LABEL, ChangeKind::Resolved, Some(Severity::Critical), None, e, None)),
+            (None, Some(e)) => {
+                changes.push(change(ERROR_LABEL, ChangeKind::New, None, Some(Severity::Critical), e, None));
+                gaps.push(format!("{}: couldn't run this time, so what it found last time isn't compared", n.title));
+                continue;
+            }
+            (Some(e), None) => {
+                changes.push(change(ERROR_LABEL, ChangeKind::Resolved, Some(Severity::Critical), None, e, None));
+                gaps.push(format!("{}: couldn't run last time, so what it found this time has nothing to compare with", n.title));
+                continue;
+            }
             (Some(was), Some(e)) => {
                 changes.push(change(ERROR_LABEL, ChangeKind::Ongoing, Some(Severity::Critical), Some(Severity::Critical), e, Some(was)));
                 continue;
@@ -837,6 +861,48 @@ mod tests {
         assert_eq!(d.resolved, 1);
         let d2 = diff(&new, &old);
         assert_eq!(d2.new_issues, 1);
+    }
+
+    #[test]
+    fn a_module_that_couldnt_run_resolves_and_adds_nothing() {
+        let ran = report(vec![result("system.disk", vec![Finding::crit("C:\\", "98% used"), Finding::warn("D:\\", "88% used")], None)]);
+        let failed = report(vec![result("system.disk", vec![], Some("performance counters unavailable"))]);
+
+        let d = diff(&ran, &failed);
+        assert_eq!((d.new_issues, d.resolved), (1, 0), "the full disk isn't resolved just because nobody looked: {:?}", d.changes);
+        assert_eq!(d.changes[0].label, "Module couldn't run");
+        assert!(d.gaps.iter().any(|g| g.contains("couldn't run this time")), "{:?}", d.gaps);
+
+        let d = diff(&failed, &ran);
+        assert_eq!((d.new_issues, d.resolved), (0, 1), "and it isn't new just because it's visible again: {:?}", d.changes);
+        assert!(d.gaps.iter().any(|g| g.contains("couldn't run last time")), "{:?}", d.gaps);
+    }
+
+    #[test]
+    fn an_opened_report_cant_name_a_path() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-history-names-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let history = dir.join("deep").join("history");
+        let mut evil = report(vec![result("system.disk", vec![Finding::ok("C:\\", "50% used")], None)]);
+        for (generated, hostname) in [
+            ("../../escaped", "WS-1"),
+            ("/tmp/absolute", "WS-1"),
+            ("\\\\server\\share\\x", "..\\..\\up"),
+            ("C:\\Windows\\x", "a/b"),
+            ("", ""),
+        ] {
+            evil.generated = generated.into();
+            evil.host.hostname = hostname.into();
+            let saved = save_in(&history, &evil, 0).unwrap();
+            assert_eq!(saved.parent(), Some(history.as_path()), "{generated:?} / {hostname:?} → {}", saved.display());
+            assert!(saved.with_extension("txt").parent() == Some(history.as_path()) && saved.is_file());
+        }
+        let outside: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(outside, vec![std::ffi::OsString::from("deep")], "nothing was written above the history folder");
+        assert_eq!(file_part("20261107T141203Z", "", "run"), "20261107T141203Z");
+        assert_eq!(file_part("WS-FLINT-07", "-", "host"), "WS-FLINT-07");
+        assert_eq!((file_part("", "", "run"), file_part(&"x".repeat(300), "", "run").len()), ("run".to_string(), 64));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
