@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.6.1.
+/* ITriage frontend logic — v0.7.0.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.6.1";
+  const VERSION = "v0.7.0";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -67,6 +67,10 @@
     sliders: sv('<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>'),
     wrench: sv('<path d="M15 4a5 5 0 0 0-4.6 6.9L4 17.3V20h2.7l6.4-6.4A5 5 0 0 0 20 9l-3 3-3-1-1-3z"/>'),
     power: sv('<path d="M12 3v8M7 6.3a8 8 0 1 0 10 0"/>'),
+    pulse: sv('<path d="M3 12h4l2-6 4 12 2-6h6"/>'),
+    key: sv('<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3M13.5 9.5l2 2"/>'),
+    trend: sv('<path d="M3 17l6-6 4 4 8-8M15 7h6v6"/>'),
+    bulb: sv('<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>'),
     eye: sv('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
     palette: sv('<path d="M12 3a9 9 0 0 0 0 18c1.2 0 2-.8 2-1.9 0-.5-.2-1-.5-1.3-.3-.4-.5-.8-.5-1.3 0-1 .8-1.9 1.9-1.9H17a4 4 0 0 0 4-4C21 6.5 17 3 12 3z"/>' +
       '<g fill="currentColor" stroke="none"><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="14.5" cy="7" r="1.2"/><circle cx="17" cy="11" r="1.2"/></g>'),
@@ -101,6 +105,7 @@
     mod("system.info", "System information", "system", "OS, CPU and memory, make and model, serial number, BIOS version, who is signed in, uptime (warns past 7 days) and any pending restart."),
     mod("system.disk", "Disk space & latency", "system", "Free vs. total space per volume (warns under 15% free) and disk latency with queue length (warns at 15 ms)."),
     mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both)."),
+    mod("system.reliability", "Drive health & reliability", "system", "Each drive's health, wear and errors (SMART), and the last 30 days of blue screens, unexpected shutdowns, disk errors and the apps that crash most."),
     mod("proc.top", "Top processes", "processes", "Overall CPU load (warns at 75%), the busiest processes right now, and the biggest memory users. Flags anything pinning a core or holding a quarter of RAM."),
     mod("proc.services", "Services", "processes", "Automatic services that aren't running, with exit codes. Skips trigger-start services that stop by design."),
     mod("net.connectivity", "Network connectivity", "network", "Adapters and addresses, the route in use with its gateway and DNS servers, a timed DNS lookup, an outbound TCP test and the public IP."),
@@ -110,11 +115,13 @@
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
+    mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
     mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, plus devices the site profile requires."),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
     mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN) and when they expire. Warns 14 days out.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),
+    mod("sec.posture", "Security posture", "security", "Disk encryption, antivirus and how old its definitions are, the firewall, Secure Boot, the TPM, and who is an administrator of this PC."),
     mod("site.apps", "Required & clinical apps", "site", "Apps the site profile requires (with minimum versions), plus which clinical clients are installed: Citrix, Imprivata, Epic, Dragon, VPN, EDR."),
     mod("site.checks", "Site services & endpoints", "site", "Services the site profile requires are running, and the servers it lists (EHR, file, print, license) answer, with connect times."),
     mod("fix.dns", "Flush & re-register DNS", "repair", "Flushes the DNS resolver cache (ipconfig /flushdns) and re-registers this PC's DNS records (ipconfig /registerdns).",
@@ -159,15 +166,22 @@
     { id: "updates", title: "Drivers & firmware", script: "Invoke-UpdateSystem",
       description: "Identity and BIOS, what's pending, then drivers, BIOS and firmware through the manufacturer's tool and Windows Update.",
       modules: ["system.info", "update.scan", "update.firmware"] },
+    { id: "lockout", title: "Account lockout", script: "",
+      description: "Why an account keeps locking or can't sign in: its state on the domain controller, what on this PC still holds an old password, the domain connection, the clock and the network. Changes nothing.",
+      modules: ["desk.account", "desk.domain", "desk.time", "net.connectivity"] },
+    { id: "health", title: "Health check", script: "",
+      description: "Is this PC sound: drive health and crashes, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
+      modules: ["system.info", "system.disk", "system.reliability", "sec.posture", "desk.battery", "update.scan"] },
   ];
 
-  const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "site", "repair", "fixes", "updates"];
+  const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "security", "site", "repair", "fixes", "updates"];
   const CAT_LABEL = {
     system: "System",
     processes: "Processes & services",
     network: "Network",
     eventlog: "Event log",
     workstation: "Workstation",
+    security: "Security",
     site: "Site & clinical",
     repair: "Network repair",
     fixes: "Cleanup & maintenance",
@@ -185,6 +199,7 @@
     "fix.netstack": "FIX-STK", "fix.adapters": "FIX-NIC", "fix.temp": "FIX-TMP", "fix.recycle": "FIX-BIN",
     "fix.repair": "FIX-SFC", "fix.optimize": "FIX-OPT", "fix.gpupdate": "FIX-GPO", "fix.sccm": "FIX-CCM",
     "update.scan": "UPD-SCN", "update.apply": "UPD-INS", "update.firmware": "UPD-FRM", "fix.restart": "SYS-RST",
+    "system.reliability": "DRV-HLT", "desk.account": "ACC-LCK", "sec.posture": "SEC-PST",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -198,6 +213,7 @@
     "fix.temp": I.trash, "fix.recycle": I.trash, "fix.repair": I.wrench, "fix.optimize": I.bolt,
     "fix.gpupdate": I.domain, "fix.sccm": I.apps, "fix.restart": I.power,
     "update.scan": I.radar, "update.apply": I.download, "update.firmware": I.chip,
+    "system.reliability": I.pulse, "desk.account": I.key, "sec.posture": I.shield,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -216,10 +232,18 @@
     { id: "restart-computer", label: "Restart in 60 s", requires_admin: false, disruptive: true,
       description: "Restarts this PC in 60 seconds. The signed-in user is warned to save their work, and Cancel restart stops it." },
     { id: "cancel-restart", label: "Cancel restart", requires_admin: false, disruptive: false, description: "Cancels a scheduled restart." },
-    { id: "install-oem-tool", label: "Install the OEM tool", requires_admin: true, disruptive: false,
+    { id: "install-oem-tool", label: "Install the OEM tool", requires_admin: true, disruptive: false, technician_only: true,
       description: "Installs the manufacturer's driver and BIOS tool with winget, so driver and firmware updates can go through it." },
-    { id: "install-update", label: "Install this update", requires_admin: true, disruptive: false,
+    { id: "install-update", label: "Install this update", requires_admin: true, disruptive: false, technician_only: true,
       description: "Downloads and installs this one update from Windows Update. A restart may be needed afterwards." },
+    { id: "clear-saved-credentials", label: "Remove saved credentials", requires_admin: false, disruptive: false,
+      description: "Removes the credentials saved in Credential Manager under the signed-in account's name (file servers, Remote Desktop hosts, Office sign-ins). Windows asks for the password the next time each is used. Other accounts' saved credentials are left alone." },
+    { id: "logoff-session", label: "Sign out the session", requires_admin: true, disruptive: false, technician_only: true,
+      description: "Signs out this person's disconnected session on this PC. Programs still open in it are closed, and unsaved work in it is lost." },
+    { id: "unlock-account", label: "Unlock the account", requires_admin: true, disruptive: false, technician_only: true,
+      description: "Clears the account's lockout. It needs an account that's allowed to unlock users. If something is still using the old password, the account locks again." },
+    { id: "revert-tuneup", label: "Revert tune-up", requires_admin: true, disruptive: true, technician_only: true,
+      description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts." },
   ];
 
   /** Self-service: the checks it runs, in plain words. */
@@ -228,6 +252,7 @@
     "net.connectivity": "Internet & network", "net.latency": "Network speed", "desk.time": "Clock", "desk.domain": "Sign-in & policies",
     "desk.printers": "Printers", "desk.devices": "Devices", "desk.wifi": "Wi-Fi & VPN",
     "desk.battery": "Battery", "site.apps": "Required apps", "site.checks": "Work systems",
+    "desk.account": "Your account", "system.reliability": "Drive & crashes",
   };
   const SOURCE = {
     managed: ["MANAGED", "Machine-wide, set by IT"],
@@ -251,7 +276,8 @@
     elevation_note: "Install modules need administrator rights. Use Relaunch as admin.",
   };
   const MOCK_FIXES = ["restart-spooler", "clear-print-queue", "resync-time", "gpupdate", "flush-dns", "start-service:Spooler", "start-service:W32Time",
-    "restart-computer", "cancel-restart", "install-oem-tool", "install-update"];
+    "restart-computer", "cancel-restart", "install-oem-tool", "install-update",
+    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup"];
   const MOCK_PROFILE = {
     source: "managed",
     path: "C:\\ProgramData\\itriage\\profile.toml",
@@ -265,7 +291,8 @@
   };
   const A = (id, target, label) => {
     const spec = FIX_CATALOGUE.find((f) => f.id === id);
-    const a = { id, label: label || (id === "start-service" && target ? `Start ${target}` : spec.label), requires_admin: spec.requires_admin };
+    const named = { "start-service": "Start ", "unlock-account": "Unlock ", "logoff-session": "Sign out session " }[id];
+    const a = { id, label: label || (named && target ? named + target : spec.label), requires_admin: spec.requires_admin };
     if (target) a.target = target;
     return a;
   };
@@ -309,6 +336,15 @@
     "system.memory": R("system.memory", "Memory usage", "system", "62% RAM in use", 6, [
       F("RAM", "9.9 GB used of 16.0 GB (62%), 6.1 GB available", "ok", null, { metric: M(62, "%") }),
       F("Swap / page file", "1.2 GB used of 9.0 GB (13%)", "ok"),
+    ]),
+    "system.reliability": R("system.reliability", "Drive health & reliability", "system", "Blue screens: 2 · App crashes: 11 crashes and 3 hangs across 3 apps", 3410, [
+      F("Drive (PM9A1 NVMe Samsung 512GB)", "healthy · SSD · NVMe · 476.9 GB", "ok"),
+      F("Drive counters", "wear, temperature and error counts are only reported to an administrator"),
+      F("Blue screens (30 days)", "2 · last 6d ago", "warning", "0x0000009F DRIVER_POWER_STATE_FAILURE ×2 (usually a driver that mishandles sleep)", { metric: M(2, "") }),
+      F("Unexpected shutdowns (30 days)", "none", "ok", null, { metric: M(0, "") }),
+      F("Disk errors (30 days)", "none logged", "ok", null, { metric: M(0, "") }),
+      F("App crashes (30 days)", "11 crashes and 3 hangs across 3 apps", "warning",
+        "CDViewer.exe crashed 8×, hung 2×, last 1d ago; OUTLOOK.EXE crashed 2×, hung 1×, last 3d ago; msedge.exe crashed 1×, last 9d ago", { metric: M(14, "") }),
     ]),
     "proc.top": R("proc.top", "Top processes", "processes", "CPU 87% · 214 processes running · 1 using heavy CPU or memory", 1012, [
       F("CPU load", "87%", "warning", "Busiest: MsMpEng (31%), CDViewer (9%), chrome (4%)", { metric: M(87, "%") }),
@@ -366,6 +402,25 @@
       F("AD site", "Main-Campus"),
       F("Group Policy (computer)", "applied 3d ago · 2026-11-03 07:14:02 UTC", "warning", null, { action: A("gpupdate") }),
     ]),
+    "desk.account": R("desk.account", "Sign-in & account lockouts", "workstation", "Locked out · 2 possible lockout source(s) on this PC · 1 mapped drive unreachable", 2890, [
+      F("Account", "CORP\\jparker · domain account", "info", "Checked on DC01."),
+      F("Account status", "locked out", "critical",
+        "Unlocking it doesn't stop whatever is using the old password: clear the sources below first, or it locks again. It unlocks by itself 30 minutes after the last wrong password.",
+        { action: A("unlock-account", "CORP\\jparker") }),
+      F("Password", "expires in 88 days · changed 2 days ago", "ok", null, { metric: M(88, "days", false) }),
+      F("Lockout policy", "locks after 5 wrong passwords within 30 minutes; unlocks by itself after 30 minutes"),
+      F("Lockout sources on this PC", "2 possible: 2 saved credentials, 1 disconnected session", "warning",
+        "Each one can hold the old password and keep trying it. Clear them before unlocking the account, or it locks again."),
+      F("Saved credentials", "2 saved under this account", "warning",
+        "fs01 (Windows credential, saved 41d ago); TERMSRV/rds-clin01 (app credential, saved 97d ago). Each holds a copy of the password and keeps using it after the password changes.",
+        { action: A("clear-saved-credentials") }),
+      F("Disconnected session 3", "CORP\\jparker is still signed in", "warning",
+        "A session left behind keeps the password it signed in with. After a password change, everything in it that reaches the network uses the old one. Signing it out closes its programs; unsaved work in it is lost.",
+        { action: A("logoff-session", "3") }),
+      F("Failed sign-ins on this PC (24 h)", "not checked: reading the Security log needs administrator rights"),
+      F("Mapped drive H:", "\\\\fs01\\home$\\jparker · fs01 answers", "ok"),
+      F("Mapped drive S:", "\\\\scan01\\inbox · can't reach scan01 (10.20.8.31 timed out)", "warning"),
+    ]),
     "desk.printers": R("desk.printers", "Printers & print queue", "workstation", "2 printers · 1 needs attention", 48, [
       F("Print Spooler", "running", "ok"),
       F("Ward 4 LaserJet (default)", "in an error state · 3 jobs stuck", "warning", "HP Universal Printing PCL 6 · port IP_10.20.30.40",
@@ -402,6 +457,17 @@
       F("Health (SMP DELL 7FHXW37)", "76% of design · 48.1 of 63.0 Wh", "warning", "Plan a battery replacement; runtime is noticeably shorter than new."),
       F("Charge cycles (SMP DELL 7FHXW37)", "311"),
     ]),
+    "sec.posture": R("sec.posture", "Security posture", "security", "1 to look at: antivirus definitions", 4180, [
+      F("Disk encryption", "C: BitLocker is on (XtsAes256)", "ok"),
+      F("Antivirus", "Microsoft Defender: real-time protection on · tamper protection on", "ok"),
+      F("Antivirus definitions", "version 1.421.33.0 · updated 5 days ago", "warning", null, { metric: M(5, "days") }),
+      F("EDR sensor (CrowdStrike Falcon)", "running", "ok"),
+      F("Firewall", "Windows Firewall is on for Domain, Private and Public", "ok", "In use now: Domain."),
+      F("Secure Boot", "on", "ok"),
+      F("TPM", "Trusted Platform Module 2.0", "ok"),
+      F("User Account Control", "on", "ok"),
+      F("Administrators of this PC", "3: Administrator, CORP\\Domain Admins, CORP\\Workstation Admins"),
+    ]),
     "site.apps": R("site.apps", "Required & clinical apps", "site", "1 of 2 required apps missing or out of date", 140, [
       F("Citrix Workspace", "23.11.1.45 · needs 24.2 or later", "warning", "Citrix Workspace 2311"),
       F("Badge-tap SSO agent", "7.11.0", "ok", "Imprivata OneSign Agent"),
@@ -427,6 +493,7 @@
       F("TCP receive autotuning", "Ok.", "ok"),
       F("Wi-Fi", "DeviceSleepOnDisconnect, SelectiveSuspend turned off (applies at the next adapter restart)", "ok"),
       F("Ethernet", "sleep settings were already off", "ok"),
+      F("Undo", "the settings from 2026-11-09 14:02:11 UTC are saved", "info", "Revert would set DeviceSleepOnDisconnect and SelectiveSuspend on Wi-Fi.", { action: A("revert-tuneup") }),
     ]),
     "fix.netstack": R("fix.netstack", "Reset network stack", "repair", "Network stack reset; restart to apply", 7410, [
       F("Static address check", "every address is from DHCP or autoconfiguration", "ok"),
@@ -509,7 +576,8 @@
     "fix.dns": ["would flush the DNS cache", [["Would run", "ipconfig /flushdns"], ["Would skip", "ipconfig /registerdns (needs administrator rights)"]]],
     "fix.netcache": ["would purge the address caches", [["Would run", "netsh interface ip delete arpcache"], ["Would run", "nbtstat -R"], ["Would run", "nbtstat -RR"]]],
     "fix.tcp": ["would normalise TCP and adapter power settings", [["Would run", "netsh int tcp set global autotuninglevel=normal"],
-      ["Wi-Fi", "would turn off DeviceSleepOnDisconnect, SelectiveSuspend"], ["Ethernet", "sleep settings already off"]]],
+      ["Wi-Fi", "would turn off DeviceSleepOnDisconnect, SelectiveSuspend"], ["Ethernet", "sleep settings already off"],
+      ["Undo", "what these settings are now is saved first, so Revert tune-up can put them back"]]],
     "fix.netstack": ["would reset Winsock and TCP/IP; a restart would be needed", [["Static address check", "every address is from DHCP or autoconfiguration", "ok"],
       ["Would run", "netsh winsock reset"], ["Would run", "netsh int ip reset"], ["Would run", "netsh int ipv6 reset"]]],
     "fix.adapters": ["would restart these adapters and renew DHCP", [["Would restart Wi-Fi", "10.20.33.118/22, fe80::1a2b:3c4d/64"],
@@ -540,6 +608,7 @@
     "net.latency": ["Pinging 10.20.32.1 and 10.20.0.53 (4 echoes each)…"],
     "eventlog.errors": ["Reading the System log…", "Reading the Application log…"],
     "desk.time": ["Measuring the clock against DC01 (SNTP, UDP 123)…"],
+    "desk.account": ["Checking CORP\\jparker…"],
     "desk.battery": ["Running powercfg /batteryreport…"],
     "site.apps": ["Reading the installed-programs list…"],
     "site.checks": ["Checking 2 endpoint(s)…"],
@@ -555,6 +624,8 @@
     "clear-print-queue": "ready", "restart-spooler": "running", "resync-time": "4 ms slow",
     gpupdate: "applied just now", "start-service": "running", "flush-dns": "resolved",
     "install-update": "installed", "install-oem-tool": "Dell Command | Update is installed",
+    "clear-saved-credentials": "none saved under this account", "logoff-session": "signed out",
+    "unlock-account": "active", "revert-tuneup": "put back",
   };
   const FIX_MESSAGES = {
     "restart-spooler": () => "Print Spooler restarted.",
@@ -567,6 +638,10 @@
     "cancel-restart": () => "Restart cancelled.",
     "install-oem-tool": () => "Dell Command | Update installed. Run Install drivers & firmware to use it.",
     "install-update": () => "KB5070001: installed. Restart to finish.",
+    "clear-saved-credentials": () => "Removed 2 saved credentials: fs01, TERMSRV/rds-clin01. Windows asks for the password the next time each is used.",
+    "logoff-session": (t) => `Asked Windows to sign out CORP\\jparker's disconnected session ${t}.`,
+    "unlock-account": (t) => `${t} is unlocked. If something is still using the old password, it will lock again: clear the sources the report lists.`,
+    "revert-tuneup": () => "Put back the settings from before the tune-up. Wi-Fi: DeviceSleepOnDisconnect, SelectiveSuspend turned back on (applies at the next adapter restart).",
   };
   const MOCK_DIFF = {
     against: "2026-11-05T19:02:11Z",
@@ -592,7 +667,7 @@
   };
   const HIST_DIR = "C:\\Users\\jparker\\AppData\\Local\\itriage\\history\\";
   const MOCK_HISTORY = [
-    { path: HIST_DIR + "20261105T190211Z_WS-FLINT-07.json", generated: "2026-11-05T19:02:11Z", hostname: "WS-FLINT-07", modules: 16, worst: "critical", cancelled: false },
+    { path: HIST_DIR + "20261105T190211Z_WS-FLINT-07_INC0048213.json", generated: "2026-11-05T19:02:11Z", hostname: "WS-FLINT-07", modules: 16, worst: "critical", cancelled: false, ticket: "INC0048213" },
     { path: HIST_DIR + "20261103T141530Z_WS-FLINT-07.json", generated: "2026-11-03T14:15:30Z", hostname: "WS-FLINT-07", modules: 9, worst: "warning", cancelled: false },
     { path: HIST_DIR + "20261102T091044Z_WS-ED-12.json", generated: "2026-11-02T09:10:44Z", hostname: "WS-ED-12", modules: 12, worst: "critical", cancelled: false },
     { path: HIST_DIR + "20261029T162201Z_WS-FLINT-07.json", generated: "2026-10-29T16:22:01Z", hostname: "WS-FLINT-07", modules: 4, worst: "ok", cancelled: true },
@@ -632,6 +707,8 @@
   let metricIndex = new Map();
   /** "scheduled" once a restart has been scheduled in this session. */
   let restartState = null;
+  /** The ticket this visit is for. Typed per run; never remembered. */
+  let ticket = "";
 
   const mockSample = isTauri ? null : mockTelemetry();
   const api = isTauri ? realApi() : mockApi();
@@ -682,6 +759,7 @@
         <span class="brk">${VERSION}</span>
         ${isTauri ? "" : '<span class="tag preview">PREVIEW · SAMPLE DATA</span><a class="tag getapp" href="https://github.com/jp101216/ITriage/releases/latest" target="_blank" rel="noopener" title="Download ITriage for Windows or Linux">GET THE APP ↗</a>'}
         <button class="tag profile" id="profileTag" type="button" title="Site profile"><span id="profileIcon">${I.shield}</span><span id="profileName">PROFILE —</span></button>
+        <button class="tag update" id="updateTag" type="button" hidden></button>
         <span class="tag mode-tag pv" id="tagPreview" hidden title="Preview (what-if) is on: nothing will be changed">${I.eye}PREVIEW</span>
         <span class="tag mode-tag safe" id="tagSafe" hidden title="Remote-safe is on: nothing that could drop the session or restart the PC can run">${I.shield}REMOTE-SAFE</span>
         <button class="bk-btn xs view-switch" id="toSelf" type="button" title="The simple view end users see">${I.swap}Self-service view</button>
@@ -713,6 +791,8 @@
               <input type="checkbox" id="optPreview"><span class="sw" aria-hidden="true"></span><span class="ol">PREVIEW<small>WHAT-IF</small></span></label>
             <label class="opt" title="Locks anything that could drop a remote session or restart the PC.">
               <input type="checkbox" id="optSafe"><span class="sw" aria-hidden="true"></span><span class="ol">REMOTE-SAFE<small>KEEP SESSION</small></span></label>
+            <input class="ticket" id="ticket" type="text" maxlength="40" spellcheck="false" autocomplete="off" placeholder="TICKET" aria-label="Ticket number"
+              title="The ticket this visit is for. It goes on the report, into its file name and into the audit log with every change. It isn't remembered.">
           </div>
           <button class="run-btn" id="run" type="button"><span class="plate"><span id="runIcon">${I.play}</span><span id="runLabel">RUN DIAGNOSTIC SEQUENCE</span><span id="runk">[00]</span></span></button>
           <div class="micro"><span>ITRIAGE // DIAGNOSTIC CORE ${VERSION}</span><span id="microPlat"></span></div>
@@ -767,6 +847,7 @@
     });
     syncRows();
   };
+  el("ticket").oninput = (e) => { ticket = e.target.value; };
   el("optPreview").onchange = (e) => setPreview(e.target.checked);
   el("optSafe").onchange = (e) => setRemoteSafe(e.target.checked);
   el("none").onclick = () => { if (!running) { selected.clear(); syncRows(); } };
@@ -824,6 +905,30 @@
     syncRows();
     const pol = profile && profile.policy;
     if (pol && (pol.technician_view === false || pol.start_in === "self-service")) setMode("self");
+    checkForUpdate();
+  }
+
+  /** Show a tag when a newer release exists. It links to the release page;
+   *  nothing is downloaded or installed from here. The engine asks at most
+   *  once a day, and not at all when the site profile says not to. */
+  function checkForUpdate() {
+    if (!api.checkUpdate) return;
+    Promise.resolve(api.checkUpdate())
+      .then((n) => {
+        const tag = el("updateTag");
+        if (!n || !n.newer) { tag.hidden = true; return; }
+        tag.hidden = false;
+        tag.innerHTML = `${I.download}<span></span>`;
+        tag.querySelector("span").textContent = `UPDATE v${n.latest}`;
+        tag.title = `ITriage ${n.latest} is out; this is ${n.current}. Opens the release page. Nothing is downloaded or installed from here.`;
+        tag.onclick = () => Promise.resolve(api.openLink(n.url)).catch((e) => toast(errText(e)));
+      })
+      .catch(() => { /* no notice */ });
+  }
+
+  /** The typed ticket, or null. The engine cleans it up. */
+  function ticketValue() {
+    return ticket.trim() || null;
   }
 
   /** Drop selections the catalogue no longer offers (locked, or not on this OS). */
@@ -836,9 +941,19 @@
   function renderPresets() {
     const box = el("presets");
     box.innerHTML = '<span class="pl">PRESETS</span>' + presets
-      .map((p) => `<button class="preset" type="button" data-p="${esc(p.id)}" title="${esc(p.script + ": " + p.description)}">${esc(p.title)}</button>`)
+      .map((p) => `<button class="preset" type="button" data-p="${esc(p.id)}" title="${esc((p.script ? p.script + ": " : "") + p.description)}">${esc(p.title)}</button>`)
       .join("");
     box.querySelectorAll("[data-p]").forEach((b) => { b.onclick = () => applyPreset(b.dataset.p); });
+    // The presets sit on one line and scroll sideways when the rail is
+    // narrower than they are; let an ordinary mouse wheel do that.
+    if (!box.dataset.wheel) {
+      box.dataset.wheel = "1";
+      box.addEventListener("wheel", (e) => {
+        if (box.scrollWidth <= box.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+        box.scrollLeft += e.deltaY;
+        e.preventDefault();
+      }, { passive: false });
+    }
   }
 
   function applyPreset(id) {
@@ -856,7 +971,7 @@
     });
     syncRows();
     const changes = [...selected].some((mid) => (catalogue.find((x) => x.id === mid) || {}).mutating);
-    toast(`${p.title} (${p.script}): ${selected.size} selected` +
+    toast(`${p.title}${p.script ? ` (${p.script})` : ""}: ${selected.size} selected` +
       (locked ? ` · ${locked} locked` : "") +
       (changes && !previewMode ? " · turn on PREVIEW to see the changes first" : ""));
   }
@@ -1446,6 +1561,7 @@
         preview: previewMode,
         remoteSafe,
         target: destination.trim() || null,
+        ticket: ticketValue(),
         onStart: ({ id, title, index, total: n }) => {
           setProgress(index / Math.max(n, 1));
           if (!cancelRequested) statusText.textContent = `Running · ${index + 1}/${n}`;
@@ -1482,7 +1598,7 @@
       syncRows();
       setDiff(live.diff);
       const first = resultsEl.querySelector(".card");
-      const banners = topBanners(live.results, live.diff, "Since last run", true);
+      const banners = topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely);
       banners.forEach((b) => resultsEl.insertBefore(b, first));
       if (live.diff) applyBadges();
       // A restart or preview notice needs reading before the cards, so bring it into view.
@@ -1686,7 +1802,7 @@
       showEmpty();
       return;
     }
-    topBanners(live.results, live.diff, "Since last run", true).forEach((b) => resultsEl.appendChild(b));
+    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely).forEach((b) => resultsEl.appendChild(b));
     live.results.forEach((r) => {
       resultsEl.appendChild(buildCard(r, { live: true }));
       lastSev.set(r.module_id, statusOf(r));
@@ -1710,7 +1826,7 @@
     const again = !["restart-computer", "cancel-restart"].includes(f.action.id) && recheckMode(res) !== null;
     let message = null;
     try {
-      message = await api.runFix(f.action.id, f.action.target || null, remoteSafe);
+      message = await api.runFix(f.action.id, f.action.target || null, remoteSafe, ticketValue());
       slot.innerHTML = `<span class="fix-note ok">${I.okc}${esc(message)}</span>` + (again ? '<span class="fix-note busy">Re-checking…</span>' : "");
     } catch (e) {
       slot.innerHTML = `<span class="fix-note err">${I.xc}${esc(errText(e))}</span>`;
@@ -1769,6 +1885,11 @@
       if (old) old.replaceWith(fresh);
       else resultsEl.appendChild(fresh);
       statusText.textContent = runSummary(live.results, false, live.results.length);
+    }
+    // The fix may have removed the cause: work the likely cause out again.
+    if (live.report && api.likelyCauses) {
+      try { live.report.likely = await api.likelyCauses(live.results); } catch (_) { /* keep what was there */ }
+      refreshLikely();
     }
     return res;
   }
@@ -1855,8 +1976,40 @@
   const KIND_WORD = { new: "new", resolved: "resolved", changed: "changed", ongoing: "still failing" };
 
   /** The banners above the cards: restart needed, preview, and what changed. */
-  function topBanners(results, diff, label, liveRun) {
-    return [liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  function topBanners(results, diff, label, liveRun, likely) {
+    return [liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), likelyBanner(likely), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  }
+
+  /** "Likely cause": what the engine's rules make of the findings, each
+   *  with the findings it rests on and what to do next. */
+  function likelyBanner(insights) {
+    if (!insights || !insights.length) return null;
+    const box = document.createElement("div");
+    box.className = "banner likely";
+    box.innerHTML = `
+      <div class="banner-row">
+        <span class="ttl">${I.bulb}Likely cause</span>
+        <span class="sub">Worked out from the findings below, which it names so you can check it.</span>
+      </div>
+      <ol class="likely-list">${insights
+        .map((i) => `
+          <li class="sev-${esc(i.severity)}">
+            <p class="cause"><span class="fdot sev-${esc(i.severity)}"></span>${esc(i.cause)}</p>
+            ${(i.evidence || []).length ? `<p class="why"><b>Because</b>${i.evidence.map(esc).join("; ")}</p>` : ""}
+            <p class="next"><b>Next</b>${esc(i.next)}</p>
+          </li>`)
+        .join("")}</ol>`;
+    return box;
+  }
+
+  /** Swap the likely-cause banner for the live run's current one. */
+  function refreshLikely() {
+    if (mode !== "tech" || viewing) return;
+    const old = resultsEl.querySelector(".banner.likely");
+    const fresh = likelyBanner(live.report && live.report.likely);
+    if (old && fresh) old.replaceWith(fresh);
+    else if (old) old.remove();
+    else if (fresh) resultsEl.insertBefore(fresh, resultsEl.querySelector(".banner.diff, .card"));
   }
 
   function diffBanner(diff, label) {
@@ -1977,7 +2130,7 @@
           });
           if (!ok) return;
           try {
-            toast(await api.runFix("restart-computer", null, remoteSafe));
+            toast(await api.runFix("restart-computer", null, remoteSafe, ticketValue()));
             restartState = "scheduled";
             render();
           } catch (e) {
@@ -1989,7 +2142,7 @@
       if (cancel) {
         cancel.onclick = async () => {
           try {
-            toast(await api.runFix("cancel-restart", null, remoteSafe));
+            toast(await api.runFix("cancel-restart", null, remoteSafe, ticketValue()));
             restartState = null;
             render();
           } catch (e) {
@@ -2018,13 +2171,13 @@
     box.innerHTML = `
       <div class="banner-row">
         <span class="ttl">${source === "file" ? "Opened report" : source === "compare" ? "Comparison" : "Saved run"}</span>
-        <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.cancelled ? " · cancelled" : ""}</span>
+        <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.ticket ? " · ticket " + esc(report.ticket) : ""}${report.cancelled ? " · cancelled" : ""}</span>
         <span class="grow"></span>
         <button class="bk-btn xs" type="button" data-x="back">${live.results.length ? "Back to this run" : "Close"}</button>
       </div>`;
     box.querySelector('[data-x="back"]').onclick = renderLive;
     resultsEl.appendChild(box);
-    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false).forEach((b) => resultsEl.appendChild(b));
+    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false, report.likely).forEach((b) => resultsEl.appendChild(b));
     report.results.forEach((r) => resultsEl.appendChild(buildCard(r, { live: false })));
     if (diff) applyBadges();
     const worst = worstOf(report.results);
@@ -2048,6 +2201,7 @@
       <div class="drawer-body"><div class="empty-note">Loading…</div></div>
       <div class="drawer-foot">
         <button class="bk-btn sm hot" data-x="compare" type="button" disabled>Compare 2 ticked</button>
+        <button class="bk-btn sm" data-x="trends" type="button" title="How each measurement has moved over this PC's saved runs">${I.trend}Trends</button>
         <button class="bk-btn sm" data-x="open" type="button">${I.open}Open report</button>
         <button class="bk-btn sm" data-x="folder" type="button">Show folder</button>
       </div>`;
@@ -2056,6 +2210,7 @@
     scrim.onclick = close;
     d.querySelector('[data-x="close"]').onclick = close;
     d.querySelector('[data-x="open"]').onclick = () => { close(); fileInput.click(); };
+    d.querySelector('[data-x="trends"]').onclick = () => { close(); openTrends(); };
     d.querySelector('[data-x="folder"]').onclick = () => Promise.resolve(api.openHistoryFolder()).catch((e) => toast(errText(e)));
     document.addEventListener("keydown", onKey);
     document.body.append(scrim, d);
@@ -2076,7 +2231,7 @@
           <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
             <span class="when">${esc(fmtLocal(m.generated))}</span>
             <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
-            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.cancelled ? " · cancelled" : ""}</span>
+            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.cancelled ? " · cancelled" : ""}</span>
           </button>
         </div>`)
       .join("");
@@ -2123,6 +2278,169 @@
       } catch (e) {
         toast(errText(e));
       }
+    };
+  }
+
+  /* ---------------------------- trends ----------------------------- */
+  /** Better, worse or the same from the first point to the last. */
+  function trendWord(s) {
+    const first = s.points[0].value, last = s.points[s.points.length - 1].value;
+    const moved = last - first;
+    const floor = { ms: 2, "%": 1, "% free": 1, days: 0.5 }[s.unit] || 0;
+    if (Math.abs(moved) <= Math.max(floor, Math.abs(first) * 0.1)) return "about the same";
+    return (moved > 0) === s.higher_is_worse ? "worse" : "better";
+  }
+
+  function trendNote(s) {
+    const first = s.points[0], last = s.points[s.points.length - 1];
+    return `${metricText(last.value, s.unit)} now, ${metricText(first.value, s.unit)} on ${fmtLocal(first.generated)}: ${trendWord(s)} over ${s.points.length} runs.`;
+  }
+
+  /** One measurement over this PC's saved runs: a picker, a line chart with
+   *  a crosshair readout, and the same numbers as a table. */
+  async function openTrends() {
+    let series = [];
+    try { series = (await api.trends()) || []; } catch (e) { toast(errText(e)); return; }
+    series = series.filter((s) => s.points && s.points.length >= 2);
+    if (!series.length) {
+      toast("No trends yet: a measurement needs at least two saved runs of this PC.");
+      return;
+    }
+    const options = series.map((s, i) => `<option value="${i}">${esc(s.module)} · ${esc(s.label)}</option>`).join("");
+    modal({
+      title: `${I.trend} Trends`,
+      cls: "wide",
+      body: `
+        <p>How one measurement has moved over the saved runs of ${esc(host ? host.hostname : "this PC")}.</p>
+        <select class="trend-pick" aria-label="Measurement">${options}</select>
+        <p class="trend-note" aria-live="polite"></p>
+        <div class="trend-chart" tabindex="0" role="img"></div>
+        <details class="trend-table"><summary>The same numbers as a table</summary><div class="mwrap"></div></details>`,
+      actions: [{ label: "Close", value: true, focus: true }],
+      onMount: (scrim) => {
+        const pick = scrim.querySelector(".trend-pick");
+        const show = () => {
+          const s = series[Number(pick.value)];
+          scrim.querySelector(".trend-note").textContent = trendNote(s);
+          drawTrend(scrim.querySelector(".trend-chart"), s);
+          trendTable(scrim.querySelector(".trend-table .mwrap"), s);
+        };
+        // Open on what got worse, if anything did.
+        const worse = series.findIndex((s) => trendWord(s) === "worse");
+        if (worse > 0) pick.value = String(worse);
+        pick.onchange = show;
+        requestAnimationFrame(show);
+      },
+    });
+  }
+
+  function trendTable(box, s) {
+    const table = document.createElement("table");
+    table.className = "mtable";
+    table.innerHTML = "<thead><tr><th>Run</th><th>Value</th><th>Result</th></tr></thead>";
+    const body = document.createElement("tbody");
+    s.points.slice().reverse().forEach((p) => {
+      const tr = document.createElement("tr");
+      [fmtLocal(p.generated), metricText(p.value, s.unit), p.severity].forEach((text, i) => {
+        const td = document.createElement("td");
+        td.textContent = text;
+        if (i === 1) td.className = "num";
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    box.replaceChildren(table);
+  }
+
+  /** A single-series line over time. The line wears the theme's accent; a
+   *  run that was a warning or worse is marked in that colour, and says so
+   *  in the readout and the table, never by colour alone. */
+  function drawTrend(box, s) {
+    const NS = "http://www.w3.org/2000/svg";
+    const W = Math.max(320, box.clientWidth || 640), H = 230;
+    const pad = { l: 52, r: 20, t: 16, b: 30 };
+    const svg = (tag, attrs, parent) => {
+      const n = document.createElementNS(NS, tag);
+      Object.keys(attrs || {}).forEach((k) => n.setAttribute(k, attrs[k]));
+      if (parent) parent.appendChild(n);
+      return n;
+    };
+    const pts = s.points.map((p) => ({ t: Date.parse(p.generated), v: p.value, sev: p.severity, when: p.generated }));
+    const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    const byTime = Number.isFinite(t0) && Number.isFinite(t1) && t1 > t0;
+    // Round numbers on the axis: a step of 1, 2 or 5 times a power of ten.
+    let min = Math.min(...pts.map((p) => p.v)), max = Math.max(...pts.map((p) => p.v));
+    if (min === max) { min -= 1; max += 1; }
+    const raw = (max - min) / 3, mag = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / mag;
+    const step = (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * mag;
+    let lo = Math.floor(min / step) * step;
+    const hi = Math.ceil(max / step) * step;
+    if (min >= 0) lo = Math.max(0, lo);
+    const ticks = [];
+    for (let t = lo; t <= hi + step / 1000; t += step) ticks.push(Math.round(t / step) * step);
+    const x = (p, i) => pad.l + (byTime ? (p.t - t0) / (t1 - t0) : i / (pts.length - 1)) * (W - pad.l - pad.r);
+    const y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (H - pad.t - pad.b);
+
+    const root = svg("svg", { viewBox: `0 0 ${W} ${H}`, width: W, height: H, class: "trend-svg", "aria-hidden": "true" });
+    // Recessive grid: a hairline per step, with the value it stands for.
+    ticks.forEach((v) => {
+      const gy = y(v);
+      svg("line", { x1: pad.l, x2: W - pad.r, y1: gy, y2: gy, class: "grid" }, root);
+      svg("text", { x: pad.l - 8, y: gy + 4, class: "axis", "text-anchor": "end" }, root).textContent = metricText(v, s.unit === "% free" ? "%" : s.unit);
+    });
+    const day = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : `${d.getMonth() + 1}/${d.getDate()}`; };
+    svg("text", { x: pad.l, y: H - 8, class: "axis" }, root).textContent = day(pts[0].when);
+    svg("text", { x: W - pad.r, y: H - 8, class: "axis", "text-anchor": "end" }, root).textContent = day(pts[pts.length - 1].when);
+
+    svg("path", { d: pts.map((p, i) => `${i ? "L" : "M"}${x(p, i).toFixed(1)} ${y(p.v).toFixed(1)}`).join(" "), class: "line" }, root);
+    const cross = svg("line", { y1: pad.t, y2: H - pad.b, class: "cross", visibility: "hidden" }, root);
+    const dots = pts.map((p, i) => svg("circle", { cx: x(p, i), cy: y(p.v), r: 4, class: `dot sev-${p.sev}` }, root));
+    // The latest value is the one people came for: label it on the chart.
+    const last = pts[pts.length - 1];
+    svg("text", { x: W - pad.r, y: Math.max(pad.t + 10, y(last.v) - 10), class: "value", "text-anchor": "end" }, root).textContent = metricText(last.v, s.unit);
+
+    const tip = document.createElement("div");
+    tip.className = "trend-tip";
+    tip.hidden = true;
+    box.replaceChildren(root, tip);
+    box.setAttribute("aria-label", `${s.module}, ${s.label}: ${trendNote(s)} Use the left and right arrow keys to read each run.`);
+
+    let at = -1;
+    const point = (i) => {
+      at = i;
+      dots.forEach((d, j) => d.setAttribute("r", j === i ? 6 : 4));
+      if (i < 0) { cross.setAttribute("visibility", "hidden"); tip.hidden = true; return; }
+      const p = pts[i], px = x(p, i);
+      cross.setAttribute("x1", px); cross.setAttribute("x2", px);
+      cross.setAttribute("visibility", "visible");
+      tip.replaceChildren();
+      const value = document.createElement("b");
+      value.textContent = metricText(p.v, s.unit);
+      const rest = document.createElement("span");
+      rest.textContent = `${fmtLocal(p.when)} · ${p.sev}`;
+      tip.append(value, rest);
+      tip.hidden = false;
+      const scale = (box.clientWidth || W) / W;
+      const left = clamp(px * scale - tip.offsetWidth / 2, 0, Math.max(0, (box.clientWidth || W) - tip.offsetWidth));
+      tip.style.left = `${left}px`;
+      tip.style.top = `${Math.max(0, y(p.v) * scale - tip.offsetHeight - 12)}px`;
+    };
+    // The pointer only has to be nearest in time, never on the line.
+    box.onpointermove = (e) => {
+      const r = box.getBoundingClientRect();
+      const px = ((e.clientX - r.left) / r.width) * W;
+      let best = 0;
+      pts.forEach((p, i) => { if (Math.abs(x(p, i) - px) < Math.abs(x(pts[best], best) - px)) best = i; });
+      point(best);
+    };
+    box.onpointerleave = () => point(-1);
+    box.onblur = () => point(-1);
+    box.onkeydown = (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      const next = at < 0 ? pts.length - 1 : at + (e.key === "ArrowRight" ? 1 : -1);
+      point(clamp(next, 0, pts.length - 1));
     };
   }
 
@@ -2240,11 +2558,22 @@
 
   function plainText(report, diff, withLogs) {
     const lines = [`ITriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
+    if (report.ticket) lines.push(`Ticket: ${report.ticket}`);
     if (report.cancelled) lines.push("Run was cancelled before every module finished.");
     if (report.results.some((r) => r.preview)) lines.push("PREVIEW: modules that change the machine only said what they would do.");
     if (report.results.some((r) => r.restart_required && !r.preview)) lines.push("A restart is needed to finish the changes.");
     if (diff) lines.push(diffLine(diff));
-    lines.push("=".repeat(52), "KEY FINDINGS");
+    lines.push("=".repeat(52));
+    if ((report.likely || []).length) {
+      lines.push("LIKELY CAUSE");
+      report.likely.forEach((i) => {
+        lines.push(`- ${i.cause}`);
+        if ((i.evidence || []).length) lines.push(`    Because: ${i.evidence.join("; ")}`);
+        lines.push(`    Next: ${i.next}`);
+      });
+      lines.push("");
+    }
+    lines.push("KEY FINDINGS");
     const key = keyFindings(report);
     if (key.length) key.forEach((k) => lines.push(`- [${k.tag}] ${k.text}`));
     else lines.push("- Nothing needs attention.");
@@ -2276,9 +2605,17 @@
   function markdown(report, diff) {
     const cell = (s) => String(s).replace(/\|/g, "\\|").replace(/\s*\n\s*/g, " ");
     const tag = { ok: "OK", info: "INFO", warning: "WARN", critical: "CRIT" };
-    const out = [`## ITriage report · ${report.host ? report.host.hostname : ""}`, "", `${fmtUtc(report.generated)} · ${hostLine(report)}`];
+    const out = [`## ITriage report · ${report.host ? report.host.hostname : ""}`, "", `${fmtUtc(report.generated)} · ${hostLine(report)}${report.ticket ? " · ticket " + cell(report.ticket) : ""}`];
     if (report.results.some((r) => r.preview)) out.push("", "> **Preview:** modules that change the machine only said what they would do.");
     if (diff) out.push("", `**${diffLine(diff)}**`);
+    if ((report.likely || []).length) {
+      out.push("", "### Likely cause", "");
+      report.likely.forEach((i) => {
+        out.push(`- **${cell(i.cause)}**`);
+        if ((i.evidence || []).length) out.push(`  - Because: ${cell(i.evidence.join("; "))}`);
+        out.push(`  - Next: ${cell(i.next)}`);
+      });
+    }
     const key = keyFindings(report);
     out.push("", "### Key findings", "");
     if (key.length) key.forEach((k) => out.push(`- **${k.tag}** ${cell(k.text)}`));
@@ -2328,10 +2665,20 @@
       });
     });
     return `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2328">
-      <p style="margin:0 0 6px"><b>ITriage report</b> · ${esc(fmtUtc(report.generated))}<br>${esc(hostLine(report))}</p>
+      <p style="margin:0 0 6px"><b>ITriage report</b> · ${esc(fmtUtc(report.generated))}<br>${esc(hostLine(report))}${report.ticket ? "<br>Ticket: " + esc(report.ticket) : ""}</p>
       ${diff ? `<p style="margin:0 0 8px"><b>${esc(diffLine(diff))}</b></p>` : ""}
+      ${likelyHtml(report)}
       ${keyHtml(report, color)}
       <table style="border-collapse:collapse;font-size:13px">${rows}</table></div>`;
+  }
+
+  function likelyHtml(report) {
+    const likely = report.likely || [];
+    if (!likely.length) return "";
+    const items = likely
+      .map((i) => `<li><b>${esc(i.cause)}</b>${(i.evidence || []).length ? `<br><span style="color:#57606a">Because: ${esc(i.evidence.join("; "))}</span>` : ""}<br>Next: ${esc(i.next)}</li>`)
+      .join("");
+    return `<p style="margin:8px 0 2px"><b>Likely cause</b></p><ul style="margin:0 0 10px;padding-left:18px">${items}</ul>`;
   }
 
   function keyHtml(report, color) {
@@ -2486,7 +2833,9 @@
            <p>We checked ${results.length} areas of this computer and found nothing that needs attention.</p></div></div>`;
     const cards = issues
       .map(({ r, f, title }, i) => {
-        const fixable = f.action && (!f.action.requires_admin || (host && host.elevated));
+        // Fixes that act on someone else's sign-in, or install things, are the desk's.
+        const spec = f.action && fixCatalogue.find((x) => x.id === f.action.id);
+        const fixable = f.action && !(spec && spec.technician_only) && (!f.action.requires_admin || (host && host.elevated));
         return `
           <div class="ss-issue${f.severity === "critical" ? " crit" : ""}">
             <h4>${esc(title)}: ${esc(f.label)}</h4>
@@ -2500,8 +2849,13 @@
       })
       .join("");
     const chips = good.map((t) => `<span class="ss-chip">${I.okc}${esc(t)}</span>`).join("");
+    const first = n && live.report && (live.report.likely || [])[0];
+    const likely = first
+      ? `<div class="ss-likely"><h3>What's most likely going on</h3><p>${esc(first.cause)}</p></div>`
+      : "";
     box.innerHTML = `
       ${verdict}
+      ${likely}
       ${cards}
       ${good.length ? `<div class="ss-good"><h3>Looks good</h3><div class="ss-chips">${chips}</div></div>` : ""}
       ${unchecked.length ? `<p class="ss-hint">Couldn't check: ${esc(unchecked.join(", "))}.</p>` : ""}
@@ -2534,7 +2888,7 @@
     slot.innerHTML = '<span class="ss-note">Working…</span>';
     let message = null;
     try {
-      message = await api.runFix(it.f.action.id, it.f.action.target || null, remoteSafe);
+      message = await api.runFix(it.f.action.id, it.f.action.target || null, remoteSafe, ticketValue());
     } catch (e) {
       slot.innerHTML = `<span class="ss-note err">${I.xc}That didn't work: ${esc(errText(e))}</span>`;
     } finally {
@@ -2814,6 +3168,7 @@
             preview: !!h.preview,
             remoteSafe: !!h.remoteSafe,
             target: h.target || null,
+            ticket: h.ticket || null,
           });
         } finally {
           offs.forEach((off) => off());
@@ -2830,7 +3185,10 @@
         });
         return (outcome && outcome.report.results[0]) || null;
       },
-      runFix: (id, target, remoteSafe) => invoke("run_fix", { id, target, remoteSafe: !!remoteSafe }),
+      runFix: (id, target, remoteSafe, ticket) => invoke("run_fix", { id, target, remoteSafe: !!remoteSafe, ticket: ticket || null }),
+      trends: () => invoke("trends", { hostname: null }),
+      likelyCauses: (results) => invoke("likely_causes", { results }),
+      checkUpdate: () => invoke("check_update"),
       listHistory: () => invoke("list_history"),
       loadReport: (path) => invoke("load_report", { path }),
       importReport: (text) => invoke("import_report", { text }),
@@ -2897,6 +3255,76 @@
     }
     if (ports.length > 16) throw "Up to 16 ports at a time.";
     return { host, ports, explicit_ports: ports.length > 0 };
+  }
+
+  /** A stand-in for the engine's likely-cause rules, enough for the sample
+   *  data (the real ones are in itriage-core::insight). */
+  function mockLikely(results) {
+    const usable = results.filter((r) => !r.error && !r.preview);
+    const find = (id, test) => {
+      const r = usable.find((x) => x.module_id === id);
+      const f = r && r.findings.find(test);
+      return f ? { r, f, cite: `${r.title}: ${f.label}: ${f.value}` } : null;
+    };
+    const bad = (f) => RANK[f.severity] >= 2;
+    const head = (v) => v.split(" · ")[0];
+    const found = [];
+    const add = (rank, severity, cause, evidence, next) => found.push({ rank, severity, cause, evidence, next });
+    const locked = find("desk.account", (f) => f.label === "Account status" && f.severity === "critical");
+    if (locked) {
+      const sources = find("desk.account", (f) => f.label === "Lockout sources on this PC" && f.severity !== "ok");
+      add(96, "critical", "The account is locked out, so sign-in, mapped drives and mail all fail.", [locked.cite].concat(sources ? [sources.cite] : []),
+        "Clear the lockout sources listed under Sign-in & account lockouts, then unlock the account. Unlocking alone doesn't last.");
+    }
+    const bsod = find("system.reliability", (f) => f.label.startsWith("Blue screens") && bad(f));
+    if (bsod) {
+      const n = head(bsod.f.value);
+      add(86, bsod.f.severity, `Windows has crashed with a blue screen ${n === "1" ? "once" : n === "2" ? "twice" : n + " times"} in the last 30 days. The most common stop code usually means a driver that mishandles sleep.`,
+        [bsod.cite], "Update drivers, BIOS and firmware. If the stop code names hardware, run the manufacturer's diagnostics.");
+    }
+    const full = find("system.disk", (f) => bad(f) && f.metric && f.metric.unit === "% free");
+    if (full) {
+      add(full.f.severity === "critical" ? 82 : 56, full.f.severity,
+        `${full.f.label} is nearly full (${head(full.f.value)}). The PC slows down, and updates and saves start failing, when it runs out of space.`,
+        [full.cite], "Clear temp files and empty the Recycle Bin, then move or remove large files.");
+    }
+    const wifi = find("desk.wifi", (f) => f.label === "Signal" && bad(f));
+    if (wifi) {
+      const gw = find("net.latency", (f) => f.label.startsWith("Gateway") && bad(f));
+      add(gw ? 78 : 62, wifi.f.severity, `Weak Wi-Fi (${head(wifi.f.value)}) is the most likely reason for a slow or dropping connection.`,
+        [wifi.cite].concat(gw ? [gw.cite] : []), "Move closer to the access point or use a wired connection, then run the triage again.");
+    }
+    const clock = find("desk.time", (f) => f.label.startsWith("Offset vs") && bad(f));
+    if (clock) {
+      add(clock.f.severity === "critical" ? 90 : 45, clock.f.severity, "The clock is wrong. Past five minutes of drift, domain sign-in, Wi-Fi (802.1X) and secure sites fail.",
+        [clock.cite], "Resync the clock, then check where it gets its time from.");
+    }
+    const up = find("system.info", (f) => f.label === "Uptime" && bad(f));
+    if (up) {
+      add(40, "warning", `This PC has been up for ${up.f.value}. A restart clears most slow-downs that build up over time.`, [up.cite], "Restart the PC at a time that suits the person using it.");
+    }
+    return found.sort((a, b) => b.rank - a.rank).slice(0, 3).map(({ severity, cause, evidence, next }) => ({ severity, cause, evidence, next }));
+  }
+
+  /** Sample trends: six runs of this PC, ending at today's sample values. */
+  function mockTrends() {
+    const when = ["2026-10-22T15:10:00Z", "2026-10-27T13:40:00Z", "2026-10-29T16:22:01Z", "2026-11-03T14:15:30Z", "2026-11-05T19:02:11Z", new Date().toISOString().replace(/\.\d+Z$/, "Z")];
+    const series = (module_id, module, label, unit, worse, values, warn, crit) => ({
+      module_id, module, label, unit, higher_is_worse: worse,
+      points: values.map((value, i) => {
+        const over = (limit) => limit != null && (worse ? value >= limit : value <= limit);
+        return { generated: when[i], value, severity: over(crit) ? "critical" : over(warn) ? "warning" : "ok" };
+      }),
+    });
+    return [
+      series("system.info", "System information", "Uptime", "days", true, [2.1, 7, 1.3, 9.2, 11.1, 15.2], 7, 14),
+      series("system.disk", "Disk space & latency", "C:\\", "% free", false, [19, 16, 14, 11, 8, 2], 15, 10),
+      series("system.disk", "Disk space & latency", "Disk latency", "ms", true, [9.1, 11.4, 14.8, 22, 31.2, 23.4], 15, 30),
+      series("system.reliability", "Drive health & reliability", "Blue screens (30 days)", "", true, [0, 0, 0, 1, 1, 2], 1, 3),
+      series("net.latency", "Latency & packet loss", "Gateway 10.20.32.1 round trip", "ms", true, [6, 7, 9, 11, 12, 38], 20, 50),
+      series("desk.wifi", "Wi-Fi & VPN", "Signal", "%", false, [72, 70, 66, 64, 61, 34], 70, 50),
+      series("sec.posture", "Security posture", "Antivirus definitions", "days", true, [0, 1, 0, 2, 1, 5], 3, 7),
+    ];
   }
 
   function mockApi() {
@@ -3015,7 +3443,11 @@
         return r;
       });
       const h = meta.hostname === MOCK_HOST.hostname ? clone(MOCK_HOST) : Object.assign(clone(MOCK_HOST), { hostname: meta.hostname, os: "Windows 11 Enterprise 23H2" });
-      return { schema: 1, generated: meta.generated, host: h, profile: MOCK_PROFILE.name, cancelled: meta.cancelled, results };
+      const report = { schema: 1, generated: meta.generated, host: h, profile: MOCK_PROFILE.name, cancelled: meta.cancelled, results };
+      if (meta.ticket) report.ticket = meta.ticket;
+      const likely = mockLikely(results);
+      if (likely.length) report.likely = likely;
+      return report;
     };
     return {
       listModules: async (safe) => CATALOGUE.map((m) => Object.assign({}, m, lockFor(m, safe) ? { locked: lockFor(m, safe) } : {})),
@@ -3063,14 +3495,19 @@
           results.push(res);
           h.onDone(res);
         }
+        // As report::clean_ticket: what a ticket reference is made of, 40 at most.
+        const ref = String(h.ticket || "").trim().replace(/[^\p{L}\p{N}\-_#./: ]/gu, "").slice(0, 40).trim() || null;
         const report = {
           schema: 1, generated: new Date().toISOString().replace(/\.\d+Z$/, "Z"), host: clone(host),
           profile: MOCK_PROFILE.name, cancelled: cancelFlag, results,
         };
+        if (ref) report.ticket = ref;
+        const likely = mockLikely(results);
+        if (likely.length) report.likely = likely;
         const stamp = report.generated.replace(/[-:]/g, "");
-        const path = `${HIST_DIR}${stamp}_${host.hostname}.json`;
+        const path = `${HIST_DIR}${stamp}_${host.hostname}${ref ? "_" + ref.replace(/[^A-Za-z0-9-]/g, "_") : ""}.json`;
         saved.set(path, clone(report));
-        MOCK_HISTORY.unshift({ path, generated: report.generated, hostname: host.hostname, modules: results.length, worst: worstOf(results) || (results.some((r) => statusOf(r) === "info") ? "info" : "ok"), cancelled: report.cancelled });
+        MOCK_HISTORY.unshift({ path, generated: report.generated, hostname: host.hostname, modules: results.length, worst: worstOf(results) || (results.some((r) => statusOf(r) === "info") ? "info" : "ok"), cancelled: report.cancelled, ticket: ref });
         const comparable = results.some((r) => !r.preview && !(CATALOGUE.find((m) => m.id === r.module_id) || {}).mutating);
         return { report, saved: path, save_error: null, diff: report.cancelled || !comparable ? null : diffFor(results) };
       },
@@ -3132,6 +3569,12 @@
         return d;
       },
       reportText: async (report, diff, withLogs) => plainText(report, diff, withLogs),
+      trends: async () => { await sleep(120); return mockTrends(); },
+      likelyCauses: async (results) => mockLikely(results),
+      // The preview has no release to compare with; ?update=1 shows the tag.
+      checkUpdate: async () => (/[?&]update=1\b/.test(location.search)
+        ? { current: VERSION.slice(1), latest: "0.7.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.7.1", newer: true }
+        : null),
       openLink: async (url) => toast("Preview: this opens " + url),
       openHistoryFolder: async () => toast("Preview: this opens " + HIST_DIR.replace(/\\$/, "")),
     };

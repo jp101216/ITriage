@@ -1769,3 +1769,96 @@ body.previewing .run-btn .plate { color: #dbe7f3; text-shadow: 0 0 10px rgb(var(
     grid-template-columns: repeat(4, minmax(0, auto)); justify-content: start; column-gap: 24px;
   }
 }
+
+/* ==================================================================
+   v0.7.0 — ticket, likely cause, trends, update notice
+   ================================================================== */
+
+/* ---- the ticket field (beside the run options) ---- */
+.run-opts .ticket {
+  /* Grows to 14 characters where there's room and gives way where there
+     isn't, so it shares the toggles' line instead of taking one of its own. */
+  margin-left: auto; flex: 1 1 8ch; max-width: 14ch; min-width: 0;
+  font-family: var(--mono); font-size: 12.5px; color: var(--title);
+  background: rgb(var(--bg-rgb) / 0.85); border: 1px solid var(--line-2); border-radius: 6px;
+  padding: 3px 8px; outline: none;
+}
+.run-opts .ticket::placeholder { color: var(--dim); letter-spacing: 1px; font-size: 11px; }
+.run-opts .ticket:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow-soft); }
+
+/* ---- "a newer version is out" (brand bar) ---- */
+.tag.update {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  font-family: var(--mono); font-size: 11.5px; letter-spacing: 1px; line-height: 1.6;
+  padding: 0 8px; border-radius: 4px;
+  color: var(--info); border: 1px solid rgb(var(--info-rgb) / 0.5); background: rgb(var(--info-rgb) / 0.08);
+}
+.tag.update[hidden] { display: none; }
+.tag.update svg { width: 12px; height: 12px; }
+.tag.update:hover, .tag.update:focus-visible { color: var(--fg); border-color: var(--info); outline: none; }
+
+/* ---- likely cause ---- */
+.banner.likely { border-color: rgb(var(--accent-rgb) / 0.5); }
+.likely-list { margin: 8px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.likely-list li { padding: 9px 0 8px; border-bottom: 1px solid rgb(var(--line-rgb) / 0.08); }
+.likely-list li:last-child { border-bottom: none; padding-bottom: 2px; }
+.likely-list p { margin: 0; overflow-wrap: anywhere; }
+.likely-list .cause { display: flex; gap: 9px; font-size: 14.5px; line-height: 1.45; color: var(--title); }
+.likely-list .cause .fdot { flex: none; margin-top: 7px; }
+.likely-list :is(.why, .next) { margin: 4px 0 0 16px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.likely-list :is(.why, .next) b {
+  font-family: var(--mono); font-weight: 400; font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--dim); margin-right: 8px;
+}
+.likely-list .next { color: var(--fg); }
+
+/* ---- trends ---- */
+.trend-pick {
+  width: 100%; margin: 0 0 10px;
+  font-family: var(--sans); font-size: 14px; color: var(--title);
+  background: rgb(var(--bg-rgb) / 0.85); border: 1px solid var(--line-2); border-radius: 6px; padding: 7px 9px;
+}
+.trend-pick:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--glow-soft); }
+.modal .trend-note { margin: 0 0 8px; font-family: var(--mono); font-size: 12.5px; color: var(--fg); }
+.trend-chart {
+  position: relative; margin: 0 0 12px; border: 1px solid var(--line); border-radius: 8px;
+  background: rgb(var(--bg-rgb) / 0.6); outline: none; touch-action: pan-y;
+}
+.trend-chart:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow-soft); }
+.trend-svg { display: block; width: 100%; height: auto; }
+.trend-svg .grid { stroke: rgb(var(--line-rgb) / 0.12); stroke-width: 1; }
+.trend-svg .axis { fill: var(--dim); font-family: var(--mono); font-size: 11px; }
+.trend-svg .value { fill: var(--title); font-family: var(--mono); font-size: 12.5px; font-weight: 600; }
+.trend-svg .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.trend-svg .cross { stroke: var(--muted); stroke-width: 1; }
+/* Each run: a dot ringed in the surface colour so it stays readable on the line. */
+.trend-svg .dot { fill: var(--accent); stroke: var(--bg); stroke-width: 2; }
+.trend-svg .dot.sev-warning { fill: var(--warn); }
+.trend-svg .dot.sev-critical { fill: var(--crit); }
+.trend-tip {
+  position: absolute; pointer-events: none; white-space: nowrap;
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 9px; border-radius: 6px; border: 1px solid var(--line-2);
+  background: var(--panel-2); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+  font-family: var(--mono); font-size: 12px; color: var(--muted);
+}
+.trend-tip[hidden] { display: none; }
+.trend-tip b { font-size: 13.5px; font-weight: 600; color: var(--title); }
+.trend-table { margin: 0 0 14px; font-size: 13px; color: var(--muted); }
+.trend-table summary { cursor: pointer; }
+.trend-table .mwrap { max-height: 190px; overflow-y: auto; margin-top: 8px; }
+.drawer-foot .bk-btn svg { width: 13px; height: 13px; }
+
+/* ---- self-service: the likely cause, in the calm palette ---- */
+.ss-likely { margin: 0 0 16px; padding: 12px 14px; border-radius: 10px; background: rgba(60, 207, 188, 0.07); border: 1px solid rgba(60, 207, 188, 0.25); }
+.ss-likely h3 { margin: 0 0 4px; font-size: 13px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--ss-dim); font-weight: 600; }
+.ss-likely p { margin: 0; font-size: 14.5px; line-height: 1.5; color: var(--ss-title); overflow-wrap: anywhere; }
+
+/* Five presets don't fit one line of the rail. Beside the report they stay
+   on one line and scroll sideways (a wheel or a swipe), so the module list
+   keeps the height it had with three. Stacked in one column they wrap. */
+@media (min-width: 861px) {
+  /* `contain` keeps the long line from widening the rail: it scrolls instead. */
+  :root[data-skin] body:not(.calm) .presets { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; contain: inline-size; }
+  :root[data-skin] body:not(.calm) .presets > * { flex: none; white-space: nowrap; }
+}
