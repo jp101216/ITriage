@@ -301,54 +301,156 @@ fn timed_out(name: &str, timeout: Duration) -> String {
 /// Read a pipe on its own thread, sending each *finished* line. A segment that
 /// ends in a bare `\r` is a progress redraw ("45%… 46%…"): a terminal would
 /// overwrite it, so it's dropped here too. `\r\n` still counts as a line end.
+///
+/// Some Windows tools (sfc, parts of DISM) write UTF-16LE when their output
+/// is redirected. That's recognised from the stream's first bytes and decoded,
+/// so their line ends are seen as line ends and their text reads correctly.
 fn pump<R: Read + Send + 'static>(mut reader: R, tx: mpsc::Sender<String>) {
     std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut line: Vec<u8> = Vec::new();
-        let mut after_cr = false;
+        let mut lines = LineSplitter { tx, line: Vec::new(), after_cr: false };
+        let mut decoder: Option<Decoder> = None;
+        // The first few bytes, held back until they're enough to tell the encoding.
+        let mut head: Vec<u8> = Vec::new();
         loop {
             let n = match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => n,
             };
-            for &b in &buf[..n] {
-                if after_cr {
-                    after_cr = false;
-                    if b == b'\n' {
-                        if !send_line(&tx, &mut line) {
-                            return;
-                        }
+            let alive = match decoder.as_mut() {
+                Some(d) => d.feed(&buf[..n], &mut lines),
+                None => {
+                    head.extend_from_slice(&buf[..n]);
+                    let Some(d) = Decoder::detect(&head) else {
                         continue;
-                    }
-                    line.clear(); // bare CR: what came before was a redraw
+                    };
+                    decoder.insert(d).feed(&std::mem::take(&mut head), &mut lines)
                 }
-                match b {
-                    b'\r' => after_cr = true,
-                    b'\n' => {
-                        if !send_line(&tx, &mut line) {
-                            return;
-                        }
-                    }
-                    _ => line.push(b),
-                }
+            };
+            if !alive {
+                return;
             }
         }
-        let _ = send_line(&tx, &mut line);
+        // Too short to tell the encoding: read what there is as bytes.
+        if decoder.is_none() && !Decoder::Bytes.feed(&head, &mut lines) {
+            return;
+        }
+        lines.finish();
     });
 }
 
-fn send_line(tx: &mpsc::Sender<String>, line: &mut Vec<u8>) -> bool {
-    if line.is_empty() {
-        return true;
+/// How a child's output is encoded.
+enum Decoder {
+    /// UTF-8, or a legacy code page read lossily.
+    Bytes,
+    Utf16Le {
+        /// The first byte of a code unit split across two reads.
+        half: Option<u8>,
+        /// A high surrogate waiting for its low half.
+        high: Option<u16>,
+    },
+}
+
+impl Decoder {
+    /// The encoding, once a stream's first bytes are enough to tell (`None`
+    /// until then). UTF-16LE opens with its byte-order mark or, the usual
+    /// case (sfc), is plain text with a zero after every character.
+    fn detect(head: &[u8]) -> Option<Self> {
+        let wide = Decoder::Utf16Le { half: None, high: None };
+        match head {
+            [0xFF, 0xFE, ..] => Some(wide),
+            [a, 0, c, 0, ..] if *a != 0 && *c != 0 => Some(wide),
+            [] | [_] | [_, 0] | [_, 0, _] => None, // could still be either
+            _ => Some(Decoder::Bytes),
+        }
     }
-    // Some Windows tools (sfc, parts of DISM) write UTF-16 when redirected;
-    // dropping the NULs leaves their ASCII readable.
-    let s = String::from_utf8_lossy(line).replace('\0', "");
-    line.clear();
-    if s.trim().is_empty() {
-        return true;
+
+    /// Decode a chunk into `lines`. False once nobody is listening.
+    fn feed(&mut self, chunk: &[u8], lines: &mut LineSplitter) -> bool {
+        match self {
+            Decoder::Bytes => chunk.iter().all(|&b| lines.push(u32::from(b), &[b])),
+            Decoder::Utf16Le { half, high } => {
+                for &b in chunk {
+                    let Some(low) = half.take() else {
+                        *half = Some(b);
+                        continue;
+                    };
+                    let unit = u16::from_le_bytes([low, b]);
+                    let ch = match unit {
+                        0xFEFF => continue, // byte-order mark
+                        0xD800..=0xDBFF => {
+                            *high = Some(unit);
+                            continue;
+                        }
+                        0xDC00..=0xDFFF => high
+                            .take()
+                            .and_then(|h| char::decode_utf16([h, unit]).next()?.ok())
+                            .unwrap_or(char::REPLACEMENT_CHARACTER),
+                        _ => {
+                            *high = None;
+                            char::from_u32(u32::from(unit)).unwrap_or(char::REPLACEMENT_CHARACTER)
+                        }
+                    };
+                    let mut utf8 = [0u8; 4];
+                    if !lines.push(ch as u32, ch.encode_utf8(&mut utf8).as_bytes()) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
     }
-    tx.send(s).is_ok()
+}
+
+/// Turns a stream of characters into finished lines, dropping progress redraws.
+struct LineSplitter {
+    tx: mpsc::Sender<String>,
+    /// The line so far, as bytes (UTF-8, or a code page read lossily when sent).
+    line: Vec<u8>,
+    after_cr: bool,
+}
+
+impl LineSplitter {
+    /// Take one character (or byte) and its encoded form. False once nobody
+    /// is listening.
+    fn push(&mut self, unit: u32, encoded: &[u8]) -> bool {
+        // A NUL is never text. Skipping it here, before the line-end logic,
+        // keeps UTF-16 that wasn't recognised as such readable: its `\r\0\n\0`
+        // is still a line end, not a redraw.
+        if unit == 0 {
+            return true;
+        }
+        if self.after_cr {
+            self.after_cr = false;
+            if unit == u32::from(b'\n') {
+                return self.send();
+            }
+            self.line.clear(); // bare CR: what came before was a redraw
+        }
+        match unit {
+            0x0D => self.after_cr = true,
+            0x0A => return self.send(),
+            _ => self.line.extend_from_slice(encoded),
+        }
+        true
+    }
+
+    fn send(&mut self) -> bool {
+        if self.line.is_empty() {
+            return true;
+        }
+        let s = String::from_utf8_lossy(&self.line).into_owned();
+        self.line.clear();
+        if s.trim().is_empty() {
+            return true;
+        }
+        self.tx.send(s).is_ok()
+    }
+
+    /// End of the stream: send what's left.
+    fn finish(mut self) {
+        let _ = self.send();
+    }
 }
 
 // --------------------------------------------------------------- privileges
@@ -478,6 +580,64 @@ mod tests {
         assert!(got.contains(&"second".to_string()), "{got:?}");
         assert!(got.contains(&"oops".to_string()), "{got:?}");
         assert!(!got.iter().any(|l| l.contains('%')), "redraws leaked: {got:?}");
+    }
+
+    /// Hands out a few bytes per read, so code units and line ends straddle reads.
+    struct Drip(Vec<u8>, usize);
+
+    impl Read for Drip {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let n = self.0.len().min(self.1).min(buf.len());
+            buf[..n].copy_from_slice(&self.0[..n]);
+            self.0.drain(..n);
+            Ok(n)
+        }
+    }
+
+    fn pumped(bytes: Vec<u8>, per_read: usize) -> Vec<String> {
+        let (tx, rx) = mpsc::channel();
+        pump(Drip(bytes, per_read), tx);
+        rx.iter().collect()
+    }
+
+    fn utf16le(text: &str) -> Vec<u8> {
+        text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+    }
+
+    #[test]
+    fn utf16_output_keeps_its_lines() {
+        // What `sfc /scannow` writes when redirected: UTF-16LE, a blank line
+        // first, progress redrawn with a bare CR.
+        let sfc = "\r\nBeginning system scan.  This process will take some time.\r\n\r\n\
+                   Verification 12% complete.\rVerification 100% complete.\r\n\
+                   Windows Resource Protection found corrupt files and successfully repaired them.\r\n";
+        let want = vec![
+            "Beginning system scan.  This process will take some time.",
+            "Verification 100% complete.",
+            "Windows Resource Protection found corrupt files and successfully repaired them.",
+        ];
+        for per_read in [1, 3, 7, 4096] {
+            assert_eq!(pumped(utf16le(sfc), per_read), want, "{per_read} byte(s) per read");
+        }
+        // Any language, a byte-order mark, and a character outside the BMP.
+        let mut marked = vec![0xFF, 0xFE];
+        marked.extend(utf16le("Überprüfung 100 % abgeschlossen. ✔ 😀\r\nスキャンが完了しました\r\n"));
+        assert_eq!(pumped(marked, 5), vec!["Überprüfung 100 % abgeschlossen. ✔ 😀", "スキャンが完了しました"]);
+    }
+
+    #[test]
+    fn byte_output_is_unchanged_and_stray_nuls_never_eat_a_line() {
+        assert_eq!(pumped(b"step 10%\rstep 99%\rdone\r\nsecond\nlast".to_vec(), 2), vec!["done", "second", "last"]);
+        assert_eq!(pumped("naïve ✔\n".as_bytes().to_vec(), 1), vec!["naïve ✔"], "UTF-8 split across reads");
+        assert_eq!(pumped(b"ok\n".to_vec(), 4096), vec!["ok"]);
+        assert_eq!(pumped(b"y".to_vec(), 4096), vec!["y"], "too short to tell the encoding");
+        assert!(matches!(Decoder::detect(b"y\n"), Some(Decoder::Bytes)), "decided at once, so nothing is held back");
+        assert!(Decoder::detect(b"\r\0").is_none() && matches!(Decoder::detect(b"\r\0\n\0"), Some(Decoder::Utf16Le { .. })));
+        // UTF-16 that starts after some plain bytes isn't detected, but its
+        // line ends still count and its ASCII still reads.
+        let mut mixed = b"plain\r\n".to_vec();
+        mixed.extend(utf16le("wide line\r\nnext\r\n"));
+        assert_eq!(pumped(mixed, 4096), vec!["plain", "wide line", "next"]);
     }
 
     #[cfg(unix)]
