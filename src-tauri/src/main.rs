@@ -386,6 +386,19 @@ async fn compare_with_previous(report: Report) -> Option<ReportDiff> {
     previous_diff(&report)
 }
 
+/// Refresh the live report after a one-click fix's re-check, without changing
+/// the saved original run. Verdict, diagnosis and comparison must agree.
+#[tauri::command]
+async fn refresh_report(mut report: Report) -> Result<RunOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        report.refresh();
+        let diff = if report.cancelled { None } else { previous_diff(&report) };
+        RunOutcome { report, diff, saved: None, save_error: None }
+    })
+    .await
+    .map_err(|e| format!("Couldn't refresh the report: {e}"))
+}
+
 /// Compare any two runs of the same machine (oldest first, whichever order
 /// they're picked in).
 #[tauri::command]
@@ -490,6 +503,7 @@ fn main() {
             load_report,
             import_report,
             compare_with_previous,
+            refresh_report,
             compare_reports,
             report_text,
             trends,

@@ -15,7 +15,9 @@ use crate::parse::time::epoch_to_rfc3339;
 use crate::util::now_epoch;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Current report format version.
 pub const SCHEMA: u32 = 1;
@@ -76,6 +78,13 @@ impl Report {
         self
     }
 
+    /// Rebuild derived fields after a check has replaced one of the results.
+    /// The original run time and cancellation state still describe this run.
+    pub fn refresh(&mut self) {
+        self.exit_code = Some(crate::module::exit_code(&self.results, self.cancelled));
+        self.likely = crate::insight::likely_causes(&self.results);
+    }
+
     pub fn worst(&self) -> Severity {
         self.results
             .iter()
@@ -130,14 +139,28 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
     // the same report again (re-importing it) shouldn't duplicate it.
     let mut path = dir.join(format!("{stamp}_{host}{ticket}.json"));
     let mut n = 1;
-    while path.exists() {
-        if std::fs::read_to_string(&path).is_ok_and(|old| old == json) {
-            return Ok(path);
+    loop {
+        // Claim the name atomically: an import, another app instance or a
+        // CLI run can save at the same time as the desktop's current run.
+        match std::fs::File::create_new(&path) {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(json.as_bytes()) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(format!("Can't write {}: {e}", path.display()));
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                if std::fs::read_to_string(&path).is_ok_and(|old| old == json) {
+                    return Ok(path);
+                }
+                n += 1;
+                path = dir.join(format!("{stamp}_{host}{ticket}~{n}.json"));
+            }
+            Err(e) => return Err(format!("Can't write {}: {e}", path.display())),
         }
-        n += 1;
-        path = dir.join(format!("{stamp}_{host}{ticket}~{n}.json"));
     }
-    std::fs::write(&path, json).map_err(|e| format!("Can't write {}: {e}", path.display()))?;
     // The transcript is a convenience; the JSON is the record.
     let _ = std::fs::write(path.with_extension("txt"), render_text(report, None, true));
     if keep > 0 {
@@ -195,6 +218,7 @@ fn json_files(dir: &Path) -> Vec<PathBuf> {
 const INDEX_FILE: &str = "index.v2.cache";
 /// The index of 0.6, without measurements or tickets. Removed when seen.
 const OLD_INDEX_FILE: &str = "index.cache";
+static INDEX_WRITE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct IndexEntry {
@@ -269,7 +293,9 @@ impl IndexEntry {
 
 fn stamp(path: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
-    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    // Seconds miss an edit that keeps the byte length within the same
+    // second. Existing second-based cache entries simply rebuild once.
+    let modified = u64::try_from(meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos()).ok()?;
     Some((meta.len(), modified))
 }
 
@@ -299,7 +325,7 @@ fn indexed(dir: &Path) -> Vec<(PathBuf, IndexEntry)> {
     if current != known {
         // Written beside, then moved into place, so a reader never sees half
         // of it. Best effort: without it the next call just reads more.
-        let tmp = dir.join(format!("{INDEX_FILE}.{}", std::process::id()));
+        let tmp = dir.join(format!("{INDEX_FILE}.{}.{}", std::process::id(), INDEX_WRITE.fetch_add(1, Ordering::Relaxed)));
         if serde_json::to_string(&current).ok().and_then(|text| std::fs::write(&tmp, text).ok()).is_some() {
             let _ = std::fs::rename(&tmp, &index_path);
         }
@@ -1163,6 +1189,24 @@ mod tests {
     }
 
     #[test]
+    fn rechecked_reports_refresh_their_verdict_and_diagnosis() {
+        let mut run = report(vec![result("system.disk", vec![Finding::crit("C:\\", "2% free").with_metric(2.0, "% free", false)], None)]);
+        assert!(!run.likely.is_empty());
+        run.results[0].error = Some("drive unavailable".into());
+        run.refresh();
+        assert_eq!(run.exit_code, Some(1));
+        assert!(run.likely.is_empty(), "a failed re-check can't support the old diagnosis");
+        run.results[0].error = None;
+        run.results[0].findings = vec![Finding::ok("C:\\", "50% free").with_metric(50.0, "% free", false)];
+        run.refresh();
+        assert_eq!(run.exit_code, Some(0));
+        assert!(run.likely.is_empty());
+        run.cancelled = true;
+        run.refresh();
+        assert_eq!(run.exit_code, Some(2), "re-checking a result doesn't finish a cancelled run");
+    }
+
+    #[test]
     fn the_history_list_reads_each_report_once() {
         let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-index-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1199,6 +1243,54 @@ mod tests {
         // The lookup for "the last comparable run" goes through it too.
         let found = previous_in(&dir, "WS-1", "2026-11-05T09:00:00Z", &["system.disk".to_string()]).unwrap();
         assert_eq!(found.generated, first.generated);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn history_detects_same_size_edits_within_one_second() {
+        use std::fs::FileTimes;
+        use std::time::{Duration, UNIX_EPOCH};
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-fast-edit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut run = report(vec![result("system.disk", vec![Finding::ok("Free", "50% free").with_metric(50.0, "% free", false)], None)]);
+        let path = save_in(&dir, &run, 0).unwrap();
+        let set_time = |nanos| {
+            let time = UNIX_EPOCH + Duration::new(1_790_000_000, nanos);
+            std::fs::File::options().write(true).open(&path).unwrap().set_times(FileTimes::new().set_modified(time)).unwrap();
+        };
+        set_time(100_000_000);
+        let original = std::fs::metadata(&path).unwrap().len();
+        assert_eq!(indexed(&dir)[0].1.metrics[0].value, 50.0);
+        run.results[0].findings[0] = Finding::ok("Free", "40% free").with_metric(40.0, "% free", false);
+        std::fs::write(&path, serde_json::to_string_pretty(&run).unwrap()).unwrap();
+        set_time(200_000_000);
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), original);
+        assert_eq!(indexed(&dir)[0].1.metrics[0].value, 40.0, "the history and trends must see the edited measurement");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn concurrent_same_second_runs_never_overwrite_each_other() {
+        use std::sync::{Arc, Barrier};
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-concurrent-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let barrier = Arc::new(Barrier::new(16));
+        let saved = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..16).map(|i| {
+                let (dir, barrier) = (&dir, barrier.clone());
+                s.spawn(move || {
+                    let run = report(vec![result("system.disk", vec![Finding::ok("Run", i.to_string())], None)]);
+                    barrier.wait();
+                    (save_in(dir, &run, 0).unwrap(), i.to_string())
+                })
+            }).collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect::<Vec<_>>()
+        });
+        assert_eq!(json_files(&dir).len(), saved.len(), "each simultaneous run needs its own record");
+        for (path, expected) in saved {
+            assert_eq!(load(&path).unwrap().results[0].findings[0].value, expected);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

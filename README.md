@@ -770,6 +770,32 @@ cargo run -p itriage-core --example triage -- --json > report.json   # open it i
 ITRIAGE_PROFILE=profiles/home-lab.toml cargo run -p itriage-core --example triage -- site.checks
 ```
 
+### Tests
+
+`cargo test -p itriage-core` runs the engine's unit tests without GUI dependencies.
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`
+check the desktop shell too (with the platform's GUI build dependencies installed).
+
+The optional frontend regression suite needs Node.js 20 or later:
+
+```bash
+npm ci
+npx playwright install chromium
+npm test
+```
+
+It drives the real interface with simulated checks and repairs, including a fix
+held open while another run is attempted, its re-check, comparison and export,
+failure handling, and self-service. It never repairs the test computer. CI runs
+it before packaging installers. An existing Chromium can be used by setting
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` to its full path.
+
+While a fix or its re-check is running, both views keep new runs and view
+switches disabled. A completed re-check refreshes the live report's diagnosis,
+verdict, comparison and log; the original saved run remains available in History.
+Destination ports must be given once, after a colon or a space. An empty port
+list or text after a bracketed IPv6 address is reported as invalid input.
+
 ## Releasing
 
 1. Bump the version in `crates/itriage-core/Cargo.toml`, `src-tauri/Cargo.toml`
