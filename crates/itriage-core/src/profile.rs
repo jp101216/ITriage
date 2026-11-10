@@ -34,6 +34,7 @@ pub struct Profile {
     pub thresholds: Thresholds,
     pub privacy: Privacy,
     pub updates: UpdateSettings,
+    pub security: SecuritySettings,
     pub cleanup: CleanupSettings,
     pub history: HistorySettings,
     pub ui: UiSettings,
@@ -233,6 +234,10 @@ pub struct Thresholds {
     pub network_rtt_ms: Band,
     pub dns_ms: Band,
     pub packet_loss_pct: Band,
+    /// Days since the antivirus definitions were last updated.
+    pub definitions_age_days: Band,
+    /// Days until the signed-in user's password expires. Lower is worse.
+    pub password_expiry_days: Band,
 }
 
 impl Default for Thresholds {
@@ -248,6 +253,8 @@ impl Default for Thresholds {
             network_rtt_ms: Band::new(80.0, 150.0),
             dns_ms: Band::new(100.0, 300.0),
             packet_loss_pct: Band::new(1.0, 10.0),
+            definitions_age_days: Band::new(3.0, 7.0),
+            password_expiry_days: Band::new(14.0, 3.0),
         }
     }
 }
@@ -268,11 +275,33 @@ pub struct UpdateSettings {
     /// runs, so a BIOS update doesn't leave the PC asking for its recovery
     /// key. On unless the profile turns it off.
     pub suspend_bitlocker: bool,
+    /// Tell the technician when a newer ITriage has been released. One
+    /// request a day to GitHub; it downloads and installs nothing. Also off
+    /// whenever `[network] public_probes` is off.
+    pub notify: bool,
 }
 
 impl Default for UpdateSettings {
     fn default() -> Self {
-        Self { windows_update_drivers: DriverSource::default(), suspend_bitlocker: true }
+        Self { windows_update_drivers: DriverSource::default(), suspend_bitlocker: true, notify: true }
+    }
+}
+
+/// What the security posture check expects of this site's PCs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SecuritySettings {
+    /// Must the system drive be encrypted? Absent: a laptop without
+    /// encryption is a warning and a desktop is only noted. `true` makes it
+    /// critical everywhere; `false` only notes it.
+    pub require_encryption: Option<bool>,
+    /// `false` flags a signed-in user who is an administrator of the PC.
+    pub user_may_be_admin: bool,
+}
+
+impl Default for SecuritySettings {
+    fn default() -> Self {
+        Self { require_encryption: None, user_may_be_admin: true }
     }
 }
 

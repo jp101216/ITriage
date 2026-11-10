@@ -227,6 +227,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::triage::system::SystemInfo),
         Box::new(crate::triage::disk::DiskUsage),
         Box::new(crate::triage::memory::MemoryUsage),
+        Box::new(crate::triage::reliability::Reliability),
         // --- Processes & services ---
         Box::new(crate::triage::processes::TopProcesses),
         Box::new(crate::triage::services::ServiceHealth),
@@ -240,11 +241,14 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         // --- Workstation (service desk) ---
         Box::new(crate::desk::time::ClockSync),
         Box::new(crate::desk::domain::DomainPolicy),
+        Box::new(crate::desk::account::SignInAccount),
         Box::new(crate::desk::printers::Printers),
         Box::new(crate::desk::devices::Devices),
         Box::new(crate::desk::wifi::WifiVpn),
         Box::new(crate::desk::certs::MachineCerts),
         Box::new(crate::desk::battery::BatteryHealth),
+        // --- Security ---
+        Box::new(crate::security::posture::SecurityPosture),
         // --- Site & clinical (driven by the site profile) ---
         Box::new(crate::site::apps::SiteApps),
         Box::new(crate::site::checks::SiteChecks),

@@ -105,6 +105,21 @@ pub fn rows(out: &str) -> Option<Vec<Row>> {
     serde_json::from_str(json).ok()
 }
 
+/// The marker the scripts print a richer JSON result after (see
+/// `Send-ITriage` in [`crate::win::ps`]).
+pub const JSON_MARKER: &str = "ITRIAGE-JSON ";
+
+/// Pull a script's JSON result out of its output. The error says whether
+/// the script printed nothing or printed something unexpected.
+pub fn json<T: serde::de::DeserializeOwned>(out: &str) -> Result<T, String> {
+    let text = out
+        .lines()
+        .rev()
+        .find_map(|l| l.trim().strip_prefix(JSON_MARKER))
+        .ok_or("PowerShell gave no result")?;
+    serde_json::from_str(text).map_err(|e| format!("PowerShell's result wasn't in the expected form ({e})"))
+}
+
 impl Row {
     pub fn finding(&self) -> Finding {
         let severity = match self.status.as_str() {
@@ -135,6 +150,19 @@ mod tests {
         assert_eq!(rows[1].finding().severity, Severity::Critical);
         assert_eq!(super::rows("ITRIAGE-ROWS []").unwrap(), vec![]);
         assert!(super::rows("no marker here").is_none());
+    }
+
+    #[test]
+    fn reads_a_scripts_json_result() {
+        #[derive(Deserialize, Debug, PartialEq)]
+        struct Answer {
+            #[serde(rename = "Name")]
+            name: String,
+        }
+        let out = "chatter\nITRIAGE-JSON {\"Name\":\"caf\\u00e9\"}\n";
+        assert_eq!(json::<Answer>(out).unwrap(), Answer { name: "café".into() });
+        assert!(json::<Answer>("nothing").unwrap_err().contains("no result"));
+        assert!(json::<Answer>("ITRIAGE-JSON [1,2]").unwrap_err().contains("expected form"));
     }
 
     #[cfg(unix)]

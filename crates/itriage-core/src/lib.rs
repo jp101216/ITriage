@@ -41,6 +41,7 @@ pub mod parse;
 pub mod paths;
 pub mod profile;
 pub mod report;
+pub mod security;
 pub mod site;
 pub mod telemetry;
 pub mod trust;
@@ -55,6 +56,7 @@ pub mod triage {
     pub mod memory;
     pub mod network;
     pub mod processes;
+    pub mod reliability;
     pub mod services;
     pub mod system;
 }

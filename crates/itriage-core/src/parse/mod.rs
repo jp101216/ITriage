@@ -16,6 +16,7 @@ pub mod net;
 pub mod ping;
 pub mod pkg;
 pub mod printer;
+pub mod psjson;
 pub mod route;
 pub mod smbios;
 pub mod sntp;

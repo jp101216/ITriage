@@ -101,6 +101,35 @@ pub fn recent_errors(channel: &str, hours: u32, max: usize) -> Result<Vec<RawEve
     Ok(events)
 }
 
+/// Events from `channel` matching a fixed XPath `query`, newest first, at
+/// most `max`, each rendered as XML. The query is always one of ITriage's
+/// own constants; values to match on are compared afterwards, in Rust.
+pub fn query_xml(channel: &str, query: &'static str, max: usize) -> Result<Vec<String>, String> {
+    let path = HSTRING::from(channel);
+    let query = HSTRING::from(query);
+    let flags = EvtQueryChannelPath.0 | EvtQueryReverseDirection.0;
+    // SAFETY: valid wide strings; every handle is wrapped for closing.
+    let results = unsafe { EvtQuery(None, &path, &query, flags) }
+        .map_err(|e| super::err(&format!("can't read the {channel} log"), &e))?;
+    let results = Handle(results);
+    let mut events = Vec::new();
+    let mut batch = [0isize; 64];
+    while events.len() < max {
+        let mut returned = 0u32;
+        if unsafe { EvtNext(results.0, &mut batch, 2_000, 0, &mut returned) }.is_err() || returned == 0 {
+            break;
+        }
+        for &raw in &batch[..returned as usize] {
+            let event = Handle(EVT_HANDLE(raw));
+            if let Some(xml) = unsafe { render_xml(event.0) } {
+                events.push(xml);
+            }
+        }
+    }
+    events.truncate(max);
+    Ok(events)
+}
+
 unsafe fn render_xml(event: EVT_HANDLE) -> Option<String> {
     let mut used = 0u32;
     let mut properties = 0u32;
