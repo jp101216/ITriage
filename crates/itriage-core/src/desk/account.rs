@@ -133,15 +133,29 @@ pub struct Who {
     pub user: String,
     /// An account of this PC, not of a domain.
     pub local: bool,
+    /// A cloud identity (Microsoft Entra ID, or a personal Microsoft
+    /// account), by name. No domain controller knows it.
+    pub cloud: Option<&'static str>,
 }
 
 impl Who {
     pub fn new(account: &str, hostname: &str) -> Self {
         let (domain, user) = split_account(account);
         let local = domain.is_empty() || domain == "." || domain.eq_ignore_ascii_case(hostname);
-        Self { account: account.to_string(), domain, user, local }
+        // The "domains" Windows shows for accounts that live in the cloud.
+        let cloud = if domain.eq_ignore_ascii_case("AzureAD") {
+            Some("Microsoft Entra ID account")
+        } else if domain.eq_ignore_ascii_case("MicrosoftAccount") {
+            Some("Microsoft account")
+        } else {
+            None
+        };
+        Self { account: account.to_string(), domain, user, local, cloud }
     }
 }
+
+/// Why a cloud account's state isn't in the report.
+pub const CLOUD_STATE: &str = "its sign-in state and password are kept in the cloud, not on a domain controller, so they can't be read from the PC";
 
 /// `CORP\jparker` → (CORP, jparker); `jparker@corp.example.org` →
 /// (corp.example.org, jparker); `jparker` → ("", jparker).
@@ -203,7 +217,7 @@ fn span(secs: u64) -> String {
 }
 
 pub fn who_finding(who: &Who, server: Option<&str>, running_as: Option<&str>) -> Finding {
-    let kind = if who.local { "local account" } else { "domain account" };
+    let kind = who.cloud.unwrap_or(if who.local { "local account" } else { "domain account" });
     let mut notes = Vec::new();
     if let Some(dc) = server {
         notes.push(format!("Checked on {}.", dc.trim_start_matches('\\')));
@@ -689,6 +703,10 @@ mod imp {
         if who.local {
             return (None, account::user_info(None, &who.user).map_err(account::net_error), account::policy(None).ok());
         }
+        if who.cloud.is_some() {
+            // Nothing to search for: there's no domain controller to ask.
+            return (None, Err(CLOUD_STATE.to_string()), None);
+        }
         let Some(dc) = account::domain_controller(&who.domain, DC_WAIT) else {
             return (None, Err(format!("no domain controller for {} answered. On the office network or VPN, try again", who.domain)), None);
         };
@@ -860,6 +878,9 @@ mod imp {
 
     pub fn unlock_account(name: &str) -> Result<String, String> {
         let who = Who::new(name, &hostname());
+        if let Some(kind) = who.cloud {
+            return Err(format!("{} is a {kind}: it's unlocked in the cloud directory's admin centre, not from the PC.", who.account));
+        }
         let server = if who.local {
             None
         } else {
@@ -969,7 +990,7 @@ mod imp {
 
     pub fn check(ctx: &RunContext) -> Result<Output, String> {
         let user = subject();
-        let who = Who { account: user.clone(), domain: String::new(), user: user.clone(), local: true };
+        let who = Who { account: user.clone(), domain: String::new(), user: user.clone(), local: true, cloud: None };
         let now = crate::util::now_epoch();
         let band = ctx.profile().thresholds.password_expiry_days;
         let mut out = vec![who_finding(&who, None, None)];
@@ -1098,6 +1119,30 @@ mod tests {
         assert_eq!(split_account("jparker"), (String::new(), "jparker".into()));
         assert!(!corp().local);
         assert!(Who::new(r"ws-flint-07\kiosk", "WS-FLINT-07").local && Who::new("kiosk", "WS-FLINT-07").local);
+    }
+
+    #[test]
+    fn a_cloud_account_is_not_looked_for_on_a_domain_controller() {
+        let entra = Who::new(r"AzureAD\jparker", "WS-FLINT-07");
+        assert_eq!(entra.cloud, Some("Microsoft Entra ID account"));
+        assert!(!entra.local);
+        assert_eq!(Who::new(r"MicrosoftAccount\someone@outlook.com", "PC").cloud, Some("Microsoft account"));
+        assert_eq!(corp().cloud, None);
+        assert_eq!(who_finding(&entra, None, None).value, r"AzureAD\jparker · Microsoft Entra ID account");
+        // Its state can't be read, and the report says why without alarm.
+        let mut facts = quiet(entra);
+        facts.server = None;
+        facts.info = Err(CLOUD_STATE.to_string());
+        facts.rules = None;
+        facts.saved = Ok(vec![SavedCredential { target: "fs01".into(), user: r"AzureAD\jparker".into(), kind: 2, saved: None }]);
+        let f = findings(&facts, band(), NOW);
+        let status = by(&f, "Account status");
+        assert_eq!(status.severity, Severity::Info);
+        assert!(status.value.starts_with("couldn't be read: its sign-in state and password are kept in the cloud"), "{}", status.value);
+        assert!(f.iter().all(|x| x.label != "Password" && x.label != "Lockout policy"));
+        // What's on the PC is still listed.
+        assert!(by(&f, "Lockout sources on this PC").value.starts_with("these hold the password"));
+        assert_eq!(summary(&f), "Account state not readable");
     }
 
     #[test]
