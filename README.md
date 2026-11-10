@@ -774,8 +774,10 @@ ITRIAGE_PROFILE=profiles/home-lab.toml cargo run -p itriage-core --example triag
 
 1. Bump the version in `crates/itriage-core/Cargo.toml`, `src-tauri/Cargo.toml`
    and `src-tauri/tauri.conf.json`.
-2. Add the notes as `release-notes/vX.Y.Z.md`, and merge to `main`.
-3. On GitHub: **Actions → Release → Run workflow** (on `main`). There's nothing
+2. If `Cargo.lock` changed, run `scripts/third-party-notices.sh` and commit
+   `THIRD-PARTY-NOTICES.txt` (CI says so when it's out of date).
+3. Add the notes as `release-notes/vX.Y.Z.md`, and merge to `main`.
+4. On GitHub: **Actions → Release → Run workflow** (on `main`). There's nothing
    to type; it works from the GitHub mobile app too.
 
 The Release workflow runs the full CI build and tests, rebuilds and signs the
@@ -962,5 +964,15 @@ ITriage is released under the [MIT License](LICENSE): use it, change it and
 share it, at home or at work, as long as the copyright notice stays with it.
 It comes with no warranty.
 
-The bundled fonts (Rajdhani, Chakra Petch, Share Tech Mono) are under the SIL
-Open Font License 1.1; see the `src/fonts/LICENSE-*.txt` files.
+It's built with open-source Rust crates and three fonts (Rajdhani, Chakra
+Petch and Share Tech Mono, under the SIL Open Font License 1.1), which stay
+under their authors' licenses.
+[`THIRD-PARTY-NOTICES.txt`](THIRD-PARTY-NOTICES.txt) reproduces every one of
+those licenses and copyright notices. Both files are installed with the app:
+beside `itriage.exe` on Windows, in `/usr/lib/itriage/` on Linux.
+
+The notices are generated from `Cargo.lock` by
+`scripts/third-party-notices.sh` (it needs
+[cargo-about](https://github.com/EmbarkStudios/cargo-about)), and CI fails
+when a dependency has changed without them. `about.toml` lists the licenses a
+dependency may have; one under any other license stops the script.
