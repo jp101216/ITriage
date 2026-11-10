@@ -790,6 +790,10 @@ installers are then attached to the run instead. Pushing a `vX.Y.Z` tag from a
 clone does the same as Run workflow, but leaves the release as a draft to
 review first.
 
+To correct a published release's notes, change its `release-notes/vX.Y.Z.md`
+and merge: the **Release notes** workflow copies the file to the release
+page. It changes nothing else about the release.
+
 ## Code signing
 
 Release builds sign the Windows installers, and the app inside them, with

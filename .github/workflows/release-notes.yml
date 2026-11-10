@@ -1,0 +1,75 @@
+name: Release notes
+
+# A release's page is written from release-notes/<tag>.md when the release is
+# published. This keeps the page in step when that file is corrected later:
+# a change to it on main is copied to the published release of the same name.
+#
+# Notes for a version that hasn't been published yet (or is still a draft)
+# are left alone; the Release workflow uses them when it publishes. Only the
+# text of the page changes: never the tag, the title or the files.
+#
+# Run it by hand (Actions -> Release notes -> Run workflow) to copy one
+# version's notes again.
+
+on:
+  push:
+    branches: [main]
+    paths: ["release-notes/v*.md"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release to refresh, for example v0.7.0"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-notes
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Copy the notes to the release page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Update the release pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$TAG" ]]; then
+            files="release-notes/$TAG.md"
+            if [[ ! -f "$files" ]]; then
+              echo "::error::$files doesn't exist."
+              exit 1
+            fi
+          else
+            # What this push changed. A first push has no "before" to compare with.
+            if ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+              BEFORE=HEAD^
+            fi
+            files=$(git diff --name-only --diff-filter=AM "$BEFORE" HEAD -- 'release-notes/v*.md')
+          fi
+
+          for f in $files; do
+            tag=$(basename "$f" .md)
+            # Only a published release answers here; a draft or a version
+            # that hasn't been released gives "not found".
+            if ! id=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id 2>&1); then
+              if grep -q "HTTP 404" <<< "$id"; then
+                echo "$tag isn't a published release; its notes are left for the Release workflow."
+                continue
+              fi
+              echo "::error::Couldn't look up the $tag release: $id"
+              exit 1
+            fi
+            gh api "repos/$GITHUB_REPOSITORY/releases/$id" -X PATCH -F "body=@$f" --silent
+            echo "Updated the $tag release page from $f."
+          done
