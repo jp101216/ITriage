@@ -97,6 +97,26 @@ jobs:
           path: smoke-${{ runner.os }}.json
           if-no-files-found: ignore
 
+  # The installers carry THIRD-PARTY-NOTICES.txt: the licenses and copyright
+  # notices of every crate built into them. It's generated from Cargo.lock, and
+  # this fails when a dependency has changed without it (a release stops here
+  # too). Nothing is compiled; cargo-about reads the crates' own license files.
+  notices:
+    name: Third-party notices
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-about
+        run: cargo install cargo-about --version 0.9.3 --locked --features cli
+
+      - name: Check THIRD-PARTY-NOTICES.txt is current
+        run: scripts/third-party-notices.sh --check
+
   # Every push gets installers (branch builds too, so a feature can be tried
   # on a real machine before it's merged); pull requests reuse the push build.
   # Publishing them is release.yml's work.
@@ -131,6 +151,52 @@ jobs:
 
       - name: Build installers
         run: cargo tauri build --bundles ${{ matrix.bundles }}
+
+      # ITriage's license and the third-party notices have to travel with
+      # every copy, so each installer is opened and checked for both.
+      - name: Check the .deb carries the licenses
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          deb=$(ls target/release/bundle/deb/*.deb)
+          listing=$(dpkg-deb -c "$deb")
+          for f in LICENSE.txt THIRD-PARTY-NOTICES.txt; do
+            line=$(grep -E "/$f\$" <<< "$listing" || true)
+            echo "${line:-$f: not in the package}"
+            if [[ "$line" != -r??r??r??\ * ]]; then
+              echo "::error::$f isn't in $(basename "$deb"), or not everyone can read it."
+              exit 1
+            fi
+          done
+
+      - name: Check the Windows installers carry the licenses
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $wanted = 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt'
+          $msi = Get-ChildItem target/release/bundle/msi/*.msi | Select-Object -First 1
+          $setup = Get-ChildItem target/release/bundle/nsis/*.exe | Select-Object -First 1
+          if (-not $msi -or -not $setup) { throw "The MSI and setup installers weren't both built." }
+
+          # The MSI, as it unpacks.
+          $unpacked = Join-Path $env:RUNNER_TEMP 'msi-licenses'
+          $p = Start-Process msiexec.exe -ArgumentList '/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$unpacked`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Unpacking $($msi.Name) failed (msiexec exit code $($p.ExitCode))." }
+          foreach ($f in $wanted) {
+            $found = Get-ChildItem $unpacked -Recurse -Filter $f | Select-Object -First 1
+            if (-not $found -or $found.Length -eq 0) { throw "$f isn't in $($msi.Name)." }
+            "{0}: {1} ({2:N0} bytes)" -f $msi.Name, $found.FullName.Substring($unpacked.Length), $found.Length
+          }
+
+          # The setup program, as 7-Zip lists it.
+          $listing = & 7z l $setup.FullName
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip couldn't list $($setup.Name) (exit code $LASTEXITCODE)." }
+          foreach ($f in $wanted) {
+            $line = $listing | Where-Object { $_ -match ('(\s|\\)' + [regex]::Escape($f) + '$') } | Select-Object -First 1
+            if (-not $line) { throw "$f isn't in $($setup.Name)." }
+            "{0}: {1}" -f $setup.Name, $line.Trim()
+          }
 
       - uses: actions/upload-artifact@v7
         with:
