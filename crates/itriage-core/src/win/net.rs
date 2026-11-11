@@ -26,7 +26,9 @@ use windows::Win32::Networking::WinHttp::{
 /// certificate normally; neither redirects nor automatic authentication run.
 pub fn application_probe(url: &url::Url, timeout: Duration) -> Result<crate::investigate::applications::HttpProbe, String> {
     use windows::Win32::Networking::WinHttp::{WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_DISABLE_AUTHENTICATION, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS};
-    let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']);
+    // An IPv6 address keeps its brackets: WinHTTP reads "[::1]" as an
+    // address and "::1" as a (bad) host name.
+    let host = url.host_str().unwrap_or_default();
     let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
     let ms = timeout.as_millis().clamp(500, 15_000) as i32;
     let error = |stage: &str, e: windows::core::Error| {

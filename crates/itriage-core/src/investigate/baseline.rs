@@ -22,8 +22,17 @@ pub struct Comparison {
     pub gaps: Vec<String>,
 }
 
-fn comparable(module: &str, label: &str) -> bool {
+/// The name a setting is compared under, or `None` for a finding that
+/// isn't configuration: an identity, an address, or something that moves
+/// from minute to minute.
+fn comparable(module: &str, label: &str) -> Option<String> {
     let lower = label.to_ascii_lowercase();
+    // The signed-in user's proxy is configuration, and the one a working PC
+    // most often differs in. Its row names the account ("User proxy
+    // (CORP\jparker)"); the setting is compared without it.
+    if module == "net.proxy" {
+        return Some(label.split(" (").next().unwrap_or(label).trim().to_string()).filter(|l| !l.is_empty());
+    }
     if [
         "serial",
         "hostname",
@@ -39,9 +48,9 @@ fn comparable(module: &str, label: &str) -> bool {
     .iter()
     .any(|s| lower.contains(s))
     {
-        return false;
+        return None;
     }
-    match module {
+    let keep = match module {
         "system.info" => matches!(
             label,
             "OS" | "Kernel" | "Architecture" | "Model" | "BIOS" | "Motherboard" | "Total memory"
@@ -52,8 +61,13 @@ fn comparable(module: &str, label: &str) -> bool {
         "proc.services" => !matches!(label, "Running services" | "Stopped by design (skipped)"),
         "sec.posture" => !lower.contains("admin") && !lower.contains("definition"),
         "desk.devices" => !lower.contains("devices detected"),
+        // Where the clock comes from and which zone it is in; not the offset.
+        "desk.time" => matches!(label, "Time source" | "Time zone"),
+        // Which domain and site; not which controller answered today.
+        "desk.domain" => matches!(label, "Domain" | "AD site"),
         _ => false,
-    }
+    };
+    keep.then(|| label.to_string())
 }
 
 fn observations(r: &Report) -> BTreeMap<(String, String), String> {
@@ -63,8 +77,8 @@ fn observations(r: &Report) -> BTreeMap<(String, String), String> {
         .flat_map(|m| {
             m.findings
                 .iter()
-                .filter(|f| f.metric.is_none() && comparable(&m.module_id, &f.label))
-                .map(|f| ((m.module_id.clone(), f.label.clone()), f.value.clone()))
+                .filter(|f| f.metric.is_none())
+                .filter_map(|f| comparable(&m.module_id, &f.label).map(|label| ((m.module_id.clone(), label), f.value.clone())))
         })
         .collect()
 }
@@ -151,5 +165,29 @@ mod tests {
         assert_eq!(c.differences[0].baseline.as_deref(), Some("24.2"));
         assert_eq!(c.current_host, "BAD");
         assert!(compare(&a, &b.clone().with_role("server")).is_err());
+    }
+
+    #[test]
+    fn proxy_clock_and_domain_settings_are_compared_without_their_identities() {
+        let with = |host: &str, account: &str, pac: &str, zone: &str| {
+            let mut r = report(host, "24.2");
+            for (id, findings) in [
+                ("net.proxy", vec![Finding::info("WinHTTP proxy (machine)", "Direct (no proxy)"), Finding::info(format!("User proxy ({account})"), pac)]),
+                ("desk.time", vec![Finding::info("Time zone", zone), Finding::ok("Clock offset", "0.2 s fast").with_metric(0.2, "s", true)]),
+                ("desk.domain", vec![Finding::ok("Domain", "corp.example.org"), Finding::ok("Signed in via", format!("\\\\DC-{host}"))]),
+            ] {
+                let mut m = ModuleResult::failed(&ModuleInfo::new(id, id, Category::Network, ""), "");
+                m.error = None;
+                m.findings = findings;
+                r.results.push(m);
+            }
+            r
+        };
+        let good = with("GOOD", "CORP\\asmith", "PAC http://pac.example.org/proxy.pac", "Eastern Standard Time");
+        let bad = with("BAD", "CORP\\jparker", "Automatically detect settings (WPAD)", "Pacific Standard Time");
+        let c = compare(&good, &bad).unwrap();
+        let rows: Vec<(&str, &str)> = c.differences.iter().map(|d| (d.module.as_str(), d.label.as_str())).collect();
+        assert_eq!(rows, [("desk.time", "Time zone"), ("net.proxy", "User proxy")], "{:#?}", c.differences);
+        assert_eq!(c.differences[1].baseline.as_deref(), Some("PAC http://pac.example.org/proxy.pac"));
     }
 }

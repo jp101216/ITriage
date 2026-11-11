@@ -59,6 +59,70 @@ pub fn event_data(xml: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Everything an event carries, in order, for showing to a person: named
+/// `<Data Name='x'>` values under their name, unnamed ones (classic
+/// providers such as MsiInstaller and User32) under their position ("1",
+/// "2", …), and the fields of a `<UserData>` block (servicing and driver
+/// installation events). Empty and "(NULL)" values are skipped.
+pub fn payload(xml: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    if let Some(start) = find_tag(xml, "EventData") {
+        let body = &xml[start..];
+        let body = &body[..body.find("</EventData>").unwrap_or(body.len())];
+        let mut rest = body;
+        let mut position = 0;
+        while let Some(at) = find_tag(rest, "Data") {
+            position += 1;
+            let element = &rest[at..];
+            let Some(open_end) = element.find('>') else { break };
+            if element[..open_end].ends_with('/') {
+                rest = &element[open_end + 1..];
+                continue;
+            }
+            let Some(close) = element.find("</Data>") else { break };
+            let name = attr(&element[..=open_end], "Data", "Name").unwrap_or_else(|| position.to_string());
+            let value = unescape(element[open_end + 1..close].trim());
+            if !value.is_empty() && value != "(NULL)" {
+                out.push((name, value));
+            }
+            rest = &element[close + "</Data>".len()..];
+        }
+    }
+    if let Some(start) = find_tag(xml, "UserData") {
+        let body = &xml[start..];
+        let body = &body[..body.find("</UserData>").unwrap_or(body.len())];
+        out.extend(leaves(body));
+    }
+    out
+}
+
+/// The elements that hold text and nothing else: `<Name>text</Name>`.
+fn leaves(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(open) = rest.find('<') {
+        let after = &rest[open + 1..];
+        let Some(end) = after.find('>') else { break };
+        let tag = &after[..end];
+        rest = &after[end + 1..];
+        if tag.starts_with(['/', '?', '!']) || tag.ends_with('/') {
+            continue;
+        }
+        let name = tag.split([' ', '\t', '\r', '\n']).next().unwrap_or_default();
+        let Some(next) = rest.find('<') else { break };
+        let close = format!("</{name}>");
+        if !name.is_empty() && rest[next..].starts_with(&close) {
+            let value = unescape(rest[..next].trim());
+            if !value.is_empty() && value != "(NULL)" {
+                // A namespace prefix says nothing to a reader.
+                out.push((name.rsplit(':').next().unwrap_or(name).to_string(), value));
+            }
+            rest = &rest[next + close.len()..];
+        }
+    }
+    out
+}
+
 /// Value of `name` on the first `<tag …>` element; handles ' or " quoting.
 fn attr(xml: &str, tag: &str, name: &str) -> Option<String> {
     let start = find_tag(xml, tag)?;
@@ -153,6 +217,33 @@ mod tests {
         assert_eq!(get("Empty"), None);
         assert_eq!(data.len(), 5);
         assert!(event_data("<Event><System/></Event>").is_empty());
+    }
+
+    #[test]
+    fn payload_keeps_unnamed_values_and_user_data() {
+        // MsiInstaller is a classic provider: its values have no names.
+        let msi = "<Event><System><Provider Name='MsiInstaller'/><EventID Qualifiers='0'>1033</EventID></System>\
+            <EventData><Data>Contoso Client</Data><Data>24.2.0.187</Data><Data>1033</Data><Data>0</Data>\
+            <Data>Contoso Ltd</Data><Data>(NULL)</Data><Data/><Binary>7B31</Binary></EventData></Event>";
+        assert_eq!(
+            payload(msi),
+            [("1", "Contoso Client"), ("2", "24.2.0.187"), ("3", "1033"), ("4", "0"), ("5", "Contoso Ltd")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+        );
+        // Servicing writes its fields as elements under UserData.
+        let cbs = "<Event><System><Provider Name='Microsoft-Windows-Servicing'/><EventID>2</EventID></System>\
+            <UserData><CbsPackageChangeState xmlns='http://manifests.microsoft.com/win/2004/08/windows/setup_provider'>\
+            <PackageIdentifier>KB5031356</PackageIdentifier><IntendedPackageState>5112</IntendedPackageState>\
+            <IntendedPackageStateTextized>Installed</IntendedPackageStateTextized><ErrorCode>0x0</ErrorCode>\
+            <Client>UpdateAgentLCU</Client></CbsPackageChangeState></UserData></Event>";
+        let data = payload(cbs);
+        assert_eq!(data[0], ("PackageIdentifier".to_string(), "KB5031356".to_string()));
+        assert_eq!(data.len(), 5);
+        assert!(data.iter().all(|(k, _)| k != "CbsPackageChangeState"), "the wrapper holds elements, not text");
+        // Named values keep their names, and nothing is invented for an empty event.
+        let named = "<Event><System/><EventData><Data Name='param1'>Spooler</Data><Data Name='Empty'></Data></EventData></Event>";
+        assert_eq!(payload(named), [("param1".to_string(), "Spooler".to_string())]);
+        assert!(payload("<Event><System/></Event>").is_empty());
     }
 
     #[test]
