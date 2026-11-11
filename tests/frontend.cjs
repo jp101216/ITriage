@@ -34,7 +34,7 @@ async function pageFor(t, options = {}) {
   page.on("pageerror", (e) => errors.push(e.message));
   t.after(async () => { await page.close(); assert.deepEqual(errors, [], "no frontend exceptions"); });
   if (!options.preview) await page.addInitScript((options) => {
-    const state = window.testState = { calls: [], fixDone: null, recheckDone: null, copied: null };
+    const state = window.testState = { calls: [], args: [], fixDone: null, recheckDone: null, copied: null, recordingDone:null, markers:[] };
     Object.defineProperty(navigator, "clipboard", { value: { writeText: async (text) => { state.copied = text; } } });
     const listeners = new Map();
     const emit = (name, payload) => { for (const listener of listeners.get(name) || []) listener({ payload }); };
@@ -42,7 +42,7 @@ async function pageFor(t, options = {}) {
     const modules = [
       { id: "system.disk", title: "Disk space & latency", category: "system" },
       { id: "desk.printers", title: "Printers & print queue", category: "workstation" },
-    ].map((m) => Object.assign(m, { description: "Fixture", platforms: ["windows", "linux"], mutating: false, disruptive: false, takes_target: false, requires_admin: false }));
+    ].concat(options.timeline ? [{id:"system.changes",title:"Recent changes timeline",category:"system"},{id:"net.wifi-auth",title:"Network authentication history",category:"network"}] : []).map((m) => Object.assign(m, { description: "Fixture", platforms: ["windows", "linux"], mutating: false, disruptive: false, takes_target: false, requires_admin: false }));
     const result = (id, fixed = false) => {
       const module = modules.find((m) => m.id === id);
       const finding = id === "desk.printers" && !fixed
@@ -64,6 +64,7 @@ async function pageFor(t, options = {}) {
       } },
       core: { invoke: async (command, args = {}) => {
         state.calls.push(command);
+        state.args.push({command,args});
         switch (command) {
           case "list_modules": return modules;
           case "list_presets": return [];
@@ -73,6 +74,30 @@ async function pageFor(t, options = {}) {
             policy: { start_in: options.self ? "self-service" : "technician", technician_view: true, allow_changes: true, allow_installs: true } };
           case "get_telemetry": return { cpu: 1, cores: [1], mem_pct: 10, mem_used: 100, mem_total: 1000, net_rx: 0, net_tx: 0, disk_read: 0, disk_write: 0, fullest_pct: 10, fullest_mount: "C:" };
           case "check_update": return null;
+          case "list_runbooks": return [{id:"printing",title:"Printing fails",symptom:"Read-only diagnostic steps"}];
+          case "runbook_plan": return {modules:["desk.printers","system.disk"],reason:"Inspect printing and storage first."};
+          case "record_problem": {
+            const sample = {at_ms:Date.now(),cpu_pct:17,memory_pct:42,disk_read:10,disk_write:20,net_rx:30,net_tx:40,tcp_ms:12,tcp_error:null,dns_ms:2,dns_error:null,wifi:"TEST-NET"};
+            emit("recording-sample",sample);
+            await new Promise((done)=>{state.recordingDone=done;});
+            const r = args.baseReport || report([]);
+            r.recording={started:new Date(sample.at_ms).toISOString(),config:args.config,target:args.target,samples:[sample],markers:state.markers,stopped_early:true,gaps:["Fixture collection"]};
+            r.results.push({module_id:"capture.recording",title:"Intermittent problem recording",category:"system",summary:"1 sample",findings:[],error:null,log:[],duration_ms:1});
+            return {report:r,saved:"fixture-case.json"};
+          }
+          case "mark_recording": {const marker={at_ms:Date.now(),label:args.label||"Problem happened now"};state.markers.push(marker);return marker;}
+          case "cancel_run": if(state.recordingDone)state.recordingDone();return true;
+          case "list_history": return [{path:"good.json",generated:"2026-11-09T17:00:00Z",hostname:"WORKING-PC",cancelled:false}];
+          case "load_report": return Object.assign(report([result("system.disk",true)]),{host:Object.assign({},host,{hostname:"WORKING-PC"})});
+          case "compare_baseline": return {baseline_host:args.baseline.host.hostname,current_host:args.current.host.hostname,differences:[{module:"system.info",label:"OS",baseline:"24H2",current:"23H2"}],gaps:["Confirm matching workstation roles."]};
+          case "timeline_near": return [{at:args.problemAt,source:"System",description:"Driver installation activity",detail:"Timing alone does not establish causation."}];
+          case "preview_case_bundle": {
+            const r=JSON.parse(JSON.stringify(args.report));if(args.options.redact_identifiers)r.host.hostname="[host-1]";
+            const text=JSON.stringify(r,null,2),contents={"report.json":text,"report.txt":text};if(args.options.include_logs)contents["logs/fixture.txt"]="Reviewed fixture log";
+            return {contents,files:Object.entries(contents).map(([name,text])=>({name,bytes:text.length,sha256:"a".repeat(64)})),bytes:text.length,note:"Review every file.",redacted:args.options.redact_identifiers};
+          }
+          case "export_case_bundle": return "C:\\cases\\reviewed.zip";
+          case "open_cases_folder": return;
           case "run_modules": {
             if (args.record === false) {
               if (options.failRecheck) throw "Controlled re-check failure";
@@ -86,7 +111,10 @@ async function pageFor(t, options = {}) {
               emit("module-done", r);
               return r;
             });
-            return { report: report(results), diff: diff(false), save_error: options.saveError || null };
+            if(options.failCaseRefresh && args.baseReport)throw "Controlled case refresh failure";
+            const r=args.baseReport ? Object.assign({},args.baseReport,{results:args.baseReport.results.filter((old)=>!results.some((n)=>n.module_id===old.module_id)).concat(results),evidence_updated:"2026-11-10T17:01:00Z"}) : report(results);
+            if(args.runbook)r.runbook={id:args.runbook,steps:[{modules:args.selected,reason:"Inspect printing and storage first."}],finished:true,conclusion:"Review findings; completing checks does not mean the issue is repaired."};
+            return { report:r, diff: diff(false), save_error: options.saveError || null };
           }
           case "run_fix": await new Promise((done) => { state.fixDone = done; }); return "Print Spooler restarted.";
           case "refresh_report": {
@@ -189,4 +217,82 @@ test("the browser preview rejects malformed and conflicting destination ports", 
   await input.fill("[::1]:443");
   await input.blur();
   assert.equal(await page.locator(".dest-err").isVisible(), false);
+});
+
+test("guided troubleshooting preserves the reason for its diagnostic steps",async(t)=>{
+  const page=await pageFor(t);
+  await page.locator("#guidedBtn").click();
+  await page.getByRole("button",{name:/Printing fails/}).click();
+  await page.locator(".case-note").waitFor();
+  assert.match(await page.locator(".case-note").innerText(),/completing checks does not mean.*repaired/);
+  await page.getByText("Why these checks ran").click();
+  assert.match(await page.locator(".case-note").innerText(),/Inspect printing and storage first/);
+  assert.equal(await page.evaluate(()=>testState.args.find((c)=>c.command==="run_modules").args.runbook),"printing");
+});
+
+test("recording keeps existing evidence, accepts markers, stops and replays",async(t)=>{
+  const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#recordBtn").click();await page.locator("#caseStart").click();
+  await page.waitForFunction(()=>typeof testState.recordingDone==="function");
+  assert.equal(await page.locator("#guidedBtn").isDisabled(),true);
+  await page.locator("#caseMarker").fill("Print job stalled");await page.locator("#caseMark").click();
+  await page.getByText(/Print job stalled/).last().waitFor();await page.locator("#caseStop").click();
+  await page.getByText(/Capture finished/).waitFor();await page.getByRole("button",{name:"Close",exact:true}).click();
+  assert.equal(await page.locator("#results .card").count(),3,"capture attaches to existing diagnostic results");
+  await page.getByRole("button",{name:"Replay recording",exact:true}).click();
+  await page.locator(".case-marker-pick").selectOption("0");
+  assert.match(await page.locator(".case-samples").innerText(),/TEST-NET/);
+  assert.match(await page.locator(".case-samples").innerText(),/17.0/);
+});
+
+test("case exports require a fresh preview after privacy options change",async(t)=>{
+  const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#bundleBtn").click();assert.equal(await page.locator("#caseExport").isDisabled(),true);
+  await page.locator("#casePreview").click();await page.waitForFunction(()=>!document.querySelector("#caseExport").disabled);
+  assert.match(await page.locator("#caseBundleText").inputValue(),/\[host-1\]/);
+  assert.doesNotMatch(await page.locator("#caseBundleText").inputValue(),/TEST-PC/);
+  await page.locator("#caseLogs").check();assert.equal(await page.locator("#caseExport").isDisabled(),true);
+  await page.locator("#casePreview").click();await page.waitForFunction(()=>!document.querySelector("#caseExport").disabled);
+  await page.locator("#caseInspect").selectOption("logs/fixture.txt");assert.equal(await page.locator("#caseBundleText").inputValue(),"Reviewed fixture log");
+  await page.locator("#caseExport").click();await page.getByText(/Case saved:.*reviewed.zip/).waitFor();
+  assert.equal(await page.evaluate(()=>testState.args.find((c)=>c.command==="export_case_bundle").args.options.include_logs),true);
+});
+
+test("working-PC comparison keeps the baseline and current direction explicit",async(t)=>{
+  const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#baselineBtn").click();await page.locator("#caseCompareBaseline").click();
+  await page.getByText(/Working baseline: WORKING-PC.*Current: TEST-PC/).waitFor();
+  assert.match(await page.locator("#caseBaselineResult").innerText(),/24H2/);
+  const args=await page.evaluate(()=>testState.args.find((c)=>c.command==="compare_baseline").args);
+  assert.equal(args.baseline.host.hostname,"WORKING-PC");assert.equal(args.current.host.hostname,"TEST-PC");
+});
+
+test("timeline uses the chosen onset and explains temporal uncertainty",async(t)=>{
+  const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#timelineBtn").click();await page.getByText("Driver installation activity").waitFor();
+  assert.match(await page.getByRole("dialog").innerText(),/timing alone does not establish the cause/);
+  await page.locator("#caseOnset").fill("2026-11-10T12:34");await page.locator("#caseWindow").selectOption("900");await page.locator("#caseFindChanges").click();
+  await page.waitForFunction(()=>testState.args.some((c)=>c.command==="timeline_near"&&c.args.windowSeconds===900));
+});
+
+test("post-incident timeline collection retains a case recording and its markers",async(t)=>{
+  const page=await pageFor(t,{timeline:true});await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#recordBtn").click();await page.locator("#caseStart").click();await page.waitForFunction(()=>typeof testState.recordingDone==="function");
+  await page.locator("#caseMarker").fill("VPN dropped");await page.locator("#caseMark").click();await page.getByText(/VPN dropped/).last().waitFor();
+  await page.locator("#caseStop").click();await page.getByText(/Capture finished/).waitFor();await page.getByRole("button",{name:"Close",exact:true}).click();
+  await page.locator("#timelineBtn").click();await page.locator("#caseCollectTimeline").click();
+  await page.waitForFunction(()=>testState.args.some((c)=>c.command==="run_modules"&&c.args.baseReport));
+  await page.getByRole("button",{name:"Replay recording",exact:true}).waitFor();
+  assert.equal(await page.locator("#results .card").count(),5);
+  await page.locator("#bundleBtn").click();await page.locator("#casePreview").click();await page.waitForFunction(()=>!document.querySelector("#caseExport").disabled);
+  const call=await page.evaluate(()=>testState.args.filter((c)=>c.command==="preview_case_bundle").at(-1));
+  assert.equal(call.args.report.recording.markers[0].label,"VPN dropped");assert.ok(call.args.report.evidence_updated);
+});
+
+test("a failed case refresh preserves the report and its recording",async(t)=>{
+  const page=await pageFor(t,{timeline:true,failCaseRefresh:true});await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#recordBtn").click();await page.locator("#caseStart").click();await page.waitForFunction(()=>typeof testState.recordingDone==="function");await page.locator("#caseStop").click();await page.getByText(/Capture finished/).waitFor();await page.getByRole("button",{name:"Close",exact:true}).click();
+  await page.locator("#timelineBtn").click();await page.locator("#caseCollectTimeline").click();
+  await page.getByText(/Controlled case refresh failure/).waitFor();await page.getByRole("button",{name:"Replay recording",exact:true}).waitFor();
+  assert.equal(await page.locator("#results .card").count(),5);assert.equal(await page.locator("#run").isDisabled(),false);
 });

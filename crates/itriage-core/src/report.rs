@@ -50,6 +50,16 @@ pub struct Report {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub likely: Vec<Insight>,
     pub results: Vec<ModuleResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording: Option<crate::investigate::recording::Recording>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runbook: Option<crate::investigate::guided::RunbookTrace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::investigate::baseline::Comparison>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence_updated: Option<String>,
 }
 
 fn schema_default() -> u32 {
@@ -69,6 +79,11 @@ impl Report {
             ticket: None,
             likely: crate::insight::likely_causes(&results),
             results,
+            role: None,
+            recording: None,
+            runbook: None,
+            baseline: None,
+            evidence_updated: None,
         }
     }
 
@@ -78,11 +93,29 @@ impl Report {
         self
     }
 
+    pub fn with_role(mut self, role: &str) -> Self {
+        self.role = (!role.trim().is_empty()).then(|| role.trim().chars().take(100).collect());
+        self
+    }
+
+    /// Refresh selected observations without discarding the rest of a case.
+    /// The creation time stays original; each later collection is explicit.
+    pub fn append_evidence(&mut self, results: Vec<ModuleResult>, cancelled: bool) {
+        self.results.retain(|old| !results.iter().any(|new|new.module_id == old.module_id));
+        self.results.extend(results);
+        self.cancelled |= cancelled;
+        self.evidence_updated = Some(epoch_to_rfc3339(now_epoch()));
+        self.refresh();
+    }
+
     /// Rebuild derived fields after a check has replaced one of the results.
     /// The original run time and cancellation state still describe this run.
     pub fn refresh(&mut self) {
         self.exit_code = Some(crate::module::exit_code(&self.results, self.cancelled));
         self.likely = crate::insight::likely_causes(&self.results);
+        if let Some(trace) = &mut self.runbook {
+            if trace.finished { trace.conclusion = crate::investigate::guided::conclusion(&self.results); }
+        }
     }
 
     pub fn worst(&self) -> Severity {
@@ -107,6 +140,7 @@ pub fn clean_ticket(text: &str) -> Option<String> {
 pub struct ReportMeta {
     pub path: String,
     pub generated: String,
+    pub evidence_updated: Option<String>,
     pub hostname: String,
     pub modules: usize,
     pub worst: Severity,
@@ -130,7 +164,7 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
     std::fs::create_dir_all(dir).map_err(|e| format!("Can't create {}: {e}", dir.display()))?;
     // Both parts come from the report, and an opened report is someone
     // else's data: neither may name a folder or a drive.
-    let stamp = file_part(&report.generated.replace([':', '-'], ""), "", "run");
+    let stamp = file_part(&report.evidence_updated.as_deref().unwrap_or(&report.generated).replace([':', '-'], ""), "", "run");
     let host = file_part(&report.host.hostname, "-", "host");
     // The ticket goes on the end, so sorting by name is still by time.
     let ticket = report.ticket.as_deref().map(|t| format!("_{}", file_part(t, "-", "ticket"))).unwrap_or_default();
@@ -226,6 +260,8 @@ struct IndexEntry {
     size: u64,
     modified: u64,
     generated: String,
+    #[serde(default)]
+    evidence_updated: Option<String>,
     hostname: String,
     modules: usize,
     worst: Severity,
@@ -264,16 +300,17 @@ impl IndexEntry {
             size,
             modified,
             generated: report.generated.clone(),
+            evidence_updated: report.evidence_updated.clone(),
             hostname: report.host.hostname.clone(),
             modules: report.results.len(),
             worst: report.worst(),
             cancelled: report.cancelled,
-            checks: report.results.iter().filter(|r| !r.preview).map(|r| r.module_id.clone()).collect(),
+            checks: report.results.iter().filter(|r| !r.preview && report.evidence_updated.is_none()).map(|r| r.module_id.clone()).collect(),
             ticket: report.ticket.clone(),
             metrics: report
                 .results
                 .iter()
-                .filter(|r| !r.preview && r.error.is_none())
+                .filter(|r| !r.preview && r.error.is_none() && report.evidence_updated.is_none())
                 .flat_map(|r| {
                     r.findings.iter().filter_map(|f| {
                         f.metric.as_ref().map(|m| IndexMetric {
@@ -346,6 +383,7 @@ fn list_in(dir: &Path) -> Vec<ReportMeta> {
         .map(|(path, e)| ReportMeta {
             path: path.display().to_string(),
             generated: e.generated,
+            evidence_updated: e.evidence_updated,
             hostname: e.hostname,
             modules: e.modules,
             worst: e.worst,
@@ -353,7 +391,7 @@ fn list_in(dir: &Path) -> Vec<ReportMeta> {
             ticket: e.ticket,
         })
         .collect();
-    metas.sort_by(|a, b| b.generated.cmp(&a.generated));
+    metas.sort_by(|a, b| b.evidence_updated.as_deref().unwrap_or(&b.generated).cmp(a.evidence_updated.as_deref().unwrap_or(&a.generated)));
     metas
 }
 
@@ -802,6 +840,17 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
     if let Some(t) = &report.ticket {
         out.push(format!("Ticket: {t}"));
     }
+    if let Some(role) = &report.role { out.push(format!("Workstation role: {role}")); }
+    if let Some(updated) = &report.evidence_updated { out.push(format!("Latest evidence update: {updated}")); }
+    if let Some(trace) = &report.runbook {
+        out.push(format!("Troubleshooting: {} — {}", trace.id, trace.conclusion));
+        for (i,step) in trace.steps.iter().enumerate() { out.push(format!("  Phase {}: {} [{}]",i+1,step.reason,step.modules.join(", "))); }
+    }
+    if let Some(recording) = &report.recording {
+        out.push(format!("Recording: {} sample(s), {} marker(s), started {}",recording.samples.len(),recording.markers.len(),recording.started));
+        for marker in &recording.markers { out.push(format!("  {}: {}",epoch_to_rfc3339(marker.at_ms/1000),marker.label)); }
+    }
+    if let Some(baseline) = &report.baseline { out.push(format!("Working-PC baseline: {} -> {}: {} configuration difference(s)",baseline.baseline_host,baseline.current_host,baseline.differences.len())); }
     if report.cancelled {
         out.push("The run was cancelled before every module finished.".into());
     }
@@ -994,6 +1043,30 @@ mod tests {
 
     fn report(results: Vec<ModuleResult>) -> Report {
         Report::new(host(), None, results, false)
+    }
+
+    #[test]
+    fn refreshing_case_logs_keeps_the_recording_markers_and_original_creation_time() {
+        let mut r=report(vec![result("system.info",vec![Finding::info("OS","Windows")],None),result("system.changes",vec![Finding::info("Old event","before capture")],None)]);
+        r.recording=Some(crate::investigate::recording::Recording{started:r.generated.clone(),config:Default::default(),target:None,samples:vec![],markers:vec![crate::investigate::recording::Marker{at_ms:1,label:"Problem happened".into()}],stopped_early:false,gaps:vec![]});
+        let original=r.generated.clone();
+        r.append_evidence(vec![result("system.changes",vec![Finding::info("New event","after capture")],None)],false);
+        assert_eq!(r.generated,original);assert!(r.evidence_updated.is_some());assert_eq!(r.results.len(),2);
+        assert_eq!(r.results[1].findings[0].value,"after capture");assert_eq!(r.recording.unwrap().markers[0].label,"Problem happened");
+        assert_eq!(r.exit_code,Some(0));
+    }
+
+    #[test]
+    fn an_updated_old_case_is_retained_as_recent_without_recounting_old_measurements() {
+        let dir=std::env::current_dir().unwrap().join("target").join(format!("itriage-case-history-{}",std::process::id()));let _=std::fs::remove_dir_all(&dir);
+        let mut case=report(vec![result("system.disk",vec![Finding::ok("Free","50%").with_metric(50.0,"%",true)],None)]);
+        case.generated="2026-10-01T12:00:00Z".into();
+        let mut recent=case.clone();recent.generated="2026-11-01T12:00:00Z".into();save_in(&dir,&recent,1).unwrap();
+        case.evidence_updated=Some("2026-11-11T12:00:00Z".into());let saved=save_in(&dir,&case,1).unwrap();
+        assert!(saved.exists(),"a newly updated case must not be pruned for its older creation time");
+        let listed=list_in(&dir);assert_eq!(listed.len(),1);assert_eq!(listed[0].evidence_updated,case.evidence_updated);
+        let index=indexed(&dir);assert!(index[0].1.metrics.is_empty() && index[0].1.checks.is_empty(),"case snapshots do not measure older performance again");
+        let _=std::fs::remove_dir_all(dir);
     }
 
     #[test]

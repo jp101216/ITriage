@@ -2,7 +2,7 @@
   "name": "itriage-ui-tests",
   "private": true,
   "scripts": {
-    "test": "node --check src/main.js && node --test tests/frontend.cjs"
+    "test": "node --check src/main.js && node --check src/investigations.js && node --test tests/frontend.cjs"
   },
   "devDependencies": {
     "playwright": "1.62.1"

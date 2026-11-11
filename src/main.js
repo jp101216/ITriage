@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.7.1.
+/* ITriage frontend logic — v0.8.0.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.7.1";
+  const VERSION = "v0.8.0";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -106,16 +106,20 @@
     mod("system.disk", "Disk space & latency", "system", "Free vs. total space per volume (warns under 15% free) and disk latency with queue length (warns at 15 ms)."),
     mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both)."),
     mod("system.reliability", "Drive health & reliability", "system", "Each drive's health, wear and errors (SMART), and the last 30 days of blue screens, unexpected shutdowns, disk errors and the apps that crash most."),
+    mod("system.changes", "Recent changes timeline", "system", "Recent updates, installer, driver, service, policy and restart evidence. Timing is a possible link, not proof of causation."),
     mod("proc.top", "Top processes", "processes", "Overall CPU load (warns at 75%), the busiest processes right now, and the biggest memory users. Flags anything pinning a core or holding a quarter of RAM."),
     mod("proc.services", "Services", "processes", "Automatic services that aren't running, with exit codes. Skips trigger-start services that stop by design."),
     mod("net.connectivity", "Network connectivity", "network", "Adapters and addresses, the route in use with its gateway and DNS servers, a timed DNS lookup, an outbound TCP test and the public IP."),
     mod("net.latency", "Latency & packet loss", "network", "Round trip and packet loss to the gateway and the first DNS server over ICMP. Warns at 20 ms or 1% loss to the gateway."),
     mod("net.proxy", "Proxy settings", "network", "The machine-wide WinHTTP proxy, and the signed-in user's proxy, PAC script or auto-detect setting."),
     mod("net.target", "Destination test", "network", "DNS, a TCP connect on each port, the route the PC picks, and ping, for one host you type in (ports default to 443, 80, 445, 3389).", { takes_target: true }),
+    mod("net.applications", "Application connections", "network", "Site application URLs: DNS, route, TCP, proxy context, validated TLS, and expected HTTP statuses."),
+    mod("net.wifi-auth", "Wi-Fi & wired authentication history", "network", "Association, disconnect, roaming and 802.1X / certificate evidence from existing logs."),
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
+    mod("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device join and authentication, Windows Hello and affected-user PRT/WAM diagnostic status. Reads no tokens.", WIN),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
     mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, plus devices the site profile requires."),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
@@ -315,6 +319,10 @@
   const UID = { cu: "8c1e5a71-2f0b-4b7e-9d0a-3c5f6e7a8b91", net: "1f4d2c3b-6a7e-4f80-8b9c-0d1e2f3a4b5c", def: "e2b9c4d1-7f3a-4e6b-a5c8-9d0f1e2a3b4c", drv: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d" };
   const RESTART_MSG = "IT maintenance is complete. This PC will restart in 1 minute - please save your work.";
   const MOCK_RESULTS = {
+    "system.changes": R("system.changes", "Recent changes timeline", "system", "2 recent change events (sample)", 5, [F("2026-11-10T16:52:00Z · Driver activity", "Kernel-PnP event 410", "info", "Sample Wi-Fi driver installation activity; confirm against the actual failure onset."),F("2026-11-10T16:55:00Z · Policy activity", "GroupPolicy event 8004", "info", "Sample policy processing event. Timing does not establish causation.")]),
+    "net.applications": R("net.applications", "Application connections", "network", "1 application (sample)", 15, [F("Clinical portal · DNS", "1 address", "ok"),F("Clinical portal · HTTP", "HTTP 401 · first response 142 ms", "ok", "Expected [200, 401]. Authentication response is expected for an unauthenticated health probe."),F("Clinical portal · TLS", "Certificate chain and host name accepted", "ok")]),
+    "net.wifi-auth": R("net.wifi-auth", "Wi-Fi & wired authentication history", "network", "2 authentication events (sample)", 8, [F("2026-11-10T16:57:00Z · WLAN event 8003", "Disconnect · reason 4", "info", "Sample event; a disconnect alone does not prove a roaming fault."),F("2026-11-10T16:57:04Z · WLAN event 8001", "Association completed", "info")]),
+    "desk.identity": R("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device identity (sample)", 10, [F("Device join", "Microsoft Entra hybrid joined"),F("Entra device authentication", "device is present and enabled", "ok"),F("User SSO checks", "not graded in an elevated or different-user context", "info", "Run without elevation as the affected user for PRT/WAM status.")]),
     "system.info": R("system.info", "System information", "system", "WS-FLINT-07, up 15d 4h 12m; restart pending", 41, [
       F("Hostname", "WS-FLINT-07"), F("OS", "Windows 11 Pro 24H2 (build 26100.2314)"), F("Kernel", "26100"),
       F("Architecture", "x86_64"), F("CPU", "Intel(R) Core(TM) Ultra 7 165U (14 logical cores)"),
@@ -711,7 +719,8 @@
   let ticket = "";
 
   const mockSample = isTauri ? null : mockTelemetry();
-  const api = isTauri ? realApi() : mockApi();
+  const api = isTauri ? realApi() : window.ITriageCases.mockBridge(mockApi(), () => host, () => mockSample());
+  const cases = window.ITriageCases.create({api,modal,toast,currentReport,startRun,collectCase:(ids)=>startRun(ids,null,true),recordCase,cancel:requestCancel,busy:()=>running||fixBusy,attach:(report)=>{if(viewing)viewing.report=report;else live.report=report;}});
 
   /* ---------------------------- themes ----------------------------- */
   // How the technician console looks: html[data-skin] picks a token set in
@@ -819,6 +828,13 @@
           </div>
           <input type="file" id="fileInput" accept=".json,application/json" hidden>
         </div>
+        <div class="case-toolbar" role="group" aria-label="Investigation tools">
+          <button class="bk-btn sm" id="guidedBtn" type="button">Troubleshoot</button>
+          <button class="bk-btn sm" id="recordBtn" type="button">Record issue</button>
+          <button class="bk-btn sm" id="timelineBtn" type="button">Timeline</button>
+          <button class="bk-btn sm" id="baselineBtn" type="button">Working PC</button>
+          <button class="bk-btn sm" id="bundleBtn" type="button">Case bundle</button>
+        </div>
         <div class="progress-wrap"><div class="progress-bar" id="progress"></div></div>
         <div class="results" id="results"></div>
       </main>
@@ -853,6 +869,11 @@
   el("none").onclick = () => { if (!running) { selected.clear(); syncRows(); } };
   runBtn.onclick = () => (running ? requestCancel() : onRun());
   el("historyBtn").onclick = openHistory;
+  el("guidedBtn").onclick = cases.guided;
+  el("recordBtn").onclick = cases.record;
+  el("timelineBtn").onclick = cases.timeline;
+  el("baselineBtn").onclick = cases.baseline;
+  el("bundleBtn").onclick = cases.bundle;
   el("openBtn").onclick = () => fileInput.click();
   fileInput.onchange = onFilePicked;
   el("toSelf").onclick = () => setMode("self");
@@ -1478,6 +1499,7 @@
   }
 
   function syncRows() {
+    document.querySelectorAll(".case-toolbar button").forEach((b)=>{b.disabled=running||fixBusy;});
     modulesEl.querySelectorAll(".mod").forEach((row) => {
       const on = selected.has(row.dataset.id);
       row.classList.toggle("on", on);
@@ -1521,10 +1543,12 @@
     syncRows();
   }
 
-  async function startRun(ids) {
+  async function startRun(ids, runbook, append) {
     // A destination validation or confirmation may have yielded meanwhile.
     if (running || fixBusy) return;
-    const total = ids.length;
+    const baseReport = append ? currentReport().report : null;
+    if (baseReport && baseReport.host.hostname.toLowerCase() !== host.hostname.toLowerCase()) { toast("Local timeline evidence can only be appended to this PC's report."); return; }
+    let total = ids.length;
     viewing = null;
     running = true;
     cancelRequested = false;
@@ -1568,9 +1592,12 @@
         remoteSafe,
         target: destination.trim() || null,
         ticket: ticketValue(),
-        onStart: ({ id, title, index, total: n }) => {
+        runbook,
+        baseReport,
+        onStart: ({ id, title, index, total: n, reason }) => {
+          total = n;
           setProgress(index / Math.max(n, 1));
-          if (!cancelRequested) statusText.textContent = `Running · ${index + 1}/${n}`;
+          if (!cancelRequested) statusText.textContent = `Running · ${index + 1}/${n}${reason ? " · " + reason : ""}`;
           runK.textContent = `[${pad2(index + 1)}/${pad2(n)}]`;
           startCard(id, title);
         },
@@ -1588,6 +1615,7 @@
         if (outcome.save_error) toast("Couldn't save this run to history: " + outcome.save_error);
       }
     } catch (e) {
+      if (append && baseReport) live = { report: baseReport, results: baseReport.results, diff: null };
       toast("The run stopped: " + errText(e));
     } finally {
       clearInterval(timer);
@@ -1606,6 +1634,7 @@
       const first = resultsEl.querySelector(".card");
       const banners = topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely);
       banners.forEach((b) => resultsEl.insertBefore(b, first));
+      cases.decorate(live.report,resultsEl);
       if (live.diff) applyBadges();
       // A restart or preview notice needs reading before the cards, so bring it into view.
       if (banners.some((b) => b.matches(".banner.restart, .banner.preview"))) resultsEl.scrollTo({ top: 0, behavior: "smooth" });
@@ -1613,6 +1642,22 @@
       exportBtn.disabled = live.results.length === 0;
       setProgress(1);
       setTimeout(() => setProgress(0), 600);
+      if (append) renderLive();
+    }
+  }
+
+  async function recordCase(config,target,onSample) {
+    if(running||fixBusy)throw "An operation is already running.";
+    const base = currentReport().report;
+    if(base.results.length && base.host.hostname.toLowerCase() !== host.hostname.toLowerCase())throw "Return to this PC's live report before recording local measurements.";
+    running=true;cancelRequested=false;el("toSelf").disabled=true;syncRows();
+    runBtn.classList.add("running");runIcon.innerHTML=I.stop;runLabel.textContent="STOP RECORDING";setPhase("running");statusText.textContent="Recording intermittent issue…";
+    try {
+      const outcome=await api.recordProblem(config,target,ticketValue(),(sample)=>{statusText.textContent=`Recording · CPU ${sample.cpu_pct.toFixed(1)}% · RAM ${sample.memory_pct.toFixed(1)}%`;onSample(sample);},base.results.length?base:null);
+      live={report:outcome.report,results:outcome.report.results,diff:null};viewing=null;
+      if(outcome.save_error)toast("Couldn't save recording: "+outcome.save_error);
+    } finally {
+      running=false;cancelRequested=false;el("toSelf").disabled=false;runBtn.classList.remove("running");runIcon.innerHTML=I.play;syncRows();renderLive();
     }
   }
 
@@ -1813,6 +1858,7 @@
       resultsEl.appendChild(buildCard(r, { live: true }));
       lastSev.set(r.module_id, statusOf(r));
     });
+    cases.decorate(live.report,resultsEl);
     modulesEl.querySelectorAll(".mod").forEach((row) => {
       if (lastSev.has(row.dataset.id)) row.dataset.sev = lastSev.get(row.dataset.id);
     });
@@ -2225,6 +2271,7 @@
     resultsEl.appendChild(box);
     topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false, report.likely).forEach((b) => resultsEl.appendChild(b));
     report.results.forEach((r) => resultsEl.appendChild(buildCard(r, { live: false })));
+    cases.decorate(report,resultsEl);
     if (diff) applyBadges();
     const worst = worstOf(report.results);
     statusEl.className = "status";
@@ -2275,7 +2322,7 @@
         <div class="hist-row">
           <input class="pick" type="checkbox" data-pick="${i}" aria-label="Tick to compare">
           <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
-            <span class="when">${esc(fmtLocal(m.generated))}</span>
+            <span class="when">${esc(fmtLocal(m.evidence_updated || m.generated))}${m.evidence_updated ? " · case updated" : ""}</span>
             <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
             <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.cancelled ? " · cancelled" : ""}</span>
           </button>
@@ -3223,12 +3270,26 @@
             remoteSafe: !!h.remoteSafe,
             target: h.target || null,
             ticket: h.ticket || null,
+            runbook: h.runbook || null,
+            baseReport: h.baseReport || null,
           });
         } finally {
           offs.forEach((off) => off());
         }
       },
       cancel: () => invoke("cancel_run"),
+      listRunbooks: () => invoke("list_runbooks"),
+      runbookPlan: (id) => invoke("runbook_plan",{id}),
+      recordProblem: async (config,target,ticket,onSample,baseReport) => {
+        const off = await listen("recording-sample",(e)=>onSample(e.payload));
+        try { return await invoke("record_problem",{config,target:target||null,ticket:ticket||null,baseReport:baseReport||null}); } finally { off(); }
+      },
+      markRecording: (label) => invoke("mark_recording",{label}),
+      compareBaseline: (baseline,current) => invoke("compare_baseline",{baseline,current}),
+      timelineNear: (report,problemAt,windowSeconds) => invoke("timeline_near",{report,problemAt,windowSeconds}),
+      previewCaseBundle: (report,options) => invoke("preview_case_bundle",{report,options}),
+      exportCaseBundle: (report,options) => invoke("export_case_bundle",{report,options}),
+      openCasesFolder: () => invoke("open_cases_folder"),
       recheck: async (id, o) => {
         const outcome = await invoke("run_modules", {
           selected: [id],
@@ -3641,7 +3702,7 @@
       }),
       // The preview has no release to compare with; ?update=1 shows the tag.
       checkUpdate: async () => (/[?&]update=1\b/.test(location.search)
-        ? { current: VERSION.slice(1), latest: "0.7.2", url: "https://github.com/jp101216/ITriage/releases/tag/v0.7.2", newer: true }
+        ? { current: VERSION.slice(1), latest: "0.8.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.8.1", newer: true }
         : null),
       openLink: async (url) => toast("Preview: this opens " + url),
       openHistoryFolder: async () => toast("Preview: this opens " + HIST_DIR.replace(/\\$/, "")),

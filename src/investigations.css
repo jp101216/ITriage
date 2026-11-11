@@ -1,0 +1,160 @@
+/* Case tools follow the active console palette. */
+.case-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-2);
+  background: var(--panel);
+}
+.case-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 14px 0;
+}
+.case-fields label {
+  flex: 1 1 155px;
+  min-width: 0;
+}
+.modal label:has(> textarea),
+.case-fields label,
+.case-check {
+  display: block;
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.case-fields input,
+.case-fields select,
+#caseBaselinePick,
+#caseInspect,
+.case-marker-pick,
+#caseTerms,
+#caseBundleText {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  padding: 8px;
+  margin-top: 6px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-radius: 3px;
+  font: inherit;
+}
+#caseBundleText {
+  font-family: monospace;
+  font-size: 11px;
+  white-space: pre;
+}
+.case-check {
+  margin: 12px 0;
+}
+.case-check input {
+  margin-right: 8px;
+  accent-color: var(--accent);
+}
+.case-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0;
+}
+.case-runbooks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 18px 0;
+}
+.case-runbook {
+  display: flex;
+  flex-direction: column;
+  align-items: start;
+  text-align: left;
+  gap: 8px;
+  padding: 14px;
+  white-space: normal;
+}
+.case-runbook strong {
+  font-size: 13px;
+  color: var(--title);
+}
+.case-runbook span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.case-scroll {
+  max-height: 330px;
+  overflow: auto;
+  margin: 12px 0;
+}
+.case-scroll td {
+  max-width: 360px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.case-chart {
+  display: block;
+  width: 100%;
+  max-height: 230px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+}
+.case-chart text {
+  fill: currentColor;
+  font: 11px sans-serif;
+}
+.case-legend {
+  font-size: 11px;
+  color: var(--muted);
+}
+.case-note {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--line-2);
+  background: var(--panel);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.case-note strong {
+  color: var(--title);
+  font-size: 13px;
+}
+.case-note p {
+  margin: 6px 0;
+}
+.case-note summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+#caseBundleStatus {
+  overflow-wrap: anywhere;
+}
+#caseBundleStatus button {
+  display: block;
+  margin-top: 10px;
+}
+.modal.wide {
+  max-width: min(860px, 94vw);
+}
+@media (max-width: 600px) {
+  .case-runbooks {
+    grid-template-columns: 1fr;
+  }
+  .case-fields {
+    display: block;
+  }
+  .case-fields label {
+    margin: 12px 0;
+  }
+  .case-toolbar {
+    padding: 6px;
+  }
+}

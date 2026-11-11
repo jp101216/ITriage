@@ -310,6 +310,34 @@ When a change needs a restart to finish (a stack reset, Windows updates,
 DISM), a banner names the step and offers **Restart in 60 s** (the signed-in
 user gets a save-your-work message) and **Cancel restart**.
 
+## Advanced troubleshooting cases
+
+The technician view has five investigation controls beside the report:
+**Troubleshoot**, **Record issue**, **Timeline**, **Working PC**, and **Case bundle**.
+They connect eight capabilities:
+
+| Capability | How to use it |
+|---|---|
+| Application connections | Select **Application connections** after configuring `[[require.application]]` URLs; see DNS, direct route/TCP, proxy context, TLS validation and expected HTTP statuses. |
+| Intermittent recordings | **Record issue** captures bounded resource/connection samples; **Problem happened now** adds a marker. Stop safely and use **Replay recording** to inspect samples near a marker. |
+| Entra / Microsoft 365 identity | **Entra & Microsoft 365 sign-in** inspects device join/authentication and diagnostic PRT/WAM/Hello state on Windows, without reading tokens. Run as the affected user without elevation for user SSO. |
+| Wi-Fi / wired authentication history | **Wi-Fi & wired authentication history** summarizes existing connection, 802.1X and certificate-related logs, preserving timestamps and reason fields. |
+| Change timeline | Collect **Recent changes timeline**, then **Timeline** to inspect changes near the reported onset; nearby activity is a possible link, not proof of causation. |
+| Working-PC baseline | Open the affected PC's report, then **Working PC** to choose a known-working report of the same platform and role. Import another PC's JSON through **Open** first. |
+| Adaptive runbooks | **Troubleshoot** offers printing, VPN, sign-in and slow-application workflows. They choose read-only follow-up checks from results and explain each phase. Repairs retain their existing confirmation. |
+| Escalation ZIP | **Case bundle** previews every included file, applies consistent pseudonyms and optional custom privacy terms, then exports a local ZIP with SHA-256 digests. Logs are opt-in. |
+
+Recordings attach to the displayed report of this PC and save a new history
+entry. A report from another PC cannot be given local recording measurements.
+Baseline comparisons attach to the displayed report for export; saved originals
+remain available in History. Collecting fresh timeline/authentication history
+appends it to the same case, preserving its recording and earlier findings.
+Case exports contain existing report evidence, not
+new collections or arbitrary file attachments.
+
+See [the investigation guide](docs/investigations.md) for profile examples,
+CLI equivalents, collection limits, privacy review and platform coverage.
+
 ## Site profiles
 
 A profile is a TOML file. ITriage uses the first one it finds:
@@ -911,7 +939,9 @@ Digital Signatures**, or with
   `8.8.8.8:53` and the public IP from `ifconfig.me`, falling back to
   `api.ipify.org`, all switchable in the profile), ICMP echoes to the gateway
   and DNS server, a destination you type, the SNTP probe, the profile's
-  endpoints, the account check's questions to a domain controller and its
+  endpoints and HTTP/HTTPS health URLs, recording probes, the optional Entra
+  device-authentication query (skipped when public probes are disabled),
+  the account check's questions to a domain controller and its
   connects to mapped drives' servers, and update checks.
 * The one request ITriage makes by itself is the update notice: once a day,
   GitHub's public releases API is asked for the latest version number. The

@@ -110,12 +110,25 @@ jobs:
           smoke cargo run -q -p itriage-core --example triage -- desk.time desk.printers desk.devices desk.wifi desk.battery site.apps site.checks
 
       - name: Upload smoke report
+        # Case evidence is checked locally in the job; only the standard
+        # synthetic-runner smoke report is retained as an artifact.
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: smoke-report-${{ runner.os }}
           path: smoke-${{ runner.os }}.json
           if-no-files-found: ignore
+
+      - name: Smoke-test guided diagnostics, recording and case integrity
+        shell: bash
+        run: |
+          smoke() { set +e; "$@"; local code=$?; set -e; case $code in 0|2) ;; *) echo "::error::exit code $code from: $*"; return 1 ;; esac; }
+          python -c 'from pathlib import Path; Path("case-smoke.toml").write_text("[network]\npublic_probes = false\n", encoding="utf-8")'
+          smoke cargo run -q -p itriage-core --example triage -- --runbook printing --no-history --out case-guided.json --quiet > /dev/null
+          ITRIAGE_PROFILE=case-smoke.toml smoke cargo run -q -p itriage-core --example triage -- --record 5 --interval-ms 1000 --no-history --out case-recording.json --quiet > /dev/null
+          cargo run -q -p itriage-core --example triage -- --bundle-preview case-recording.json --out case-preview.json > /dev/null
+          cargo run -q -p itriage-core --example triage -- --bundle case-recording.json --out case.zip
+          python scripts/check-case.py case-recording.json case-preview.json case.zip
 
   # The installers carry THIRD-PARTY-NOTICES.txt: the licenses and copyright
   # notices of every crate built into them. It's generated from Cargo.lock, and
