@@ -85,6 +85,7 @@ tcp_probe = "ehr-gateway.example.org:443"
 # packet_loss_pct = { warn = 1,   crit = 10 }
 # definitions_age_days = { warn = 3,  crit = 7 }   # days since antivirus definitions updated
 # password_expiry_days = { warn = 14, crit = 3 }   # days until the password expires; lower is worse
+# startup_seconds      = { warn = 60, crit = 120 } # power-on to a usable desktop
 
 [privacy]
 # Show REDACTED instead of the serial number in results and exports.

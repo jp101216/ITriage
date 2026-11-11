@@ -165,8 +165,10 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 |---|---|---|
 | System information | sysinfo, SMBIOS (firmware table, registry fallback), console user (WTS), pending restart from Servicing, Windows Update and pending file renames | sysinfo, `/sys/class/dmi`, `loginctl`, `reboot-required` / `needs-restarting` |
 | Disk space & latency | free space per volume (warns at 15% free); latency and queue length from the `PhysicalDisk` performance counters | same; latency from `/proc/diskstats` |
+| What's using the space | the biggest places on the system drive, by adding up folders: each profile and the folders inside it (`AppData` one level further in), `Windows.old`, the Recycle Bin, `Windows\Temp`, update downloads, memory dumps, `ProgramData`, `Program Files`, and the page and hibernation files, each with what can be done about it. It names folders, never files; skips links, other volumes and cloud files that aren't downloaded; and stops after 25 s, saying what it didn't reach | each home folder and the folders inside it, `/var/log`, `/var/cache`, `/tmp`, crash dumps, Docker, snap and flatpak data, `/opt`, `/usr` and swap files; sizes are blocks on disk |
 | Memory usage | RAM and page file (warns at 80% used) | RAM and swap |
 | Drive health & reliability | each drive's health, and (as administrator) wear, temperature and uncorrected errors and SMART's own failure prediction; then 30 days of the System and Application logs: blue screens with their stop codes, unexpected shutdowns, disk errors, and the apps that crash or hang most | drives from `/sys/block`; health and NVMe wear from `smartctl` as root; disk errors from the kernel journal; crashes from `coredumpctl` |
+| Startup & sign-in speed | each start as Windows timed it (the Diagnostics-Performance log): the last one's time to the desktop, against 60 s / 120 s and against this PC's own usual; what Windows recorded as slowing a start (apps, drivers, services), with how often and by how much; the startup apps, and which are switched off | `systemd-analyze` (time to sign-in, the slowest units) and the autostart folders |
 | Top processes | overall CPU load (warns at 75%), busiest processes, biggest memory users | same |
 | Services | **native SCM**: Automatic services not running, exit codes decoded | `systemctl`: failed units and `is-system-running` |
 | Network connectivity | IP Helper: adapters, route in use, gateway, DNS servers (each asked directly); a timed lookup, an outbound TCP probe, the public IP | `ip -j` (or `/proc/net/route`), `resolvectl` / `resolv.conf`, `curl` for the public IP |
@@ -270,6 +272,10 @@ one, no network before slow DNS). A preview or a module that couldn't run
 proves nothing and is ignored. After a one-click fix re-checks a module, the
 lines are worked out again.
 
+A full disk cites what **What's using the space** flagged as clearable (or
+its biggest folder), and says to run that check when it hasn't been. A slow
+start names what Windows recorded as holding it up.
+
 ### Fewer false positives in the Services check
 
 A plain `StartMode = Auto and State != Running` query flags dozens of healthy
@@ -319,12 +325,12 @@ They connect eight capabilities:
 | Capability | How to use it |
 |---|---|
 | Application connections | Select **Application connections** after configuring `[[require.application]]` URLs; see DNS, direct route/TCP, proxy context, TLS validation and expected HTTP statuses. |
-| Intermittent recordings | **Record issue** captures bounded resource/connection samples; **Problem happened now** adds a marker. Stop safely and use **Replay recording** to inspect samples near a marker. |
+| Intermittent recordings | **Record issue** captures bounded resource/connection samples and the Wi-Fi signal and access point; **Problem happened now** (or Enter in the marker box) adds a marker. Stop safely and use **Replay recording**: a chart with the markers, moves between access points and failed connections on it, and the samples near a marker or the failures alone. |
 | Entra / Microsoft 365 identity | **Entra & Microsoft 365 sign-in** inspects device join/authentication and diagnostic PRT/WAM/Hello state on Windows, without reading tokens. Run as the affected user without elevation for user SSO. |
 | Wi-Fi / wired authentication history | **Wi-Fi & wired authentication history** summarizes existing connection, 802.1X and certificate-related logs, preserving timestamps and reason fields. |
-| Change timeline | Collect **Recent changes timeline**, then **Timeline** to inspect changes near the reported onset; nearby activity is a possible link, not proof of causation. |
-| Working-PC baseline | Open the affected PC's report, then **Working PC** to choose a known-working report of the same platform and role. Import another PC's JSON through **Open** first. |
-| Adaptive runbooks | **Troubleshoot** offers printing, VPN, sign-in and slow-application workflows. They choose read-only follow-up checks from results and explain each phase. Repairs retain their existing confirmation. |
+| Change timeline | Collect **Recent changes timeline**, then **Timeline** to inspect changes near the reported onset, or everything collected: each row in local time, placed against the onset ("12 min before"), with its kind and what happened in a sentence. A burst of one kind is one row. Nearby activity is a possible link, not proof of causation. |
+| Working-PC baseline | Open the affected PC's report, then **Working PC** to choose a known-working report of the same platform and role (only other PCs' reports are offered). Import another PC's JSON through **Open** first. Proxy, clock and domain settings are compared along with apps, services and posture. |
+| Adaptive runbooks | **Troubleshoot** offers printing, VPN, sign-in, slow-application and slow-PC workflows. They choose read-only follow-up checks from results and explain each phase (a slow PC only has its folders added up when the disk is the problem). Repairs retain their existing confirmation. |
 | Escalation ZIP | **Case bundle** previews every included file, applies consistent pseudonyms and optional custom privacy terms, then exports a local ZIP with SHA-256 digests. Logs are opt-in. |
 
 Recordings attach to the displayed report of this PC and save a new history
@@ -416,7 +422,7 @@ Every setting, with its default:
 | `[network] target_ports` | `[443, 80, 445, 3389]` | the destination test's ports when none are given |
 | `[network] tcp_timeout_ms` | `1500` | per TCP check, shared by every address a name resolves to |
 | `[network] ping_count`, `ping_timeout_ms` | `4`, `1000` | ICMP echoes per probe and the wait for each |
-| `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), each as `{ warn, crit }` |
+| `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), `startup_seconds` 60/120 (time to the desktop), each as `{ warn, crit }` |
 | `[security] require_encryption` | unset | unset: an unencrypted laptop is a warning and a desktop is only noted. `true`: critical on every PC. `false`: only noted |
 | `[security] user_may_be_admin` | `true` | `false` flags a signed-in user who is an administrator of the PC |
 | `[privacy] redact_serial` | `false` | show REDACTED for the serial number (also `--redact-serial`) |
@@ -625,6 +631,10 @@ The technician console is a HUD-style diagnostic console (red by default; see
   REMOTE-SAFE tags when those modes are on, an **UPDATE** tag when a newer
   release is out (it opens the release page; nothing is downloaded), and a
   switch to the self-service view.
+* A **filter** beside All checks and Clear: type part of a check's name, what
+  it looks at, its group or its short code and the list narrows to match
+  (`/` jumps to it, Esc clears it). Ticks aren't touched: a ticked check
+  stays ticked while it is out of sight.
 * **Presets** above the module list, on one line that scrolls sideways when
   the rail is narrower than they are, and the **PREVIEW** and **REMOTE-SAFE**
   switches and the **ticket** field beside the run button (which reads "Run
@@ -644,7 +654,11 @@ The technician console is a HUD-style diagnostic console (red by default; see
   Cancel restart), a preview, the likely cause, and the comparison with the
   last run; the run's summary line says "restart needed" or "preview" too.
 * Findings carry **fix buttons**, **KB links**, **NEW / WORSE / BETTER / STILL**
-  badges and measurement changes (`+26 ms`) after a compare.
+  badges and measurement changes (`+26 ms`) after a compare. A history check
+  (the change timeline, the network authentication history) shows its newest
+  twelve event rows and folds the rest.
+* **Dialogs** open at their top, however tall; a wide table inside one scrolls
+  sideways in its own box.
 
 The self-service view is deliberately quieter: teal, no scanlines, big type,
 plain words, whatever the console's theme. Type: Rajdhani (display), Chakra
@@ -980,11 +994,12 @@ Digital Signatures**, or with
 
 ## Verification status
 
-The v0.7.1 fixes passed 199 Linux core tests, 197 Windows core tests and six
-browser regression tests, along with workspace Clippy, smoke checks and installer
+v0.9.0 passed 252 Linux core tests, 249 Windows core tests and 19 browser
+regression tests, along with workspace Clippy, smoke checks and installer
 builds on both platforms. The browser tests use simulated checks and repairs.
-The earlier manual checks below were performed through v0.7.0; hardware and
-domain validation remain as noted.
+The rows marked 0.9.0 below are what was run for this release; the earlier
+manual checks were performed through v0.7.0, and hardware and domain
+validation remain as noted.
 
 | What | How | Result |
 |---|---|---|
@@ -999,6 +1014,10 @@ domain validation remain as noted.
 | Windows, CI | `windows-latest` (Windows Server 2025), elevated, workgroup: 194 unit tests, clippy, every read-only module (SMBIOS, PDH, IP Helper, ICMP, WinHTTP, the signed-in user's proxy, WUA, winget), the triage, lockout and health presets, a ticketed run, `--trends`, and previews of the Tune-up and update modules (which run the PowerShell adapter queries read-only). New in 0.7.0 and run for real there: Security posture (Defender, firewall, Secure Boot, administrators), Drive health & reliability (drives, counters, 30 days of events), Sign-in & account lockouts on a local account (NetAPI account and policy reads, Credential Manager and session listings, the Security log query), the tune-up's settings read, and a script result with accents, another script and an emoji sent through the pipe. Also: the trust check against real files, a folder locked to administrators and read back, Windows' tools found by full path, and every embedded PowerShell script parsed; installers built | passing |
 | New in 0.7.0, interface | the browser preview driven end to end (a ticketed run, the likely-cause banner, the three new cards, a fix and the re-worked likely cause, exports, History, Trends by pointer and keyboard with its table, both new presets, the update tag, self-service) and the commands it sends checked against a recording stand-in for the engine; all nine themes at six window sizes with no console errors and no sideways scroll; the default window in the default theme measures as it did in 0.6 | working |
 | New in 0.7.0, desktop app on Linux | the built app clicked through under a virtual display: a ticketed run of 20 modules against the real engine (the ticket in the saved file's name and the audit log), the likely cause, History, Trends from the real index, and the update check (it asked GitHub, was told v0.6.0, and showed nothing; with a newer version recorded it showed the tag) | working |
+| New in 0.9.0, Windows CI | `windows-latest` (Windows Server 2025), elevated, workgroup. Run for real: What's using the space (it measured the runner's profile, page file and `ProgramData`, stopped at its time limit and said what it hadn't reached); Startup & sign-in speed (it listed the startup apps, and reported that the edition keeps no start times); the reworked change timeline (real update, service, driver and Group Policy events, as sentences); network-authentication history (no events on a wired server); the slow-PC runbook; a five-second recording, its CSV and a case bundle checked by `scripts/check-case.py`. The IPv6 application probe has a test against a local listener, which passes there (it skips itself on a machine with no IPv6 loopback) | passing |
+| New in 0.9.0, Linux | the same from the command line, and the desktop app clicked through under a virtual display against the real engine: the filter, the two new checks and the timeline run from it, the Timeline dialog, a recording with a marker typed and entered, and its Replay | working |
+| New in 0.9.0, interface | 19 browser tests against simulated checks; the checks filter measured in all nine themes at five window sizes (one line, no sideways scroll, no console errors); the dialogs screenshotted at laptop and narrow sizes | working |
+| New in 0.9.0, not yet run | **start times on a desktop edition of Windows**: a server keeps no Diagnostics-Performance log, so reading events 100 to 110 has only been tested against sample events written from Microsoft's layout. The same goes for **Windows Installer, servicing and restart rows** in the timeline (none occurred on the runner), **Wi-Fi and 802.1X events, signal and access-point moves** in a recording (no Wi-Fi in CI), a profile with **OneDrive Files On-Demand** (cloud-only files should count as nothing), and the startup-apps list for a **standard user** | ⚠ next step |
 | Account checks on a domain; the new fixes | **not yet run**: no test machine was joined to a domain, and Remove saved credentials, Sign out the session, Unlock and Revert tune-up's restore step were never run against real state. Nor was anything run as a standard user on Windows (CI is elevated) or under Constrained Language mode | ⚠ next step |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 
