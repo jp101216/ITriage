@@ -459,6 +459,10 @@ fn collect() -> (Vec<ChangeEvent>, Vec<String>) {
                 let Some(t) = v["__REALTIME_TIMESTAMP"].as_str().and_then(|s| s.parse::<u64>().ok()) else {
                     continue;
                 };
+                // The service starting and stopping isn't a change to the PC.
+                if service_lifecycle(v["MESSAGE"].as_str().unwrap_or_default()) {
+                    continue;
+                }
                 events.push(ChangeEvent {
                     at: epoch_to_rfc3339(t / 1_000_000),
                     source: "system journal".into(),
@@ -485,6 +489,17 @@ fn collect() -> (Vec<ChangeEvent>, Vec<String>) {
         });
     }
     (events, gaps)
+}
+
+/// A journal line that only says a unit (or its daemon) started or stopped.
+#[cfg_attr(windows, allow(dead_code))]
+fn service_lifecycle(message: &str) -> bool {
+    let m = message.trim();
+    m.is_empty()
+        || ["Starting ", "Started ", "Stopping ", "Stopped ", "Finished ", "Reloading ", "Reloaded "].iter().any(|p| m.starts_with(p))
+        || m.ends_with(": Deactivated successfully.")
+        || m.contains("Consumed ") && m.contains(" CPU time")
+        || matches!(m, "daemon start" | "daemon quit")
 }
 
 #[cfg(unix)]
@@ -648,6 +663,21 @@ mod tests {
         // Three of a kind aren't a burst, and different kinds never fold together.
         let few = group_bursts(vec![event("2026-11-10T12:00:02Z", "A", "x"), event("2026-11-10T12:00:01Z", "A", "y"), event("2026-11-10T12:00:00Z", "B", "z")]);
         assert_eq!(few.len(), 3);
+    }
+
+    #[test]
+    fn a_service_starting_isnt_a_change() {
+        for noise in [
+            "Starting packagekit.service - PackageKit Daemon...",
+            "Started packagekit.service - PackageKit Daemon.",
+            "daemon start",
+            "packagekit.service: Deactivated successfully.",
+            "apt-daily-upgrade.service: Consumed 12.3s CPU time.",
+            "Finished apt-daily-upgrade.service - Daily apt upgrade and clean activities.",
+        ] {
+            assert!(service_lifecycle(noise), "{noise}");
+        }
+        assert!(!service_lifecycle("uid 1000 is trying to obtain org.freedesktop.packagekit.package-install auth"));
     }
 
     #[cfg(unix)]

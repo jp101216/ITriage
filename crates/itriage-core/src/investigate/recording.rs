@@ -144,12 +144,13 @@ pub fn record(
             .push("No permitted DNS probe / upstream server was available; DNS sampling is unavailable.".into());
     }
     // CPU load and the disk and network rates are differences between two
-    // readings. Without this first one, thrown away, sample 1 would compare
-    // against a reading taken microseconds earlier: a made-up CPU figure
+    // readings, and creating the sampler takes the first. Sample 1 waits an
+    // interval (a second at most) before taking the second; taken at once,
+    // it would compare readings microseconds apart: a made-up CPU figure
     // (which could then be the recording's "peak") and rates of zero.
     let mut sampler = Sampler::new();
-    std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL.max(Duration::from_millis(250)));
-    sampler.sample();
+    let settle = Duration::from_millis(config.interval_ms.min(1000)).max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+    std::thread::sleep(settle);
     let start = Instant::now();
     let mut next = start;
     let mut wifi: Option<crate::investigate::wireless::WifiState> = None;
@@ -245,13 +246,13 @@ pub fn result(recording: &Recording) -> ModuleResult {
         Finding::info("Peak CPU", format!("{cpu:.1}%")).with_metric(cpu as f64, "%", true),
         Finding::info("Peak RAM use", format!("{memory:.1}%")).with_metric(memory as f64, "%", true),
     ];
-    if recording.target.is_some() {
+    if let Some(target) = &recording.target {
         let slowest = recording.samples.iter().filter_map(|s| s.tcp_ms).fold(0.0, f64::max);
         result.findings.push(if attempts == 0 {
             Finding::info("TCP samples", "No TCP attempts could be sampled; inspect coverage gaps")
         } else if failures > 0 {
-            Finding::warn("TCP samples", format!("{failures} of {attempts} connection attempt(s) failed"))
-                .with_detail(failure_times(recording))
+            Finding::warn("TCP samples", format!("{failures} of {attempts} connection attempt(s) to {target} failed"))
+                .with_detail(failure_times(recording, failures == attempts))
         } else {
             let slowest = if slowest < 1.0 { "under 1 ms".to_string() } else { format!("{slowest:.0} ms") };
             Finding::ok("TCP samples", format!("all {attempts} sampled connections answered · slowest {slowest}"))
@@ -281,13 +282,20 @@ pub fn result(recording: &Recording) -> ModuleResult {
 
 /// When the failed connection attempts were, for matching against the
 /// markers: the first few times, then a count.
-fn failure_times(recording: &Recording) -> String {
+fn failure_times(recording: &Recording, every_one: bool) -> String {
     let times: Vec<String> = recording
         .samples
         .iter()
         .filter(|s| s.tcp_error.is_some())
         .map(|s| crate::parse::time::epoch_to_rfc3339(s.at_ms / 1000))
         .collect();
+    // Nothing got through at all: that isn't the intermittent part, and a
+    // list of every second of the recording says less than saying so.
+    if let (true, Some(first), Some(last)) = (every_one && times.len() > 2, times.first(), times.last()) {
+        return format!(
+            "Every attempt failed, from {first} to {last} (UTC). The target was never reachable from this PC during the recording, so this isn't what comes and goes: check its name and port, and any firewall or proxy in between."
+        );
+    }
     let shown = times.iter().take(8).cloned().collect::<Vec<_>>().join(", ");
     if times.len() > 8 {
         format!("Failed at (UTC): {shown}, and {} more.", times.len() - 8)
@@ -434,8 +442,11 @@ mod tests {
     fn a_real_recording_starts_with_a_measured_sample() {
         let ctx = RunContext::new(&|_: &str| {});
         let started = Instant::now();
+        let before = now_ms();
         let recording = record(Config { seconds: 5, interval_ms: 1000 }, None, &ctx, &Mutex::new(Vec::new()), |_| {}).unwrap();
         assert!(started.elapsed() < Duration::from_secs(9));
+        // Its counters had a second to move before it was taken.
+        assert!(recording.samples[0].at_ms - before >= 900, "the first sample covers an interval");
         assert!((4..=6).contains(&recording.samples.len()), "{} samples", recording.samples.len());
         // The first sample covers a real stretch of time, like the others.
         let first = &recording.samples[0];
@@ -462,8 +473,18 @@ mod tests {
         let r = result(&recording);
         let get = |label: &str| r.findings.iter().find(|f| f.label == label).unwrap();
         assert_eq!(get("Wi-Fi during the recording").value, "signal 41–72% · moved between access points 2 times");
-        assert_eq!(get("TCP samples").value, "1 of 6 connection attempt(s) failed");
-        assert!(get("TCP samples").detail.as_deref().unwrap().contains("2026-11-10T"));
+        assert_eq!(get("TCP samples").value, "1 of 6 connection attempt(s) to appserver:443 failed");
+        assert!(get("TCP samples").detail.as_deref().unwrap().starts_with("Failed at (UTC): 2026-11-10T"));
+        // A target that never answered isn't the intermittent part.
+        let mut dead = recording.clone();
+        for s in dead.samples.iter_mut() {
+            s.tcp_ms = None;
+            s.tcp_error = Some("refused".into());
+        }
+        let never = result(&dead);
+        let row = never.findings.iter().find(|f| f.label == "TCP samples").unwrap();
+        assert_eq!(row.value, "6 of 6 connection attempt(s) to appserver:443 failed");
+        assert!(row.detail.as_deref().unwrap().starts_with("Every attempt failed, from 2026-11-10T"), "{:?}", row.detail);
         let csv = csv(&recording);
         let lines: Vec<&str> = csv.lines().collect();
         assert_eq!(lines.len(), 7);

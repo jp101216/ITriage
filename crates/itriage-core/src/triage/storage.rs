@@ -140,7 +140,8 @@ impl Kind {
             Kind::UpdateDownloads => ("Update files already downloaded. Clear temp files (in the Tune-up checks) removes the ones that have been installed.", 5 * GB),
             Kind::Dumps => ("Memory dumps from crashes. Keep the newest if the crash is still being looked into; the rest can go.", 2 * GB),
             Kind::Hibernation => ("Holds memory while the PC hibernates, and is as big as the memory in use. Turning hibernation off (powercfg /h off) removes it, and Fast Startup with it.", u64::MAX),
-            Kind::PageFile => ("Virtual memory. Windows sizes it; it shrinks after a restart when memory pressure has passed.", u64::MAX),
+            Kind::PageFile if cfg!(windows) => ("Virtual memory. Windows sizes it; it shrinks after a restart when memory pressure has passed.", u64::MAX),
+            Kind::PageFile => ("Swap space: memory kept on disk. Its size is set when it is created.", u64::MAX),
             Kind::Downloads => ("Installers and files saved from the web: the first place to look with the person whose PC it is.", 20 * GB),
             Kind::Logs | Kind::Cache | Kind::Profile | Kind::Other => return None,
         })
@@ -439,7 +440,11 @@ fn output(root: &Path, mut places: Vec<Place>, skipped: &[String], used: u64, to
     let closed: Vec<String> = places.iter().filter(|p| p.bytes == 0 && p.unread > 0).map(|p| p.path.display().to_string()).collect();
     if !closed.is_empty() {
         findings.push(
-            Finding::info("Couldn't look inside", closed.join(", ")).with_detail("Run ITriage as administrator to measure other people's profiles and the system folders."),
+            Finding::info("Couldn't look inside", closed.join(", ")).with_detail(if cfg!(windows) {
+                "Run ITriage as administrator to measure other people's profiles and the system folders."
+            } else {
+                "Run ITriage as root (sudo) to measure other people's home folders and the system folders."
+            }),
         );
     }
     if !skipped.is_empty() {

@@ -30,6 +30,11 @@ pub const RUNBOOKS: &[Runbook] = &[
         title: "An application is slow",
         symptom: "Separate resource pressure from application connectivity and recent changes.",
     },
+    Runbook {
+        id: "slow-pc",
+        title: "The whole PC is slow",
+        symptom: "Check load, memory, disk space and startup, then the drive's health and what changed.",
+    },
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +72,7 @@ fn next_for(id: &str, results: &[ModuleResult], has_target: bool) -> Result<Deci
         "sign-in" if cfg!(windows) => &["desk.identity", "desk.account", "desk.time"],
         "sign-in" => &["desk.account", "desk.time", "net.connectivity"],
         "slow-app" => &["proc.top", "system.memory", "system.disk", "net.applications"],
+        "slow-pc" => &["proc.top", "system.memory", "system.disk", "system.startup"],
         _ => return Err(format!("Unknown troubleshooting runbook `{id}`.")),
     };
     let missing = |ids: &[&str]| {
@@ -97,6 +103,9 @@ fn next_for(id: &str, results: &[ModuleResult], has_target: bool) -> Result<Deci
             (&["desk.domain", "net.connectivity", "net.proxy", "site.checks"], "Account, SSO or clock evidence needs attention. Check domain and connection dependencies, preserving unavailable checks as gaps.")
         } else { (&["net.proxy", "site.checks"], "Check the site's connectivity dependencies before escalating the account problem.") },
         "slow-app" => (&["site.apps", "site.checks", "system.reliability", "system.changes"], "Compare the application's required version and service path with resource pressure, failures and recent change evidence."),
+        // Adding up folders takes a while: only when the disk is the problem.
+        "slow-pc" if bad("system.disk") => (&["system.storage", "system.reliability", "system.changes"], "The disk needs attention: see what is using the space, whether the drive is healthy, and what changed recently."),
+        "slow-pc" => (&["system.reliability", "system.changes"], "Free space isn't the problem. Check the drive's health and crash history, and what changed recently."),
         _ => (&[], "The initial checks did not establish a fault. Capture the intermittent issue or export the evidence."),
     };
     Ok(Decision {
@@ -183,6 +192,30 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn a_slow_pc_only_has_its_folders_added_up_when_the_disk_is_the_problem() {
+        let run_with = |disk_is_full: bool| {
+            run("slow-pc", |m, _, _, _| {
+                let mut r = ModuleResult::failed(&m.info(), "");
+                r.error = None;
+                r.findings = vec![if disk_is_full && m.info().id == "system.disk" {
+                    crate::Finding::crit("C:\\", "2% free")
+                } else {
+                    crate::Finding::ok("Fixture", "healthy")
+                }];
+                Some(r)
+            })
+            .unwrap()
+        };
+        let ids = |results: &[ModuleResult]| results.iter().map(|r| r.module_id.clone()).collect::<Vec<_>>();
+        let (full, trace) = run_with(true);
+        assert_eq!(ids(&full), ["proc.top", "system.memory", "system.disk", "system.startup", "system.storage", "system.reliability", "system.changes"]);
+        assert!(trace.finished && trace.steps[1].reason.contains("what is using the space"));
+        let (fine, trace) = run_with(false);
+        assert!(!ids(&fine).contains(&"system.storage".to_string()));
+        assert!(trace.finished && trace.steps.len() == 2);
+    }
+
     #[test]
     fn adaptive_vpn_plan_is_read_only_bounded_and_keeps_its_reasoning() {
         let (results, trace) = run("vpn", |m, _, _, _| {

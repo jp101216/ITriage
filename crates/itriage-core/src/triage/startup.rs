@@ -154,6 +154,18 @@ pub fn analyze_time(text: &str) -> Option<(f64, f64)> {
     Some((total, if system > 0.0 { system } else { total }))
 }
 
+/// The Linux start in words. The firmware and boot loader are only
+/// mentioned when the machine reported them (a virtual machine doesn't).
+#[cfg_attr(windows, allow(dead_code))]
+pub fn linux_start(total: f64, system: f64) -> String {
+    let to_sign_in = format!("{} to sign-in", seconds((system * 1000.0) as u64));
+    if total - system >= 0.5 {
+        format!("{to_sign_in} · {} with the firmware and boot loader", seconds((total * 1000.0) as u64))
+    } else {
+        to_sign_in
+    }
+}
+
 /// `systemd-analyze blame`: the slowest units first, in seconds.
 #[cfg_attr(windows, allow(dead_code))]
 pub fn blame(text: &str) -> Vec<(f64, String)> {
@@ -371,6 +383,21 @@ pub fn apps_from(facts: &AppFacts) -> Vec<App> {
         .collect()
 }
 
+/// The row for a start-time log that couldn't be read. Windows Server has no
+/// such log at all, which is a fact about the edition and not a fault.
+pub fn unread(error: &str) -> Finding {
+    let lower = error.to_ascii_lowercase();
+    if error.contains("0x80073A9F") || lower.contains("channel could not be found") {
+        Finding::info("Last start", "this edition of Windows doesn't time its starts")
+            .with_detail("The Diagnostics-Performance log isn't on this PC. Desktop editions of Windows keep one; Windows Server doesn't.")
+    } else if lower.contains("not been booted with systemd") {
+        Finding::info("Last start", "this system isn't started by systemd, which is what times a start")
+            .with_detail("Containers and some minimal installations start another way and keep no start times.")
+    } else {
+        Finding::info("Last start", format!("start times couldn't be read: {error}"))
+    }
+}
+
 #[cfg(windows)]
 mod imp {
     use super::*;
@@ -393,7 +420,7 @@ mod imp {
                 }
                 findings.extend(boot_findings(&boots, &ctx.profile().thresholds.startup_seconds, now));
             }
-            Err(e) => findings.push(Finding::info("Last start", format!("start times couldn't be read: {e}"))),
+            Err(e) => findings.push(unread(&e)),
         }
         if let Ok(events) = crate::win::eventlog::query_xml(LOG, DELAYS, 200) {
             let delays: Vec<Delay> = events.iter().filter_map(|x| delay_from_event(x)).collect();
@@ -468,11 +495,7 @@ mod imp {
         if command_exists("systemd-analyze") {
             match analyze(&["time"]).map(|text| analyze_time(&text).ok_or(text)) {
                 Ok(Ok((total, system))) => {
-                    let mut finding = Finding::new(
-                        "Last start",
-                        format!("{} to sign-in · {} with the firmware and boot loader", seconds((system * 1000.0) as u64), seconds((total * 1000.0) as u64)),
-                        ctx.profile().thresholds.startup_seconds.high(system),
-                    )
+                    let mut finding = Finding::new("Last start", linux_start(total, system), ctx.profile().thresholds.startup_seconds.high(system))
                     .with_metric((system * 10.0).round() / 10.0, "s", true);
                     if let Ok(text) = analyze(&["blame"]) {
                         let slowest: Vec<String> = blame(&text).into_iter().take(5).filter(|(s, _)| *s >= 1.0).map(|(s, unit)| format!("{unit} {}", seconds((s * 1000.0) as u64))).collect();
@@ -483,7 +506,7 @@ mod imp {
                     findings.push(finding);
                 }
                 Ok(Err(text)) => findings.push(Finding::info("Last start", text.lines().next().unwrap_or("not finished starting").trim().to_string())),
-                Err(why) => findings.push(Finding::info("Last start", format!("no start time: {why}"))),
+                Err(why) => findings.push(unread(&why)),
             }
         } else {
             findings.push(Finding::info("Last start", "no start time: systemd-analyze isn't installed"));
@@ -600,6 +623,8 @@ mod tests {
         // A virtual machine has no firmware stage to report.
         assert_eq!(analyze_time("Startup finished in 1.5s (kernel) + 1min 4.5s (userspace) = 1min 6s\n"), Some((66.0, 66.0)));
         assert_eq!(analyze_time("Bootup is not yet finished (org.freedesktop.systemd1.Manager.FinishTimestampMonotonic=0).\n"), None);
+        assert_eq!(linux_start(26.418, 15.413), "15.4 s to sign-in · 26.4 s with the firmware and boot loader");
+        assert_eq!(linux_start(101.0, 101.0), "101 s to sign-in", "nothing to add when the machine reports no firmware stage");
         let slowest = blame("1min 2.345s NetworkManager-wait-online.service\n     12.101s snapd.seeded.service\n       850ms dev-sda1.device\n");
         assert_eq!(slowest[0], (62.345, "NetworkManager-wait-online.service".to_string()));
         assert_eq!(slowest.len(), 3);
@@ -621,7 +646,18 @@ mod tests {
         assert_eq!(summary(&rows), "24.0 s to the desktop · 7 startup apps");
         assert_eq!(summary(&[Finding::ok("Startup apps", "none set up")]), "No start times recorded");
         assert_eq!(summary(&rows[1..]), "7 startup apps · no start times recorded");
-        let unread = vec![Finding::info("Last start", "start times couldn't be read: access is denied"), rows[1].clone()];
-        assert_eq!(summary(&unread), "7 startup apps · no start times recorded");
+        let denied = vec![unread("can't read the log: Access is denied. (0x80070005)"), rows[1].clone()];
+        assert_eq!(summary(&denied), "7 startup apps · no start times recorded");
+        assert!(denied[0].value.contains("Access is denied"));
+    }
+
+    #[test]
+    fn a_server_without_the_log_is_told_so_plainly() {
+        let row = unread("can't read the Microsoft-Windows-Diagnostics-Performance/Operational log: The specified channel could not be found. (0x80073A9F)");
+        assert_eq!(row.value, "this edition of Windows doesn't time its starts");
+        assert!(row.detail.as_deref().unwrap_or_default().contains("Windows Server"));
+        assert_eq!(row.severity, crate::model::Severity::Info);
+        let container = unread("System has not been booted with systemd as init system (PID 1). Can't operate.");
+        assert!(container.value.starts_with("this system isn't started by systemd"));
     }
 }

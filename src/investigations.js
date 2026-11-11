@@ -627,7 +627,13 @@
         id: "slow-app",
         title: "An application is slow",
         symptom:
-          "Separate resources, application connectivity and recent changes.",
+          "Separate resource pressure from application connectivity and recent changes.",
+      },
+      {
+        id: "slow-pc",
+        title: "The whole PC is slow",
+        symptom:
+          "Check load, memory, disk space and startup, then the drive's health and what changed.",
       },
     ];
     const initial = {
@@ -640,6 +646,7 @@
         "system.disk",
         "net.applications",
       ],
+      "slow-pc": ["proc.top", "system.memory", "system.disk", "system.startup"],
     };
     const follow = {
       printing: ["site.checks", "net.connectivity", "site.apps"],
@@ -656,6 +663,7 @@
         "system.reliability",
         "system.changes",
       ],
+      "slow-pc": ["system.storage", "system.reliability", "system.changes"],
     };
     const keep = (r) => {
       const path = "sample-case-" + Date.now() + "-" + meta.length + ".json";
@@ -902,7 +910,7 @@
                 ["warning", "critical"].includes(f.severity),
               ),
           );
-          if (["vpn", "slow-app"].includes(h.runbook) || bad) {
+          if (["vpn", "slow-app", "slow-pc"].includes(h.runbook) || bad) {
             const more = follow[h.runbook].filter(
               (id) => !results.some((r) => r.module_id === id),
             );
