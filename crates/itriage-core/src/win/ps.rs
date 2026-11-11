@@ -84,6 +84,7 @@ pub(crate) fn all_scripts() -> Vec<(&'static str, &'static str)> {
         ("BITLOCKER_SUSPEND", crate::bitlocker::SUSPEND),
         ("POSTURE", crate::security::posture::POSTURE),
         ("RELIABILITY", crate::triage::reliability::RELIABILITY),
+        ("STARTUP_APPS", crate::triage::startup::STARTUP_APPS),
         ("STORED_PASSWORD_TASKS", crate::desk::account::STORED_PASSWORD_TASKS),
         ("TUNING_READ", crate::fixes::undo::TUNING_READ),
         ("ADAPTERS_RESTORE", crate::fixes::undo::ADAPTERS_RESTORE),

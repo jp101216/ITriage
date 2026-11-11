@@ -60,6 +60,8 @@ pub mod triage {
     pub mod processes;
     pub mod reliability;
     pub mod services;
+    pub mod startup;
+    pub mod storage;
     pub mod system;
 }
 

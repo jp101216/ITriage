@@ -239,8 +239,10 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         // --- System ---
         Box::new(crate::triage::system::SystemInfo),
         Box::new(crate::triage::disk::DiskUsage),
+        Box::new(crate::triage::storage::StorageBreakdown),
         Box::new(crate::triage::memory::MemoryUsage),
         Box::new(crate::triage::reliability::Reliability),
+        Box::new(crate::triage::startup::Startup),
         Box::new(crate::investigate::timeline::ChangeTimeline),
         // --- Processes & services ---
         Box::new(crate::triage::processes::TopProcesses),
@@ -359,7 +361,7 @@ pub const PRESETS: &[Preset] = &[
         title: "Health check",
         script: "",
         description: "Is this PC sound: drive health and crashes, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-        modules: &["system.info", "system.disk", "system.reliability", "sec.posture", "desk.battery", "update.scan"],
+        modules: &["system.info", "system.disk", "system.reliability", "system.startup", "sec.posture", "desk.battery", "update.scan"],
     },
 ];
 

@@ -240,6 +240,8 @@ pub struct Thresholds {
     pub definitions_age_days: Band,
     /// Days until the signed-in user's password expires. Lower is worse.
     pub password_expiry_days: Band,
+    /// Seconds from power-on to a usable desktop (or to sign-in on Linux).
+    pub startup_seconds: Band,
 }
 
 impl Default for Thresholds {
@@ -257,6 +259,7 @@ impl Default for Thresholds {
             packet_loss_pct: Band::new(1.0, 10.0),
             definitions_age_days: Band::new(3.0, 7.0),
             password_expiry_days: Band::new(14.0, 3.0),
+            startup_seconds: Band::new(60.0, 120.0),
         }
     }
 }

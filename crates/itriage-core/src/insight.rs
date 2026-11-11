@@ -289,12 +289,50 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
     let full = v.problems("system.disk", |f| f.metric.as_ref().is_some_and(|m| m.unit == "% free"));
     if !full.is_empty() {
         let (_, f) = full[0];
+        // When the space check ran too, it says where the space went: what
+        // it flagged as clearable, or failing that its biggest folder.
+        let mut evidence: Vec<String> = full.iter().map(|h| cite(*h)).collect();
+        let clearable = v.problems("system.storage", |_| true);
+        let measured = v.module("system.storage").is_some();
+        let bin = if cfg!(windows) { "Recycle Bin" } else { "Trash" };
+        let next = if !clearable.is_empty() {
+            evidence.extend(clearable.iter().take(3).map(|h| cite(*h)));
+            format!("Start with what the space check flagged. Clear temp files and empty the {bin} (in the Tune-up checks), then move or remove large files.")
+        } else if measured {
+            evidence.extend(v.find("system.storage", |f| !f.label.ends_with(" in use") && !f.label.ends_with("(whole profile)")).map(cite));
+            "Nothing that can simply be cleared stands out: go through the biggest folders with the person whose PC it is.".to_string()
+        } else {
+            format!("Run What's using the space to see where it went. Clearing temp files and emptying the {bin} (in the Tune-up checks) is the quick win.")
+        };
         out.push(insight(
             if worst(&full) == Severity::Critical { 82 } else { 56 },
             worst(&full),
             format!("{} is nearly full ({}). The PC slows down, and updates and saves start failing, when it runs out of space.", f.label, head(&f.value)),
-            full.iter().map(|h| cite(*h)).collect(),
-            "Clear temp files and empty the Recycle Bin, then move or remove large files.",
+            evidence,
+            &next,
+        ));
+    }
+
+    // --- Slow to start.
+    if let Some(h) = v.problem("system.startup", "Last start") {
+        let mut evidence = vec![cite(h)];
+        let held_up = v.problems("system.startup", |f| f.label.starts_with("Slowed startup: "));
+        evidence.extend(held_up.iter().take(2).map(|h| cite(*h)));
+        evidence.extend(v.problem("system.startup", "Startup apps").map(cite));
+        let next = if let Some((_, f)) = held_up.first() {
+            format!(
+                "{} has slowed startup more than once: update it, or stop it starting with the PC. Then switch off the startup apps nobody needs.",
+                f.label.trim_start_matches("Slowed startup: ")
+            )
+        } else {
+            "Switch off the startup apps nobody needs. If it's still slow, look at the drive: a failing or nearly full one slows every start.".to_string()
+        };
+        out.push(insight(
+            if h.1.severity == Severity::Critical { 50 } else { 42 },
+            h.1.severity,
+            format!("This PC is slow to start: {}.", head(&h.1.value)),
+            evidence,
+            &next,
         ));
     }
     if let Some(h) = v.problem("system.disk", "Disk latency") {
@@ -468,6 +506,62 @@ mod tests {
         assert!(found[0].cause.starts_with("A drive is failing."));
         assert_eq!(found[1].cause, "Windows has crashed with a blue screen 3 times in the last 30 days. The most common stop code usually means the drive or its cable.");
         assert!(found[2].cause.starts_with("C:\\ is nearly full (4.1 GB free of 237 GB (98% used))"), "{}", found[2].cause);
+    }
+
+    #[test]
+    fn a_full_disk_says_where_the_space_went_when_that_was_measured() {
+        let disk = || result("system.disk", "Disk space & latency", vec![Finding::crit("C:\\", "4.1 GB free of 237 GB (98% used)").with_metric(2.0, "% free", false)]);
+        // Not measured: the advice is to measure.
+        let alone = likely_causes(&[disk()]);
+        assert!(alone[0].next.starts_with("Run What's using the space"), "{}", alone[0].next);
+        // Measured, with something that can simply be cleared.
+        let flagged = likely_causes(&[
+            disk(),
+            result(
+                "system.storage",
+                "What's using the space",
+                vec![
+                    Finding::info("C:\\ in use", "233 GB of 237 GB (98%)"),
+                    Finding::info("C:\\Users\\jparker (whole profile)", "120.0 GB"),
+                    Finding::warn("C:\\Windows.old", "24.0 GB · 10% of what's in use"),
+                ],
+            ),
+        ]);
+        assert!(flagged[0].next.starts_with("Start with what the space check flagged"));
+        assert!(flagged[0].evidence.iter().any(|e| e.contains("Windows.old: 24.0 GB")), "{:?}", flagged[0].evidence);
+        // Measured, and nothing clearable: the biggest folder, not the whole profile.
+        let nothing = likely_causes(&[
+            disk(),
+            result(
+                "system.storage",
+                "What's using the space",
+                vec![
+                    Finding::info("C:\\ in use", "233 GB of 237 GB (98%)"),
+                    Finding::info("C:\\Users\\jparker (whole profile)", "190.0 GB"),
+                    Finding::info("C:\\Users\\jparker\\Videos", "150.0 GB"),
+                ],
+            ),
+        ]);
+        assert!(nothing[0].next.starts_with("Nothing that can simply be cleared"));
+        assert!(nothing[0].evidence.last().unwrap().contains("Videos: 150.0 GB"), "{:?}", nothing[0].evidence);
+    }
+
+    #[test]
+    fn a_slow_start_names_what_held_it_up() {
+        let found = likely_causes(&[result(
+            "system.startup",
+            "Startup & sign-in speed",
+            vec![
+                Finding::warn("Last start", "94.0 s to the desktop · 2h ago · usually 41.0 s"),
+                Finding::warn("Slowed startup: Contoso Sync", "Application · 4 times in 30 days · about 21.0 s extra each time"),
+                Finding::info("Startup apps", "9 start with the PC: a, b"),
+            ],
+        )]);
+        assert_eq!(found[0].cause, "This PC is slow to start: 94.0 s to the desktop.");
+        assert!(found[0].next.starts_with("Contoso Sync has slowed startup more than once"));
+        assert_eq!(found[0].evidence.len(), 2, "an ordinary list of startup apps isn't evidence");
+        // A quick start is nothing to explain.
+        assert!(likely_causes(&[result("system.startup", "Startup & sign-in speed", vec![Finding::ok("Last start", "24.0 s to the desktop · 2h ago")])]).is_empty());
     }
 
     #[test]
