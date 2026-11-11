@@ -330,7 +330,9 @@ They connect eight capabilities:
 Recordings attach to the displayed report of this PC and save a new history
 entry. A report from another PC cannot be given local recording measurements.
 Baseline comparisons attach to the displayed report for export; saved originals
-remain available in History. Case exports contain existing report evidence, not
+remain available in History. Collecting fresh timeline/authentication history
+appends it to the same case, preserving its recording and earlier findings.
+Case exports contain existing report evidence, not
 new collections or arbitrary file attachments.
 
 See [the investigation guide](docs/investigations.md) for profile examples,

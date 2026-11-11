@@ -42,7 +42,7 @@ async function pageFor(t, options = {}) {
     const modules = [
       { id: "system.disk", title: "Disk space & latency", category: "system" },
       { id: "desk.printers", title: "Printers & print queue", category: "workstation" },
-    ].map((m) => Object.assign(m, { description: "Fixture", platforms: ["windows", "linux"], mutating: false, disruptive: false, takes_target: false, requires_admin: false }));
+    ].concat(options.timeline ? [{id:"system.changes",title:"Recent changes timeline",category:"system"},{id:"net.wifi-auth",title:"Network authentication history",category:"network"}] : []).map((m) => Object.assign(m, { description: "Fixture", platforms: ["windows", "linux"], mutating: false, disruptive: false, takes_target: false, requires_admin: false }));
     const result = (id, fixed = false) => {
       const module = modules.find((m) => m.id === id);
       const finding = id === "desk.printers" && !fixed
@@ -111,7 +111,8 @@ async function pageFor(t, options = {}) {
               emit("module-done", r);
               return r;
             });
-            const r=report(results);
+            if(options.failCaseRefresh && args.baseReport)throw "Controlled case refresh failure";
+            const r=args.baseReport ? Object.assign({},args.baseReport,{results:args.baseReport.results.filter((old)=>!results.some((n)=>n.module_id===old.module_id)).concat(results),evidence_updated:"2026-11-10T17:01:00Z"}) : report(results);
             if(args.runbook)r.runbook={id:args.runbook,steps:[{modules:args.selected,reason:"Inspect printing and storage first."}],finished:true,conclusion:"Review findings; completing checks does not mean the issue is repaired."};
             return { report:r, diff: diff(false), save_error: options.saveError || null };
           }
@@ -272,4 +273,26 @@ test("timeline uses the chosen onset and explains temporal uncertainty",async(t)
   assert.match(await page.getByRole("dialog").innerText(),/timing alone does not establish the cause/);
   await page.locator("#caseOnset").fill("2026-11-10T12:34");await page.locator("#caseWindow").selectOption("900");await page.locator("#caseFindChanges").click();
   await page.waitForFunction(()=>testState.args.some((c)=>c.command==="timeline_near"&&c.args.windowSeconds===900));
+});
+
+test("post-incident timeline collection retains a case recording and its markers",async(t)=>{
+  const page=await pageFor(t,{timeline:true});await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#recordBtn").click();await page.locator("#caseStart").click();await page.waitForFunction(()=>typeof testState.recordingDone==="function");
+  await page.locator("#caseMarker").fill("VPN dropped");await page.locator("#caseMark").click();await page.getByText(/VPN dropped/).last().waitFor();
+  await page.locator("#caseStop").click();await page.getByText(/Capture finished/).waitFor();await page.getByRole("button",{name:"Close",exact:true}).click();
+  await page.locator("#timelineBtn").click();await page.locator("#caseCollectTimeline").click();
+  await page.waitForFunction(()=>testState.args.some((c)=>c.command==="run_modules"&&c.args.baseReport));
+  await page.getByRole("button",{name:"Replay recording",exact:true}).waitFor();
+  assert.equal(await page.locator("#results .card").count(),5);
+  await page.locator("#bundleBtn").click();await page.locator("#casePreview").click();await page.waitForFunction(()=>!document.querySelector("#caseExport").disabled);
+  const call=await page.evaluate(()=>testState.args.filter((c)=>c.command==="preview_case_bundle").at(-1));
+  assert.equal(call.args.report.recording.markers[0].label,"VPN dropped");assert.ok(call.args.report.evidence_updated);
+});
+
+test("a failed case refresh preserves the report and its recording",async(t)=>{
+  const page=await pageFor(t,{timeline:true,failCaseRefresh:true});await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#recordBtn").click();await page.locator("#caseStart").click();await page.waitForFunction(()=>typeof testState.recordingDone==="function");await page.locator("#caseStop").click();await page.getByText(/Capture finished/).waitFor();await page.getByRole("button",{name:"Close",exact:true}).click();
+  await page.locator("#timelineBtn").click();await page.locator("#caseCollectTimeline").click();
+  await page.getByText(/Controlled case refresh failure/).waitFor();await page.getByRole("button",{name:"Replay recording",exact:true}).waitFor();
+  assert.equal(await page.locator("#results .card").count(),5);assert.equal(await page.locator("#run").isDisabled(),false);
 });

@@ -110,6 +110,12 @@ pub fn compare(baseline: &Report, current: &Report) -> Result<Comparison, String
         gaps.push("Site profiles differ; their required apps and thresholds may differ too.".into());
     }
     for r in [baseline, current] {
+        if let Some(updated) = &r.evidence_updated {
+            gaps.push(format!(
+                "{}: this case was updated at {updated}; its configuration observations still come from the checks collected at {}.",
+                r.host.hostname, r.generated
+            ));
+        }
         for m in r.results.iter().filter(|m| m.error.is_some() || m.preview) {
             gaps.push(format!("{}: {} was unavailable or previewed.", r.host.hostname, m.title));
         }

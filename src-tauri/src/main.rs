@@ -225,7 +225,16 @@ async fn run_modules(
     target: Option<String>,
     ticket: Option<String>,
     runbook: Option<String>,
+    base_report: Option<Report>,
 ) -> Result<RunOutcome, String> {
+    if let Some(base) = &base_report {
+        if !base.host.hostname.eq_ignore_ascii_case(&host_context().hostname) || base.host.platform != std::env::consts::OS {
+            return Err("Local timeline evidence can only be appended to this PC's report.".into());
+        }
+        if runbook.is_some() || record == Some(false) || selected.is_empty() || selected.iter().any(|id|!matches!(id.as_str(),"system.changes"|"net.wifi-auth")) {
+            return Err("Case refreshes collect only read-only change and network-authentication history.".into());
+        }
+    }
     if let Some(id) = &runbook { guided::next(id, &[])?; }
     let target = match target.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         Some(t) => Some(Target::parse(t, &app.profile.network.target_ports)?),
@@ -290,8 +299,10 @@ async fn run_modules(
 
         let cancelled = cancel.load(Ordering::SeqCst);
         audit::run_finished(&results, cancelled, ticket.as_deref());
-        let mut report = Report::new(host_context(), profile_name, results, cancelled).with_ticket(ticket.as_deref()).with_role(&profile.role);
-        report.runbook = trace;
+        let mut report = if let Some(mut base) = base_report {
+            base.append_evidence(results,cancelled); base
+        } else { Report::new(host_context(), profile_name, results, cancelled).with_ticket(ticket.as_deref()).with_role(&profile.role) };
+        if let Some(trace) = trace { report.runbook = Some(trace); }
         let (mut saved, mut save_error, mut diff) = (None, None, None);
         if record && !report.results.is_empty() {
             if !cancelled {
@@ -367,10 +378,8 @@ async fn record_problem(
                 .with_ticket(ticket.as_deref())
                 .with_role(&profile.role)
         });
-        report.results.retain(|r| r.module_id != "capture.recording");
-        report.results.push(result);
         report.recording = Some(capture);
-        report.refresh();
+        report.append_evidence(vec![result],false);
         let (saved, save_error) = match report::save(&report, profile.history.keep) {
             Ok(p) => (Some(p.display().to_string()), None),
             Err(e) => (None, Some(e)),
@@ -432,6 +441,7 @@ fn open_cases_folder() -> Result<(), String> {
 
 /// The diff against this machine's last comparable saved run.
 fn previous_diff(report: &Report) -> Option<ReportDiff> {
+    if report.evidence_updated.is_some() { return None; }
     let ids: Vec<String> = report.results.iter().map(|r| r.module_id.clone()).collect();
     report::previous(&report.host.hostname, &report.generated, &ids).map(|old| report::diff(&old, report))
 }

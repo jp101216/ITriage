@@ -720,7 +720,7 @@
 
   const mockSample = isTauri ? null : mockTelemetry();
   const api = isTauri ? realApi() : window.ITriageCases.mockBridge(mockApi(), () => host, () => mockSample());
-  const cases = window.ITriageCases.create({api,modal,toast,currentReport,startRun,recordCase,cancel:requestCancel,busy:()=>running||fixBusy,attach:(report)=>{if(viewing)viewing.report=report;else live.report=report;}});
+  const cases = window.ITriageCases.create({api,modal,toast,currentReport,startRun,collectCase:(ids)=>startRun(ids,null,true),recordCase,cancel:requestCancel,busy:()=>running||fixBusy,attach:(report)=>{if(viewing)viewing.report=report;else live.report=report;}});
 
   /* ---------------------------- themes ----------------------------- */
   // How the technician console looks: html[data-skin] picks a token set in
@@ -1543,9 +1543,11 @@
     syncRows();
   }
 
-  async function startRun(ids, runbook) {
+  async function startRun(ids, runbook, append) {
     // A destination validation or confirmation may have yielded meanwhile.
     if (running || fixBusy) return;
+    const baseReport = append ? currentReport().report : null;
+    if (baseReport && baseReport.host.hostname.toLowerCase() !== host.hostname.toLowerCase()) { toast("Local timeline evidence can only be appended to this PC's report."); return; }
     let total = ids.length;
     viewing = null;
     running = true;
@@ -1591,6 +1593,7 @@
         target: destination.trim() || null,
         ticket: ticketValue(),
         runbook,
+        baseReport,
         onStart: ({ id, title, index, total: n, reason }) => {
           total = n;
           setProgress(index / Math.max(n, 1));
@@ -1612,6 +1615,7 @@
         if (outcome.save_error) toast("Couldn't save this run to history: " + outcome.save_error);
       }
     } catch (e) {
+      if (append && baseReport) live = { report: baseReport, results: baseReport.results, diff: null };
       toast("The run stopped: " + errText(e));
     } finally {
       clearInterval(timer);
@@ -1638,6 +1642,7 @@
       exportBtn.disabled = live.results.length === 0;
       setProgress(1);
       setTimeout(() => setProgress(0), 600);
+      if (append) renderLive();
     }
   }
 
@@ -2317,7 +2322,7 @@
         <div class="hist-row">
           <input class="pick" type="checkbox" data-pick="${i}" aria-label="Tick to compare">
           <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
-            <span class="when">${esc(fmtLocal(m.generated))}</span>
+            <span class="when">${esc(fmtLocal(m.evidence_updated || m.generated))}${m.evidence_updated ? " · case updated" : ""}</span>
             <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
             <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.cancelled ? " · cancelled" : ""}</span>
           </button>
@@ -3266,6 +3271,7 @@
             target: h.target || null,
             ticket: h.ticket || null,
             runbook: h.runbook || null,
+            baseReport: h.baseReport || null,
           });
         } finally {
           offs.forEach((off) => off());

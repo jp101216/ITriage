@@ -116,6 +116,15 @@ and available package-service journal entries. Rotated logs and other package
 managers can leave gaps. dpkg's local times use the host's time zone conversion.
 
 **Timeline** combines collected changes and network-authentication events.
+**Collect change and network-authentication history** refreshes those checks in
+this PC's displayed case while retaining its recording, markers and earlier
+findings. Use it after reproducing a problem to include post-incident logs in
+the same bundle. The original case creation time remains; `evidence_updated`
+records the later collection. Local evidence cannot be appended to another
+PC's report. A failed refresh preserves the existing case.
+History orders and retains these snapshots by their latest evidence update.
+Copied performance findings in a case snapshot are not counted as new trend
+measurements or automatically chosen as a previous diagnostic run.
 Enter the onset in local time and a 15-minute, 1-hour or 24-hour window either
 side. Missing events do not rule out a change; log retention, privilege and
 collection limits apply. Installer activity is not proof of installation

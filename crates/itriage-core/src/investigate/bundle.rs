@@ -196,6 +196,9 @@ impl Redactor {
                             | "unit"
                             | "tool_version"
                             | "generated"
+                            | "evidence_updated"
+                            | "baseline_generated"
+                            | "current_generated"
                             | "started"
                             | "at"
                     )
@@ -344,7 +347,14 @@ impl Prepared {
         out
     }
     pub fn write_new(&self, path: &Path) -> Result<(), String> {
-        let mut file = std::fs::File::create_new(path).map_err(|e| format!("Can't create {}: {e}", path.display()))?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(path).map_err(|e| format!("Can't create {}: {e}", path.display()))?;
         if let Err(e) = file.write_all(&self.zip()).and_then(|_| file.sync_all()) {
             drop(file);
             let _ = std::fs::remove_file(path);
@@ -371,6 +381,23 @@ impl Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_export_cannot_overwrite_an_existing_file_and_is_private_on_unix() {
+        let path = std::env::temp_dir().join(format!(
+            "itriage-private-case-{}-{}.zip",
+            std::process::id(),
+            crate::investigate::recording::now_ms()
+        ));
+        let prepared = prepare(&Report::new(crate::host_context(), None, vec![], false), &Options::default()).unwrap();
+        prepared.write_new(&path).unwrap();
+        assert!(prepared.write_new(&path).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o077, 0);
+        }
+        std::fs::remove_file(path).unwrap();
+    }
     #[test]
     fn privacy_terms_cannot_corrupt_structural_enums_or_leave_baseline_hostnames() {
         let mut host = crate::host_context();

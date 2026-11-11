@@ -230,12 +230,16 @@
         actions: [{ label: "Close" }],
         onMount: (root, close) => {
           const q = (s) => root.querySelector(s),
-            date = new Date(report.generated);
+            date = new Date(
+              Number.isFinite(Date.parse(report.generated))
+                ? report.generated
+                : Date.now(),
+            );
           date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
           q("#caseOnset").value = date.toISOString().slice(0, 19);
           q("#caseCollectTimeline").onclick = () => {
             close();
-            c.startRun(["system.changes", "net.wifi-auth"]);
+            c.collectCase(["system.changes", "net.wifi-auth"]);
           };
           q("#caseFindChanges").onclick = async () => {
             try {
@@ -274,7 +278,7 @@
             .filter((h) => !h.cancelled)
             .map(
               (h) =>
-                `<option value="${esc(h.path)}">${esc(h.hostname + " · " + h.generated)}</option>`,
+                `<option value="${esc(h.path)}">${esc(h.hostname + " · " + (h.evidence_updated || h.generated))}</option>`,
             )
             .join(
               "",
@@ -683,7 +687,24 @@
         };
       },
       run: async (ids, h) => {
-        if (!h.runbook) return base.run(ids, h);
+        if (!h.runbook) {
+          const outcome = await base.run(ids, h);
+          if (h.baseReport) {
+            const r = clone(h.baseReport),
+              newer = outcome.report;
+            r.results = r.results
+              .filter(
+                (old) =>
+                  !newer.results.some((n) => n.module_id === old.module_id),
+              )
+              .concat(newer.results);
+            r.cancelled = !!r.cancelled || !!newer.cancelled;
+            r.evidence_updated = new Date().toISOString();
+            outcome.report = r;
+            outcome.saved = keep(r);
+          }
+          return outcome;
+        }
         const first = await base.run(initial[h.runbook], h),
           steps = [
             {
