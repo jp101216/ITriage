@@ -125,6 +125,7 @@ jobs:
           smoke() { set +e; "$@"; local code=$?; set -e; case $code in 0|2) ;; *) echo "::error::exit code $code from: $*"; return 1 ;; esac; }
           python -c 'from pathlib import Path; Path("case-smoke.toml").write_text("[network]\npublic_probes = false\n", encoding="utf-8")'
           smoke cargo run -q -p itriage-core --example triage -- --runbook printing --no-history --out case-guided.json --quiet > /dev/null
+          smoke cargo run -q -p itriage-core --example triage -- --runbook slow-pc --no-history --quiet > /dev/null
           ITRIAGE_PROFILE=case-smoke.toml smoke cargo run -q -p itriage-core --example triage -- --record 5 --interval-ms 1000 --no-history --out case-recording.json --quiet > /dev/null
           cargo run -q -p itriage-core --example triage -- --bundle-preview case-recording.json --out case-preview.json > /dev/null
           cargo run -q -p itriage-core --example triage -- --bundle case-recording.json --out case.zip
