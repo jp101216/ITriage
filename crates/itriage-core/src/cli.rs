@@ -33,7 +33,8 @@ SELECTING
   --target HOST[:PORTS]  Test one destination (adds the Destination test);
                          e.g. --target fileserver01:445,3389
   --ports LIST           Ports for --target (default 443,80,445,3389)
-  --runbook ID           Guided diagnostics: printing, vpn, sign-in, slow-app
+  --runbook ID           Guided diagnostics: printing, vpn, sign-in, slow-app,
+                         slow-pc
   --record SECONDS       Record an intermittent issue (5–1800 seconds)
   --interval-ms MS       Recording interval (1000–10000; default 1000)
 

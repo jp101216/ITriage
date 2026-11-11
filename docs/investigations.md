@@ -62,6 +62,22 @@ can leave gaps and does not generate catch-up bursts. The target is resolved
 once at the start; a DNS answer change during a recording is not tracked.
 Probe scheduling and the host's tools determine the actual cadence.
 
+CPU load and the disk and network rates are differences between two readings,
+so the first sample is taken an interval (a second at most) after the counters
+are first read: every sample, the first included, covers a real stretch of
+time. (0.8.0 took its first sample at once; its CPU figure was made up, could
+be reported as the recording's peak, and its disk and network rates were
+zero.)
+
+Each Wi-Fi reading keeps the signal and the access point's address (BSSID)
+beside the description. A different address on the same network is a move to
+another access point; the recording's result counts them ("signal 41–72% ·
+moved between access points 2 times"). Wi-Fi is read every fifth sample, so
+two quick moves between readings count once, and a weak signal or a move at
+the moment of a marker is worth a look, not a verdict. Windows 11 24H2 and
+later withhold the network name and address from apps without location
+access; the signal still comes through.
+
 An explicit target or profile target is used for TCP. Automatic public targets
 and DNS names obey `[network] public_probes`; no configured target means that
 part of the recording is unavailable, not successful. Wi-Fi reads existing
@@ -70,9 +86,18 @@ This is lightweight polling, not a trace of every CPU spike, packet or roam.
 
 Recordings attach to the displayed report only when its hostname/platform match
 this PC. Existing check timestamps still describe their original collection;
-`recording.started` and each sample/marker describe the later capture. Replay
-shows all samples (up to 120 table rows) or a 10-second window around a marker.
-Full JSON and case ZIPs retain all samples and markers. CLI example:
+`recording.started` and each sample/marker describe the later capture.
+
+**Replay recording** draws CPU, RAM and Wi-Fi signal over the capture, with a
+numbered line at each marker, a mark where the PC moved access point, and a
+mark under the axis at each failed connection or DNS probe; pointing at the
+chart reads out the nearest sample. The table under it shows all samples (up
+to 120 rows), the failed connections only, or the ten seconds around a marker.
+Each marker is written against the first sample taken at or after it, in the
+table and in `recording.csv`, which also has the Wi-Fi signal and access point
+for each sample. Full JSON and case ZIPs retain all samples and markers.
+A recording's peaks depend on how long it ran, so they aren't followed in
+Trends. CLI example:
 
 ```sh
 itriage --record 60 --interval-ms 1000 --target appserver:443 --ticket INC123 --out recording.json
@@ -96,9 +121,16 @@ may belong to another user; inspect the reported identity and evidence.
 
 `net.wifi-auth` reads existing WLAN-AutoConfig, Wired-AutoConfig, EapHost and
 CAPI2 channels on Windows (last 24 hours, up to 40 recent events per channel,
-80 summarized event rows). Disabled or inaccessible logs remain coverage gaps;
-no logs are enabled. Some event formats have no supported reason fields;
-their timestamp/provider/ID still identify the source event to inspect.
+80 summarized event rows). Each row is the event as Windows words it
+("WLAN AutoConfig service has successfully connected to a wireless network."),
+labelled with its time and a short name for its log (`Wi-Fi 8001`,
+`Wired 802.1X`, `EAP`, `Certificates`); the reason fields are underneath.
+Failed connections, associations and 802.1X authentications are flagged
+whatever level they were logged at. When someone has switched the CAPI2 log
+on, it records every certificate check on the PC, so only its failures are
+read. Disabled or inaccessible logs remain coverage gaps; no logs are
+enabled. Some event formats have no supported reason fields; their
+timestamp/provider/ID still identify the source event to inspect.
 Linux reads up to 160 recent NetworkManager / wpa_supplicant journal entries
 from 24 hours and retains matching authentication/roaming/certificate messages.
 It needs journal permissions and the relevant services' existing logging.
@@ -110,10 +142,35 @@ roaming audit. A disconnect, roam or certificate event alone does not prove an
 ## Changes near the problem's onset
 
 `system.changes` reads seven days of Windows update, installer, driver,
-service-configuration, policy and restart activity (up to 64 recent events per
-channel, 200 displayed rows). Linux uses the last 2 MiB of the current dpkg log
-and available package-service journal entries. Rotated logs and other package
-managers can leave gaps. dpkg's local times use the host's time zone conversion.
+service-configuration, policy and restart activity. Each kind has its own
+query (the most recent 32 to 64 events of it), so a week of one kind can't
+push the others out of what is read:
+
+| Kind | From |
+|---|---|
+| Windows update | Windows Update's installs, failures and restart requests (System log), and package changes in the Setup log |
+| Application installer | Windows Installer: installed, removed, updated, restart needed, and its errors |
+| Driver or device | driver installations (UserPnp) and drivers that failed to load |
+| Service configuration | a service installed, or its start type changed (BITS switching itself between automatic and manual is left out) |
+| Group Policy | computer policy at startup and user policy at sign-in, with how long each took, and policy errors; not every background refresh |
+| Restart, Unexpected shutdown | who or what asked for a restart and why, each start of Windows, and starts that followed a crash or power loss |
+
+Rows are sentences: "Installed Contoso Client 24.2.0.187", "Service Print
+Spooler: start type changed from auto start to disabled", "Restart started by
+winlogon.exe for NT AUTHORITY\SYSTEM: Operating System: Upgrade (Planned)".
+An event ITriage has no sentence for is shown as Windows words it, and its
+fields are underneath either way. Times are UTC to the second.
+
+A burst of one kind (a cumulative update's packages, one `apt install`) is
+folded into one row: "40 events until 12:03:57: …; and 37 more". The row is
+filed at the burst's start and matches an onset search anywhere in its span.
+A burst is at least four events no more than two minutes apart, and is cut
+off after thirty minutes. Up to 200 rows are kept.
+
+Linux uses the last 2 MiB of the current dpkg log ("Upgraded curl 8.0 → 8.1"),
+available package-service journal entries, and the start that is still
+running. Rotated logs and other package managers can leave gaps. dpkg's local
+times use the host's time zone conversion.
 
 **Timeline** combines collected changes and network-authentication events.
 **Collect change and network-authentication history** refreshes those checks in
@@ -126,9 +183,17 @@ History orders and retains these snapshots by their latest evidence update.
 Copied performance findings in a case snapshot are not counted as new trend
 measurements or automatically chosen as a previous diagnostic run.
 Enter the onset in local time and a 15-minute, 1-hour or 24-hour window either
-side. Missing events do not rule out a change; log retention, privilege and
-collection limits apply. Installer activity is not proof of installation
-success, and temporal proximity is not causation.
+side, or choose **Everything collected**. The table shows each row's local
+time, where it sits against the onset ("12 min before"), its kind, what
+happened and the evidence. Missing events do not rule out a change; log
+retention, privilege and collection limits apply. Installer activity is not
+proof of installation success, and temporal proximity is not causation.
+
+A card for either history check shows its newest twelve event rows and folds
+the rest behind "Show N older event rows". The ticket text, Markdown and rich
+text exports keep the newest eight and say how many they left out; anything
+flagged is always kept. The full transcript, the JSON report and a case
+bundle keep every row.
 
 ```sh
 itriage system.changes net.wifi-auth --out changes.json
@@ -148,8 +213,15 @@ explicitly mismatched roles are refused. Missing roles/profiles are visible
 comparison caveats, not silently assumed matches.
 
 Configuration observations include OS/model/BIOS, required app versions,
-selected service/site requirements, device and security posture. Unique
-identifiers, addresses and live metrics are excluded. Only observed findings
+selected service/site requirements, device and security posture, the proxy
+settings (machine-wide and the signed-in user's, compared without the account
+name), where the clock comes from and its time zone, and the domain and AD
+site. Unique identifiers, addresses and live metrics are excluded.
+
+The picker lists reports from other PCs only: a PC isn't its own working
+example. With none imported, the dialog says how to bring one in. The
+comparison is shown on the report, and its differences are named in every
+text export. Only observed findings
 are compared: "not observed" does not mean a component is missing. The working
 baseline and current-PC direction is explicit, independent of report age.
 
@@ -163,10 +235,14 @@ hardware compatibility checker or automatic proof of the incident's cause.
 
 ## Guided symptom workflows
 
-**Troubleshoot** offers `printing`, `vpn`, `sign-in` and `slow-app`. Each
-starts with checks closest to the symptom, then selects related site/network,
-identity or change checks. Printing and sign-in branch on problem/unavailable
-results; VPN and slow-app also check configured application dependencies.
+**Troubleshoot** offers `printing`, `vpn`, `sign-in`, `slow-app` and
+`slow-pc`. Each starts with checks closest to the symptom, then selects
+related site/network, identity or change checks. Printing and sign-in branch
+on problem/unavailable results; VPN and slow-app also check configured
+application dependencies. `slow-pc` looks at load, memory, free space and
+startup speed, then at the drive's health and recent changes; it adds up
+what's using the space (which takes up to 25 seconds) only when the disk is
+the problem.
 Plans contain fixed read-only module IDs, not generated shell commands.
 Every phase and its reason are kept in the report. Unavailable evidence stays
 unavailable. Cancellation retains completed checks and an incomplete trace.
@@ -197,10 +273,36 @@ also in `report.json`. `manifest.json` hashes the evidence files;
 itself). ZIP CRC-32 supports archive validation. Limits are 20 MiB and 512
 files, with deterministic fixed timestamps and safe generated filenames.
 
-Pseudonyms cover known host/serial/account/network identifiers and custom
-terms consistently across formats. Free text, URLs, organization names and
-unrecognized identifiers may still be sensitive: **review every included
-file**. This is not a guarantee of anonymity. No pseudonym dictionary is
+Pseudonyms cover these, consistently across every file:
+
+| Replaced | With | Recognised by |
+|---|---|---|
+| This PC's name, a baseline PC's, the domain controller that signed it in | `[host-N]` | the report's own fields |
+| Serial number | `[serial-N]` | its finding (a value like "not reported by the firmware" is left alone) |
+| Account names, with or without their domain, and in `C:\Users\…` or `/home/…` paths | `[account-N]` | the signed-in user and account findings; `DOMAIN\user`, e-mail and home-folder shapes anywhere |
+| The domain (`corp.example.org`, and `CORP` in `CORP\user`) and the AD site | `[domain-N]`, `[site-N]` | the Domain & Group Policy findings; the part before the backslash |
+| Wi-Fi network names | `[network-N]` | the Wi-Fi check, Wi-Fi event fields (SSID, profile), a recording's samples |
+| MAC addresses and access-point addresses | `[network-N]` | their shape |
+| Certificate thumbprints | `[identifier-N]` | their finding |
+| IP addresses | `[private-address-N]`, `[public-address-N]`, `[link-local-address-N]` | their shape |
+| Extra privacy terms | `[custom-N]` | what you typed |
+
+The same person is the same pseudonym with and without the domain, and in a
+path: `CORP\jparker` becomes `[domain-1]\[account-1]`, and
+`C:\Users\jparker` becomes `C:\Users\[account-1]`. An address keeps what
+kind it is, so a report still shows that an adapter had a 169.254 address or
+that the public IP differs from the gateway's.
+
+Left readable on purpose: loopback and unspecified addresses, masks, the
+public resolvers a check names itself (8.8.8.8, 1.1.1.1 and their pairs),
+version numbers that look like addresses (`24.2.0.187`, and anything in the
+app, update, driver and posture checks), Windows paths and registry keys,
+built-in accounts (`NT AUTHORITY\SYSTEM`, `BUILTIN\Administrators`), and
+generic names such as `Administrator`.
+
+Free text, URLs, server names the site profile lists, organization names
+outside the domain and unrecognized identifiers may still be sensitive:
+**review every included file**. This is not a guarantee of anonymity. No pseudonym dictionary is
 exported. Digests detect changes relative to the supplied manifest; they are
 not a digital signature or independent proof of origin. Keep an original
 report under your incident-handling procedures when needed.

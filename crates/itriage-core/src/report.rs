@@ -310,7 +310,8 @@ impl IndexEntry {
             metrics: report
                 .results
                 .iter()
-                .filter(|r| !r.preview && r.error.is_none() && report.evidence_updated.is_none())
+                // A recording's peaks depend on how long it ran: not a trend.
+                .filter(|r| !r.preview && r.error.is_none() && report.evidence_updated.is_none() && r.module_id != "capture.recording")
                 .flat_map(|r| {
                     r.findings.iter().filter_map(|f| {
                         f.metric.as_ref().map(|m| IndexMetric {
@@ -850,7 +851,22 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
         out.push(format!("Recording: {} sample(s), {} marker(s), started {}",recording.samples.len(),recording.markers.len(),recording.started));
         for marker in &recording.markers { out.push(format!("  {}: {}",epoch_to_rfc3339(marker.at_ms/1000),marker.label)); }
     }
-    if let Some(baseline) = &report.baseline { out.push(format!("Working-PC baseline: {} -> {}: {} configuration difference(s)",baseline.baseline_host,baseline.current_host,baseline.differences.len())); }
+    if let Some(baseline) = &report.baseline {
+        out.push(format!(
+            "Working-PC baseline: {} -> {}: {} configuration difference(s)",
+            baseline.baseline_host,
+            baseline.current_host,
+            baseline.differences.len()
+        ));
+        // The differences are the point of the comparison: name them.
+        let unseen = |v: &Option<String>| v.clone().unwrap_or_else(|| "not observed".into());
+        for d in baseline.differences.iter().take(BASELINE_ROWS_IN_TEXT) {
+            out.push(format!("  {} · {}: {} -> {}", d.module, d.label, unseen(&d.baseline), unseen(&d.current)));
+        }
+        if baseline.differences.len() > BASELINE_ROWS_IN_TEXT {
+            out.push(format!("  … and {} more, in the JSON report and the case bundle.", baseline.differences.len() - BASELINE_ROWS_IN_TEXT));
+        }
+    }
     if report.cancelled {
         out.push("The run was cancelled before every module finished.".into());
     }
@@ -896,7 +912,31 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
         if let Some(e) = &r.error {
             out.push(format!("    error: {e}"));
         }
+        // A history check can hold a couple of hundred event rows. The
+        // ticket text keeps the newest few (and anything flagged); the full
+        // transcript, the JSON and the case bundle keep them all.
+        let mut events = 0;
+        let mut left_out = 0;
+        let more = |left_out: &mut usize, out: &mut Vec<String>| {
+            if *left_out > 0 {
+                out.push(format!(
+                    "    …     {} more event row{}: in the full transcript, the JSON report and the case bundle.",
+                    *left_out,
+                    if *left_out == 1 { "" } else { "s" }
+                ));
+                *left_out = 0;
+            }
+        };
         for f in &r.findings {
+            if !logs && is_event_row(&r.module_id, f) && !is_problem(f.severity) {
+                events += 1;
+                if events > EVENT_ROWS_IN_TICKET {
+                    left_out += 1;
+                    continue;
+                }
+            } else {
+                more(&mut left_out, &mut out);
+            }
             out.push(format!("    {:<5} {}: {}", sev_tag(f.severity), f.label, f.value));
             if let Some(d) = &f.detail {
                 out.push(format!("          {d}"));
@@ -905,6 +945,7 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
                 out.push(format!("          KB: {} <{}>", kb.title, kb.url));
             }
         }
+        more(&mut left_out, &mut out);
         if logs && !r.log.is_empty() {
             out.push("    log:".into());
             out.extend(r.log.iter().map(|l| format!("      | {l}")));
@@ -915,6 +956,21 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
         out.push(render_diff(d, &report.host.hostname));
     }
     out.join("\n")
+}
+
+/// Event rows of a history check shown in the ticket text.
+pub const EVENT_ROWS_IN_TICKET: usize = 8;
+/// Baseline differences named in the text of a report.
+const BASELINE_ROWS_IN_TEXT: usize = 15;
+
+/// One event in a history check (the change timeline, the network
+/// authentication history): its label starts with the time it happened.
+pub fn is_event_row(module_id: &str, f: &crate::model::Finding) -> bool {
+    matches!(module_id, "system.changes" | "net.wifi-auth")
+        && f.label.len() >= 20
+        && f.label.as_bytes()[4] == b'-'
+        && f.label[..4].bytes().all(|b| b.is_ascii_digit())
+        && f.label.as_bytes()[10] == b'T'
 }
 
 fn diff_line(d: &ReportDiff) -> String {
@@ -1259,6 +1315,38 @@ mod tests {
         assert!(pa.with_extension("txt").exists(), "a transcript is saved beside it");
         assert_eq!(names, vec![pa, pb], "and sorts after the first, oldest first");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ticket_text_keeps_a_history_short_and_names_baseline_differences() {
+        let mut rows: Vec<Finding> = (0..30).map(|i| Finding::info(format!("2026-11-10T12:{i:02}:00Z · Package change"), format!("Installed lib{i}"))).collect();
+        rows.insert(20, Finding::warn("2026-11-10T11:00:00Z · Windows update", "Failed to install: KB1"));
+        rows.push(Finding::info("Timeline coverage", "the last seven days"));
+        let mut r = report(vec![result("system.changes", rows, None), result("system.info", vec![Finding::info("2026 model year", "not an event")], None)]);
+        r.baseline = Some(crate::investigate::baseline::Comparison {
+            baseline_host: "GOOD".into(),
+            current_host: "BAD".into(),
+            baseline_generated: r.generated.clone(),
+            current_generated: r.generated.clone(),
+            role: None,
+            differences: vec![crate::investigate::baseline::Difference { module: "site.apps".into(), label: "Client".into(), baseline: Some("24.2".into()), current: None }],
+            gaps: vec![],
+        });
+        let ticket = render_text(&r, None, false);
+        assert!(ticket.contains("  site.apps · Client: 24.2 -> not observed"), "{ticket}");
+        assert!(ticket.contains("Installed lib7") && !ticket.contains("Installed lib8\n"), "the newest eight stay");
+        assert!(ticket.contains("WARN  2026-11-10T11:00:00Z · Windows update: Failed to install: KB1"), "a flagged row is never left out");
+        // It says how many were left out, where they would have been:
+        // twelve before the flagged row, ten after it.
+        let line = |text: &str| ticket.lines().position(|l| l.contains(text)).unwrap_or_else(|| panic!("no line with {text:?} in:\n{ticket}"));
+        let flagged = "    WARN  2026-11-10T11:00:00Z"; // its row, not its line under KEY FINDINGS
+        assert!(line("12 more event rows") < line(flagged));
+        assert!(line(flagged) < line("10 more event rows"));
+        assert!(line("10 more event rows") < line("Timeline coverage"));
+        assert!(ticket.contains("2026 model year: not an event"));
+        // The full transcript leaves nothing out.
+        let transcript = render_text(&r, None, true);
+        assert!(transcript.contains("Installed lib29") && !transcript.contains("more event row"));
     }
 
     #[test]

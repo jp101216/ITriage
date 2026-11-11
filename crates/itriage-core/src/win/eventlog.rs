@@ -105,6 +105,24 @@ pub fn recent_errors(channel: &str, hours: u32, max: usize) -> Result<Vec<RawEve
 /// most `max`, each rendered as XML. The query is always one of ITriage's
 /// own constants; values to match on are compared afterwards, in Rust.
 pub fn query_xml(channel: &str, query: &'static str, max: usize) -> Result<Vec<String>, String> {
+    Ok(query_events(channel, query, max, false)?.into_iter().map(|e| e.xml).collect())
+}
+
+/// One event as XML, and as Windows words it for a person ("The start type
+/// of the Print Spooler service was changed from auto start to disabled.").
+pub struct Rendered {
+    pub xml: String,
+    /// `None` when the event's provider has no message text installed.
+    pub message: Option<String>,
+}
+
+/// `query_xml`, with each event's message as well. Formatting a message is
+/// the slow part (a few milliseconds each), so ask for what will be shown.
+pub fn query_rendered(channel: &str, query: &'static str, max: usize) -> Result<Vec<Rendered>, String> {
+    query_events(channel, query, max, true)
+}
+
+fn query_events(channel: &str, query: &'static str, max: usize, messages: bool) -> Result<Vec<Rendered>, String> {
     let path = HSTRING::from(channel);
     let query = HSTRING::from(query);
     let flags = EvtQueryChannelPath.0 | EvtQueryReverseDirection.0;
@@ -112,6 +130,7 @@ pub fn query_xml(channel: &str, query: &'static str, max: usize) -> Result<Vec<S
     let results = unsafe { EvtQuery(None, &path, &query, flags) }
         .map_err(|e| super::err(&format!("can't read the {channel} log"), &e))?;
     let results = Handle(results);
+    let mut publishers: HashMap<String, Option<Handle>> = HashMap::new();
     let mut events = Vec::new();
     let mut batch = [0isize; 64];
     while events.len() < max {
@@ -120,13 +139,22 @@ pub fn query_xml(channel: &str, query: &'static str, max: usize) -> Result<Vec<S
             break;
         }
         for &raw in &batch[..returned as usize] {
+            // Every handle in the batch is closed, kept or not.
             let event = Handle(EVT_HANDLE(raw));
-            if let Some(xml) = unsafe { render_xml(event.0) } {
-                events.push(xml);
+            if events.len() >= max {
+                continue;
             }
+            let Some(xml) = (unsafe { render_xml(event.0) }) else {
+                continue;
+            };
+            let message = if messages {
+                parse_system(&xml).and_then(|s| unsafe { format_message(&mut publishers, &s.provider, event.0) })
+            } else {
+                None
+            };
+            events.push(Rendered { xml, message });
         }
     }
-    events.truncate(max);
     Ok(events)
 }
 

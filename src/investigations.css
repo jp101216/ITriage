@@ -97,21 +97,207 @@
   overflow-wrap: anywhere;
   white-space: normal;
 }
+/* A wide table scrolls sideways in its own box: its columns never
+   squeeze down to a word a line. */
+.case-scroll table {
+  min-width: 640px;
+}
+/* Figures stay on one line; the Wi-Fi and marker text may wrap. */
+.case-samples-table {
+  min-width: 860px;
+}
+.case-samples-table td:nth-child(-n + 7) {
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.case-timeline-table {
+  min-width: 760px;
+}
+.case-timeline-table td:nth-child(-n + 3) {
+  white-space: nowrap;
+}
+.case-timeline-table td:nth-child(5) {
+  color: var(--muted);
+  font-size: 12px;
+}
+.case-plot {
+  position: relative;
+}
 .case-chart {
   display: block;
   width: 100%;
-  max-height: 230px;
+  max-height: 240px;
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--line-2);
+  touch-action: pan-y;
 }
 .case-chart text {
-  fill: currentColor;
-  font: 11px sans-serif;
+  fill: var(--muted);
+  font: 10px var(--mono), monospace;
+}
+.case-chart .axis {
+  fill: none;
+  stroke: var(--line-2);
+}
+.case-chart .grid {
+  fill: none;
+  stroke: var(--line);
+  stroke-dasharray: 2 5;
+}
+.case-chart polyline {
+  fill: none;
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+/* Three lines, three dashes: told apart without their colours. */
+.case-chart .cpu {
+  stroke: var(--accent);
+}
+.case-chart .ram {
+  stroke: var(--fg);
+  stroke-dasharray: 7 4;
+  stroke-width: 1.5;
+}
+.case-chart .sig {
+  stroke: rgb(var(--ok-rgb));
+  stroke-dasharray: 1.5 4;
+  stroke-width: 1.5;
+}
+.case-chart .mk line {
+  stroke: rgb(var(--warn-rgb));
+  stroke-dasharray: 4 3;
+}
+.case-chart .mk rect {
+  fill: rgb(var(--warn-rgb));
+}
+.case-chart .mk text {
+  fill: var(--bg);
+  font-weight: 700;
+}
+.case-chart .roam {
+  fill: rgb(var(--ok-rgb));
+  stroke: var(--bg);
+  stroke-width: 1;
+}
+.case-chart .fail {
+  fill: rgb(var(--crit-rgb));
+  stroke: var(--bg);
+  stroke-width: 1;
+}
+.case-chart .fail.hollow {
+  fill: var(--bg);
+  stroke: rgb(var(--crit-rgb));
+  stroke-width: 1.5;
+}
+.case-chart .cross {
+  stroke: var(--muted);
+  stroke-width: 1;
+}
+.case-tip {
+  position: absolute;
+  top: 6px;
+  z-index: 1;
+  display: grid;
+  gap: 2px;
+  max-width: 220px;
+  padding: 7px 9px;
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: var(--fg);
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: 4px;
+  pointer-events: none;
+  overflow-wrap: anywhere;
+}
+.case-tip b {
+  color: var(--title);
+}
+.case-tip span {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+.case-tip em {
+  font-style: normal;
+  color: var(--muted);
 }
 .case-legend {
-  font-size: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 8px 0;
+  font-size: 11.5px;
   color: var(--muted);
+}
+.case-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The key beside each name: the line or mark as it is drawn. */
+.case-legend .k {
+  display: inline-block;
+  width: 18px;
+  height: 0;
+  border-top: 2px solid var(--accent);
+  font-style: normal;
+}
+.case-legend .k.ram {
+  border-top: 2px dashed var(--fg);
+}
+.case-legend .k.sig {
+  border-top: 2px dotted rgb(var(--ok-rgb));
+}
+.case-legend .k.mark {
+  width: 13px;
+  height: 13px;
+  border: 0;
+  border-radius: 2px;
+  background: rgb(var(--warn-rgb));
+  color: var(--bg);
+  font: 700 10px/13px var(--mono), monospace;
+  text-align: center;
+}
+.case-legend .k.move {
+  width: 0;
+  border: 5px solid transparent;
+  border-top: 8px solid rgb(var(--ok-rgb));
+  border-bottom: 0;
+}
+.case-legend .k.bad {
+  width: 7px;
+  height: 7px;
+  border: 0;
+  background: rgb(var(--crit-rgb));
+}
+.case-legend .k.bad.hollow {
+  box-sizing: border-box;
+  width: 9px;
+  height: 9px;
+  border: 2px solid rgb(var(--crit-rgb));
+  border-radius: 50%;
+  background: none;
+}
+.case-empty {
+  padding: 12px 14px;
+  border: 1px dashed var(--line-2);
+  color: var(--fg);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+/* A long label wraps inside its button instead of leaving the dialog. */
+.case-actions .bk-btn,
+.case-fields .bk-btn {
+  max-width: 100%;
+  white-space: normal;
+  text-align: left;
+}
+.case-note details .case-scroll {
+  max-height: 240px;
 }
 .case-note {
   padding: 14px 16px;

@@ -30,4 +30,8 @@ with zipfile.ZipFile(archive) as case:
     assert report["host"]["hostname"] != original["host"]["hostname"], "hostname was not pseudonymized"
     samples = list(csv.DictReader(io.StringIO(case.read("recording.csv").decode("utf-8"))))
     assert len(samples) == len(original["recording"]["samples"])
+    assert {"at_utc", "cpu_pct", "tcp_failed", "wifi_signal_pct", "wifi_access_point", "marker"} <= set(samples[0]), "recording.csv columns"
+    # The first sample is a measurement like the rest, not a reading taken before there was anything to compare.
+    first, second = original["recording"]["samples"][:2]
+    assert second["at_ms"] - first["at_ms"] >= 900, "samples are an interval apart"
 print(f"Validated {len(names)} reviewed files, {len(samples)} samples, ZIP CRCs and SHA-256 digests")

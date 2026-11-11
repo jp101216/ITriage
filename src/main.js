@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.8.0.
+/* ITriage frontend logic — v0.9.0.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.8.0";
+  const VERSION = "v0.9.0";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -104,17 +104,19 @@
   const CATALOGUE = [
     mod("system.info", "System information", "system", "OS, CPU and memory, make and model, serial number, BIOS version, who is signed in, uptime (warns past 7 days) and any pending restart."),
     mod("system.disk", "Disk space & latency", "system", "Free vs. total space per volume (warns under 15% free) and disk latency with queue length (warns at 15 ms)."),
+    mod("system.storage", "What's using the space", "system", "The biggest places on the system drive: each profile and its folders, old Windows installations, update downloads, memory dumps, the Recycle Bin, temp folders and the page file. Names folders, not files."),
     mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both)."),
     mod("system.reliability", "Drive health & reliability", "system", "Each drive's health, wear and errors (SMART), and the last 30 days of blue screens, unexpected shutdowns, disk errors and the apps that crash most."),
-    mod("system.changes", "Recent changes timeline", "system", "Recent updates, installer, driver, service, policy and restart evidence. Timing is a possible link, not proof of causation."),
+    mod("system.startup", "Startup & sign-in speed", "system", "How long the last starts took (warns past 60 s to the desktop), what Windows recorded as slowing them down, and what starts with the PC."),
+    mod("system.changes", "Recent changes timeline", "system", "Recent update, installer, driver, service, policy and restart evidence. Correlates timing without claiming causation."),
     mod("proc.top", "Top processes", "processes", "Overall CPU load (warns at 75%), the busiest processes right now, and the biggest memory users. Flags anything pinning a core or holding a quarter of RAM."),
     mod("proc.services", "Services", "processes", "Automatic services that aren't running, with exit codes. Skips trigger-start services that stop by design."),
     mod("net.connectivity", "Network connectivity", "network", "Adapters and addresses, the route in use with its gateway and DNS servers, a timed DNS lookup, an outbound TCP test and the public IP."),
     mod("net.latency", "Latency & packet loss", "network", "Round trip and packet loss to the gateway and the first DNS server over ICMP. Warns at 20 ms or 1% loss to the gateway."),
     mod("net.proxy", "Proxy settings", "network", "The machine-wide WinHTTP proxy, and the signed-in user's proxy, PAC script or auto-detect setting."),
     mod("net.target", "Destination test", "network", "DNS, a TCP connect on each port, the route the PC picks, and ping, for one host you type in (ports default to 443, 80, 445, 3389).", { takes_target: true }),
-    mod("net.applications", "Application connections", "network", "Site application URLs: DNS, route, TCP, proxy context, validated TLS, and expected HTTP statuses."),
-    mod("net.wifi-auth", "Wi-Fi & wired authentication history", "network", "Association, disconnect, roaming and 802.1X / certificate evidence from existing logs."),
+    mod("net.applications", "Application connections", "network", "Profile-defined application URLs: DNS, direct route, TCP, proxy context, validated TLS and expected HTTP status."),
+    mod("net.wifi-auth", "Wi-Fi roaming & network authentication", "network", "Recent Wi-Fi associations, disconnects, 802.1X and certificate-validation events, including wired authentication."),
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
@@ -175,7 +177,7 @@
       modules: ["desk.account", "desk.domain", "desk.time", "net.connectivity"] },
     { id: "health", title: "Health check", script: "",
       description: "Is this PC sound: drive health and crashes, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-      modules: ["system.info", "system.disk", "system.reliability", "sec.posture", "desk.battery", "update.scan"] },
+      modules: ["system.info", "system.disk", "system.reliability", "system.startup", "sec.posture", "desk.battery", "update.scan"] },
   ];
 
   const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "security", "site", "repair", "fixes", "updates"];
@@ -204,6 +206,8 @@
     "fix.repair": "FIX-SFC", "fix.optimize": "FIX-OPT", "fix.gpupdate": "FIX-GPO", "fix.sccm": "FIX-CCM",
     "update.scan": "UPD-SCN", "update.apply": "UPD-INS", "update.firmware": "UPD-FRM", "fix.restart": "SYS-RST",
     "system.reliability": "DRV-HLT", "desk.account": "ACC-LCK", "sec.posture": "SEC-PST",
+    "system.changes": "CHG-LOG", "net.applications": "APP-CON", "net.wifi-auth": "NET-AUT", "desk.identity": "ID-SSO",
+    "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -218,6 +222,8 @@
     "fix.gpupdate": I.domain, "fix.sccm": I.apps, "fix.restart": I.power,
     "update.scan": I.radar, "update.apply": I.download, "update.firmware": I.chip,
     "system.reliability": I.pulse, "desk.account": I.key, "sec.posture": I.shield,
+    "system.changes": I.trend, "net.applications": I.globe, "net.wifi-auth": I.wifi, "desk.identity": I.key,
+    "system.storage": I.layers, "system.startup": I.power,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -319,10 +325,46 @@
   const UID = { cu: "8c1e5a71-2f0b-4b7e-9d0a-3c5f6e7a8b91", net: "1f4d2c3b-6a7e-4f80-8b9c-0d1e2f3a4b5c", def: "e2b9c4d1-7f3a-4e6b-a5c8-9d0f1e2a3b4c", drv: "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d" };
   const RESTART_MSG = "IT maintenance is complete. This PC will restart in 1 minute - please save your work.";
   const MOCK_RESULTS = {
-    "system.changes": R("system.changes", "Recent changes timeline", "system", "2 recent change events (sample)", 5, [F("2026-11-10T16:52:00Z · Driver activity", "Kernel-PnP event 410", "info", "Sample Wi-Fi driver installation activity; confirm against the actual failure onset."),F("2026-11-10T16:55:00Z · Policy activity", "GroupPolicy event 8004", "info", "Sample policy processing event. Timing does not establish causation.")]),
+    "system.changes": R("system.changes", "Recent changes timeline", "system", "41 change event(s) in the last 7 days", 310, [
+      F("2026-11-10T16:55:12Z · Group Policy", "User policy applied at sign-in in 4 s", "info", "Microsoft-Windows-GroupPolicy/Operational · Microsoft-Windows-GroupPolicy event 8001"),
+      F("2026-11-10T16:52:04Z · Driver or device", "Driver installed: Intel(R) Wi-Fi 6E AX211 160MHz 23.60.1.2", "info", "System · Microsoft-Windows-UserPnp event 20001 · DriverName: oem42.inf · DriverVersion: 23.60.1.2 · InstallStatus: 0x0"),
+      F("2026-11-10T16:40:31Z · Restart", "Restart started by MoUsoCoreWorker.exe for NT AUTHORITY\\SYSTEM: Operating System: Service pack (Planned)", "info", "System · User32 event 1074"),
+      F("2026-11-10T16:21:08Z · Windows update", "31 events until 2026-11-10T16:38:50Z: Package KB5046617: Installed; Package KB5046696: Installed; Installed: " + CU_TITLE + " (KB5046617); and 28 more", "info", "Setup · Events of one kind close together, shown as one row."),
+      F("2026-11-08T13:05:44Z · Application installer", "Installed Cisco Secure Client - AnyConnect VPN 5.1.6.103", "info", "Application · MsiInstaller event 1033 · 1: Cisco Secure Client - AnyConnect VPN · 2: 5.1.6.103 · 4: 0"),
+      F("2026-11-06T09:14:02Z · Service configuration", "Service Windows Search: start type changed from auto start to disabled", "info", "System · Service Control Manager event 7040"),
+      F("Timeline coverage", "The last seven days, and the most recent 32 to 64 events of each kind; log retention and permissions can leave gaps. An installer event is evidence of activity, not proof an upgrade succeeded."),
+      F("Interpretation", "A nearby change is a possible temporal link. Confirm the failure's onset and the affected component before deciding it caused the problem."),
+    ]),
     "net.applications": R("net.applications", "Application connections", "network", "1 application (sample)", 15, [F("Clinical portal · DNS", "1 address", "ok"),F("Clinical portal · HTTP", "HTTP 401 · first response 142 ms", "ok", "Expected [200, 401]. Authentication response is expected for an unauthenticated health probe."),F("Clinical portal · TLS", "Certificate chain and host name accepted", "ok")]),
-    "net.wifi-auth": R("net.wifi-auth", "Wi-Fi & wired authentication history", "network", "2 authentication events (sample)", 8, [F("2026-11-10T16:57:00Z · WLAN event 8003", "Disconnect · reason 4", "info", "Sample event; a disconnect alone does not prove a roaming fault."),F("2026-11-10T16:57:04Z · WLAN event 8001", "Association completed", "info")]),
+    "net.wifi-auth": R("net.wifi-auth", "Wi-Fi roaming & network authentication", "network", "5 recent network-authentication event(s)", 240, [
+      F("Wireless session history (collected events)", "2 successful association(s), 1 disconnect(s), 1 failure(s)", "warning", "An association or a disconnect alone does not prove a roam or a fault. Compare access-point identifiers and the problem's time."),
+      F("2026-11-10T16:57:09Z · Wi-Fi 8001", "WLAN AutoConfig service has successfully connected to a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ConnectionMode: Automatic connection with a profile · ProfileName: CORP · SSID: CORP"),
+      F("2026-11-10T16:57:04Z · Wi-Fi 12013", "Wireless 802.1x authentication failed.", "warning", "Microsoft-Windows-WLAN-AutoConfig/Operational · SSID: CORP · ReasonCode: 327685 · EAPReasonCode: 2148074254"),
+      F("2026-11-10T16:57:00Z · Wi-Fi 8003", "WLAN AutoConfig service has successfully disconnected from a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ProfileName: CORP · SSID: CORP · Reason: The network is disconnected by the driver."),
+      F("2026-11-10T14:02:41Z · Wi-Fi 8001", "WLAN AutoConfig service has successfully connected to a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ProfileName: CORP · SSID: CORP"),
+      F("Collection scope", "Up to 40 recent events per channel from the last 24 hours (certificate events: failures only); only 80 event rows are summarized. Existing logs only. A disabled or inaccessible channel is a gap, not a successful authentication check."),
+    ]),
     "desk.identity": R("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device identity (sample)", 10, [F("Device join", "Microsoft Entra hybrid joined"),F("Entra device authentication", "device is present and enabled", "ok"),F("User SSO checks", "not graded in an elevated or different-user context", "info", "Run without elevation as the affected user for PRT/WAM status.")]),
+    "system.storage": R("system.storage", "What's using the space", "system", "Biggest: C:\\Users\\jparker\\Downloads · 96.4 GB", 14180, [
+      F("C:\\ in use", "469.7 GB of 476.9 GB (98%)"),
+      F("C:\\Users\\jparker (whole profile)", "241.8 GB · 51% of what's in use"),
+      F("C:\\Users\\jparker\\Downloads", "96.4 GB · 21% of what's in use", "warning", "Installers and files saved from the web: the first place to look with the person whose PC it is."),
+      F("C:\\Users\\jparker\\AppData\\Local", "58.1 GB · 12% of what's in use"),
+      F("C:\\Program Files", "44.0 GB · 9% of what's in use"),
+      F("C:\\Windows.old", "27.3 GB · 6% of what's in use", "warning", "The previous Windows installation, kept after an upgrade. Disk Cleanup (Clean up system files → Previous Windows installations) removes it; there's no going back to the old version afterwards."),
+      F("C:\\ProgramData", "at least 21.5 GB · 5% of what's in use", "info", "2 folders inside couldn't be read without more rights, so the real figure is higher."),
+      F("C:\\hiberfil.sys", "12.7 GB · 3% of what's in use", "info", "Holds memory while the PC hibernates, and is as big as the memory in use. Turning hibernation off (powercfg /h off) removes it, and Fast Startup with it."),
+      F("C:\\$Recycle.Bin", "8.9 GB · 2% of what's in use", "warning", "Deleted files that still take space. Empty Recycle Bin (in the Tune-up checks) clears it."),
+      F("C:\\Windows\\Temp", "2.2 GB", "info", "Temporary files. Clear temp files (in the Tune-up checks) removes the ones nothing is using."),
+      F("Couldn't look inside", "C:\\Users\\asmith", "info", "Run ITriage as administrator to measure other people's profiles and the system folders."),
+      F("What this counts", "Folders are added up file by file; profiles appear whole and again by folder, so rows overlap. Links aren't followed, other drives aren't entered, and cloud files that aren't downloaded count as nothing. The Windows folder itself and installed apps' own data aren't broken down."),
+    ]),
+    "system.startup": R("system.startup", "Startup & sign-in speed", "system", "94.0 s to the desktop · 14 startup apps", 2140, [
+      F("Last start", "94.0 s to the desktop · 15d ago · usually 41.0 s", "warning", "Then 38.0 s more until the PC went quiet. The 6 starts before it took 41.0 s (middle value), from 36.0 s to 52.0 s.", { metric: M(94, "s") }),
+      F("Slowed startup: Microsoft OneDrive", "Application · 4 times in 30 days · about 12.4 s extra each time", "warning", "Recorded by Windows when something takes longer than it usually does while the PC starts."),
+      F("Slowed startup: Windows Search", "Service · 1 time in 30 days · about 3.1 s extra each time", "info", "Recorded by Windows when something takes longer than it usually does while the PC starts."),
+      F("Startup apps", "14 start with the PC (3 switched off): Cisco Secure Client, Citrix Workspace, Dell Peripheral Manager, Epic Warp Drive, Imprivata Agent, Microsoft Edge, Microsoft OneDrive, Microsoft Teams, RtkAudUService, SecurityHealth, Spotify, Zoom, and 2 more", "info", "Task Manager → Startup apps switches one off without uninstalling it. Sync clients, chat apps and updaters are the usual ones nobody would miss at sign-in."),
+    ]),
     "system.info": R("system.info", "System information", "system", "WS-FLINT-07, up 15d 4h 12m; restart pending", 41, [
       F("Hostname", "WS-FLINT-07"), F("OS", "Windows 11 Pro 24H2 (build 26100.2314)"), F("Kernel", "26100"),
       F("Architecture", "x86_64"), F("CPU", "Intel(R) Core(TM) Ultra 7 165U (14 logical cores)"),
@@ -720,7 +762,15 @@
 
   const mockSample = isTauri ? null : mockTelemetry();
   const api = isTauri ? realApi() : window.ITriageCases.mockBridge(mockApi(), () => host, () => mockSample());
-  const cases = window.ITriageCases.create({api,modal,toast,currentReport,startRun,collectCase:(ids)=>startRun(ids,null,true),recordCase,cancel:requestCancel,busy:()=>running||fixBusy,attach:(report)=>{if(viewing)viewing.report=report;else live.report=report;}});
+  const cases = window.ITriageCases.create({
+    api, modal, toast, currentReport, startRun, recordCase, fmtLocal,
+    collectCase: (ids) => startRun(ids, null, true),
+    cancel: requestCancel,
+    busy: () => running || fixBusy,
+    // A check's name, for tables that only have its id.
+    titleOf: (id) => (catalogue.find((m) => m.id === id) || {}).title || id,
+    attach: (report) => { if (viewing) viewing.report = report; else live.report = report; },
+  });
 
   /* ---------------------------- themes ----------------------------- */
   // How the technician console looks: html[data-skin] picks a token set in
@@ -791,6 +841,8 @@
         <div class="rail-actions">
           <button class="bk-btn hot" id="allChecks" type="button" title="Selects every read-only check. Modules that change the system stay off.">All checks</button>
           <button class="bk-btn" id="none" type="button">Clear</button>
+          <input class="mod-filter" id="modFilter" type="search" spellcheck="false" autocomplete="off" placeholder="FILTER" aria-label="Filter the list of checks"
+            title="Type part of a check's name or what it looks at. Press / to jump here, Esc to clear.">
         </div>
         <div class="presets" id="presets" role="group" aria-label="Presets"></div>
         <div class="modules" id="modules"></div>
@@ -868,6 +920,23 @@
   el("optSafe").onchange = (e) => setRemoteSafe(e.target.checked);
   el("none").onclick = () => { if (!running) { selected.clear(); syncRows(); } };
   runBtn.onclick = () => (running ? requestCancel() : onRun());
+  el("modFilter").oninput = applyModFilter;
+  el("modFilter").onkeydown = (e) => {
+    if (e.key === "Escape" && e.target.value) {
+      e.stopPropagation();
+      e.target.value = "";
+      applyModFilter();
+    }
+  };
+  // "/" jumps to the filter, as it does in most lists, unless something is being typed.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || mode !== "tech" || document.querySelector(".scrim")) return;
+    const t = e.target;
+    if (t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable)) return;
+    e.preventDefault();
+    el("modFilter").focus();
+    el("modFilter").select();
+  });
   el("historyBtn").onclick = openHistory;
   el("guidedBtn").onclick = cases.guided;
   el("recordBtn").onclick = cases.record;
@@ -1460,6 +1529,7 @@
     });
     modulesEl.innerHTML = html;
     modTotal.textContent = `[${pad2(catalogue.length)}]`;
+    applyModFilter();
     modulesEl.querySelectorAll(".mod").forEach((row) => {
       const id = row.dataset.id;
       const m = catalogue.find((x) => x.id === id);
@@ -1496,6 +1566,40 @@
       if (d.scrollHeight > d.clientHeight + 1) d.title = d.textContent;
       else d.removeAttribute("title");
     });
+  }
+
+  /** Show only the checks that match every word typed in the filter (name,
+   *  what it looks at, group or short code). Selection isn't touched: a
+   *  ticked check stays ticked while it is out of sight. */
+  function applyModFilter() {
+    const box = el("modFilter");
+    const words = (box ? box.value : "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    modulesEl.querySelectorAll(".mod").forEach((row) => {
+      const m = catalogue.find((x) => x.id === row.dataset.id);
+      const text = m ? `${m.title} ${m.id} ${m.description} ${CAT_LABEL[m.category] || m.category} ${CODES[m.id] || ""}`.toLowerCase() : "";
+      row.hidden = !words.every((w) => text.includes(w));
+      if (!row.hidden) shown++;
+    });
+    // A heading with nothing left under it goes too.
+    modulesEl.querySelectorAll(".cat").forEach((cat) => {
+      let any = false;
+      for (let n = cat.nextElementSibling; n && !n.classList.contains("cat"); n = n.nextElementSibling) {
+        if (n.classList.contains("mod") && !n.hidden) any = true;
+      }
+      cat.hidden = !any;
+    });
+    let none = modulesEl.querySelector(".no-match");
+    if (!shown && words.length) {
+      if (!none) {
+        none = document.createElement("p");
+        none.className = "no-match";
+        modulesEl.appendChild(none);
+      }
+      none.textContent = `No check matches "${box.value.trim()}". Esc clears the filter.`;
+    } else if (none) {
+      none.remove();
+    }
   }
 
   function syncRows() {
@@ -1755,9 +1859,18 @@
     const note = o.note
       ? `<div class="fr"><span class="fdot sev-ok"></span><span class="fl">Fix applied</span><span class="fv">${esc(o.note)} · re-checked</span></div>`
       : "";
+    // A history check can hold a couple of hundred event rows: the newest
+    // (and anything flagged) show, the rest are one click away.
+    let events = 0, folded = 0;
     const rows = res.error
       ? `<div class="fr err"><span class="fdot sev-critical"></span><span class="fl">Couldn't run</span><span class="fv">${esc(res.error)}</span></div>`
-      : res.findings.map((f, i) => findingRow(res, f, i, o.live)).join("");
+      : res.findings.map((f, i) => {
+          const row = findingRow(res, f, i, o.live);
+          if (!isEventRow(res.module_id, f) || RANK[f.severity] >= 2 || ++events <= EVENT_ROWS_IN_CARD) return row;
+          folded++;
+          return row.replace('<div class="fr"', '<div class="fr" hidden')
+            .replace(/^/, folded === 1 ? '<button class="more-rows" type="button"></button>' : "");
+        }).join("");
     const logLabel = (shown) => `${shown ? "Hide" : "Show"} log · ${lines.length} line${lines.length === 1 ? "" : "s"}`;
     const logBlock = lines.length
       ? `<button class="log-toggle" type="button" aria-expanded="false">${I.term}<span>${logLabel(false)}</span></button>
@@ -1779,6 +1892,14 @@
     const toggle = () => head.setAttribute("aria-expanded", card.classList.toggle("open") ? "true" : "false");
     head.onclick = toggle;
     head.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } };
+    const more = card.querySelector(".more-rows");
+    if (more) {
+      more.innerHTML = `${I.caret}<span>Show ${folded} older event row${folded === 1 ? "" : "s"}</span>`;
+      more.onclick = () => {
+        card.querySelectorAll(".fr[hidden]").forEach((r) => { r.hidden = false; });
+        more.remove();
+      };
+    }
     const lt = card.querySelector(".log-toggle");
     if (lt) {
       lt.onclick = () => {
@@ -2650,9 +2771,60 @@
     return lines.join("\n");
   }
 
+  /** Event rows of a history check kept in a ticket export and in a card. */
+  const EVENT_ROWS_IN_TICKET = 8, EVENT_ROWS_IN_CARD = 12;
+  /** One event in the change timeline or the network authentication
+   *  history: its label starts with the time it happened. */
+  function isEventRow(moduleId, f) {
+    return (moduleId === "system.changes" || moduleId === "net.wifi-auth") && /^\d{4}-\d\d-\d\dT/.test(f.label);
+  }
+  /** A result's findings for an export: each `{ f }`, with `{ more: n }`
+   *  where event rows were left out. `all` keeps every row (transcript). */
+  function exportRows(res, all) {
+    const out = [];
+    let events = 0, left = 0;
+    const flush = () => { if (left) { out.push({ more: left }); left = 0; } };
+    res.findings.forEach((f) => {
+      if (!all && isEventRow(res.module_id, f) && RANK[f.severity] < 2) {
+        if (++events > EVENT_ROWS_IN_TICKET) { left++; return; }
+      } else {
+        flush();
+      }
+      out.push({ f });
+    });
+    flush();
+    return out;
+  }
+  const moreRows = (n) => `${n} more event row${n === 1 ? "" : "s"}: in the full transcript, the JSON report and the case bundle.`;
+
+  /** What an investigation added to a report (guided steps, a recording, a
+   *  working-PC comparison), one line each, for every text export. */
+  function caseLines(report) {
+    const out = [];
+    if (report.role) out.push(`Workstation role: ${report.role}`);
+    if (report.evidence_updated) out.push(`Latest evidence update: ${fmtUtc(report.evidence_updated)}`);
+    if (report.runbook) {
+      out.push(`Troubleshooting: ${report.runbook.id} — ${report.runbook.conclusion}`);
+      (report.runbook.steps || []).forEach((step, i) => out.push(`  Phase ${i + 1}: ${step.reason} [${step.modules.join(", ")}]`));
+    }
+    if (report.recording) {
+      const r = report.recording;
+      out.push(`Recording: ${r.samples.length} sample(s), ${r.markers.length} marker(s), started ${fmtUtc(r.started)}`);
+      r.markers.forEach((m) => out.push(`  ${fmtUtc(new Date(m.at_ms).toISOString())}: ${m.label}`));
+    }
+    if (report.baseline) {
+      const b = report.baseline, seen = (v) => (v == null ? "not observed" : v);
+      out.push(`Working-PC baseline: ${b.baseline_host} -> ${b.current_host}: ${b.differences.length} configuration difference(s)`);
+      b.differences.slice(0, 15).forEach((d) => out.push(`  ${d.module} · ${d.label}: ${seen(d.baseline)} -> ${seen(d.current)}`));
+      if (b.differences.length > 15) out.push(`  … and ${b.differences.length - 15} more, in the JSON report and the case bundle.`);
+    }
+    return out;
+  }
+
   function plainText(report, diff, withLogs) {
     const lines = [`ITriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
     if (report.ticket) lines.push(`Ticket: ${report.ticket}`);
+    lines.push(...caseLines(report));
     if (report.cancelled) lines.push("Run was cancelled before every module finished.");
     if (report.results.some((r) => r.preview)) lines.push("PREVIEW: modules that change the machine only said what they would do.");
     if (report.results.some((r) => r.restart_required && !r.preview)) lines.push("A restart is needed to finish the changes.");
@@ -2678,7 +2850,8 @@
       if (res.error) {
         lines.push(`    error: ${res.error}`);
       } else {
-        res.findings.forEach((f) => {
+        exportRows(res, withLogs).forEach(({ f, more }) => {
+          if (more) { lines.push(`    … ${moreRows(more)}`); return; }
           const c = diff ? changeIn(diff, res.module_id, f.label) : null;
           lines.push(`    ${f.label}: ${f.value}${c && c.kind === "new" ? "  [NEW]" : ""}`);
           if (f.detail) lines.push(`        ${f.detail}`);
@@ -2702,6 +2875,12 @@
     const out = [`## ITriage report · ${report.host ? report.host.hostname : ""}`, "", `${fmtUtc(report.generated)} · ${hostLine(report)}${report.ticket ? " · ticket " + cell(report.ticket) : ""}`];
     if (report.results.some((r) => r.preview)) out.push("", "> **Preview:** modules that change the machine only said what they would do.");
     if (diff) out.push("", `**${diffLine(diff)}**`);
+    const investigation = caseLines(report);
+    if (investigation.length) {
+      out.push("", "### Investigation", "");
+      // An indented line belongs to the one above it.
+      investigation.forEach((l) => out.push(`${l.startsWith("  ") ? "  " : ""}- ${cell(l.trim())}`));
+    }
     if ((report.likely || []).length) {
       out.push("", "### Likely cause", "");
       report.likely.forEach((i) => {
@@ -2722,7 +2901,8 @@
         return;
       }
       out.push("| | Finding | Value |", "|---|---|---|");
-      res.findings.forEach((f) => {
+      exportRows(res, false).forEach(({ f, more }) => {
+        if (more) { out.push(`| | … | ${moreRows(more)} |`); return; }
         let value = cell(f.value);
         if (f.detail) value += `<br>${cell(f.detail)}`;
         if (f.kb) value += `<br>[${cell(f.kb.title)}](${f.kb.url})`;
@@ -2752,7 +2932,8 @@
         rows += `<tr>${sevCell("critical")}<td style="${base}" colspan="2">${esc(res.error)}</td></tr>`;
         return;
       }
-      res.findings.forEach((f) => {
+      exportRows(res, false).forEach(({ f, more }) => {
+        if (more) { rows += `<tr><td style="${base}"></td><td style="${base};color:#57606a" colspan="2">… ${esc(moreRows(more))}</td></tr>`; return; }
         const extra = (f.detail ? `<br><span style="color:#57606a">${esc(f.detail)}</span>` : "") +
           (f.kb ? `<br><a href="${esc(f.kb.url)}">${esc(f.kb.title)}</a>` : "");
         rows += `<tr>${sevCell(f.severity)}<td style="${base}">${esc(f.label)}</td><td style="${base}">${esc(f.value)}${extra}</td></tr>`;
@@ -2761,9 +2942,17 @@
     return `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:13px;color:#1f2328">
       <p style="margin:0 0 6px"><b>ITriage report</b> · ${esc(fmtUtc(report.generated))}<br>${esc(hostLine(report))}${report.ticket ? "<br>Ticket: " + esc(report.ticket) : ""}</p>
       ${diff ? `<p style="margin:0 0 8px"><b>${esc(diffLine(diff))}</b></p>` : ""}
+      ${caseHtml(report)}
       ${likelyHtml(report)}
       ${keyHtml(report, color)}
       <table style="border-collapse:collapse;font-size:13px">${rows}</table></div>`;
+  }
+
+  function caseHtml(report) {
+    const lines = caseLines(report);
+    if (!lines.length) return "";
+    const items = lines.map((l) => `<li style="${l.startsWith("  ") ? "margin-left:18px;color:#57606a" : ""}">${esc(l.trim())}</li>`).join("");
+    return `<p style="margin:8px 0 2px"><b>Investigation</b></p><ul style="margin:0 0 10px;padding-left:18px">${items}</ul>`;
   }
 
   function likelyHtml(report) {
@@ -3028,7 +3217,10 @@
       document.body.appendChild(scrim);
       if (onMount) onMount(scrim, close);
       const fi = Math.max(0, actions.findIndex((a) => a.focus));
-      if (!scrim.querySelector("textarea")) scrim.querySelector(`[data-i="${fi}"]`).focus();
+      // The buttons are at the bottom: focusing one mustn't scroll a tall
+      // dialog down to them before anyone has read its top.
+      if (!scrim.querySelector("textarea")) scrim.querySelector(`[data-i="${fi}"]`).focus({ preventScroll: true });
+      scrim.querySelectorAll(".modal, .modal-body").forEach((box) => { box.scrollTop = 0; });
     });
   }
 
@@ -3287,6 +3479,7 @@
       markRecording: (label) => invoke("mark_recording",{label}),
       compareBaseline: (baseline,current) => invoke("compare_baseline",{baseline,current}),
       timelineNear: (report,problemAt,windowSeconds) => invoke("timeline_near",{report,problemAt,windowSeconds}),
+      timelineRows: (report) => invoke("timeline_rows", { report }),
       previewCaseBundle: (report,options) => invoke("preview_case_bundle",{report,options}),
       exportCaseBundle: (report,options) => invoke("export_case_bundle",{report,options}),
       openCasesFolder: () => invoke("open_cases_folder"),
@@ -3409,9 +3602,22 @@
     }
     const full = find("system.disk", (f) => bad(f) && f.metric && f.metric.unit === "% free");
     if (full) {
+      const space = usable.find((x) => x.module_id === "system.storage");
+      const flagged = space ? space.findings.filter(bad).slice(0, 3).map((f) => `${space.title}: ${f.label}: ${f.value}`) : [];
       add(full.f.severity === "critical" ? 82 : 56, full.f.severity,
         `${full.f.label} is nearly full (${head(full.f.value)}). The PC slows down, and updates and saves start failing, when it runs out of space.`,
-        [full.cite], "Clear temp files and empty the Recycle Bin, then move or remove large files.");
+        [full.cite].concat(flagged),
+        flagged.length ? "Start with what the space check flagged. Clear temp files and empty the Recycle Bin (in the Tune-up checks), then move or remove large files."
+          : space ? "Nothing that can simply be cleared stands out: go through the biggest folders with the person whose PC it is."
+          : "Run What's using the space to see where it went. Clearing temp files and emptying the Recycle Bin (in the Tune-up checks) is the quick win.");
+    }
+    const slowStart = find("system.startup", (f) => f.label === "Last start" && bad(f));
+    if (slowStart) {
+      const held = find("system.startup", (f) => f.label.startsWith("Slowed startup: ") && bad(f));
+      add(slowStart.f.severity === "critical" ? 50 : 42, slowStart.f.severity, `This PC is slow to start: ${head(slowStart.f.value)}.`,
+        [slowStart.cite].concat(held ? [held.cite] : []),
+        held ? `${held.f.label.replace("Slowed startup: ", "")} has slowed startup more than once: update it, or stop it starting with the PC. Then switch off the startup apps nobody needs.`
+          : "Switch off the startup apps nobody needs. If it's still slow, look at the drive: a failing or nearly full one slows every start.");
     }
     const wifi = find("desk.wifi", (f) => f.label === "Signal" && bad(f));
     if (wifi) {
@@ -3702,7 +3908,7 @@
       }),
       // The preview has no release to compare with; ?update=1 shows the tag.
       checkUpdate: async () => (/[?&]update=1\b/.test(location.search)
-        ? { current: VERSION.slice(1), latest: "0.8.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.8.1", newer: true }
+        ? { current: VERSION.slice(1), latest: "0.9.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.9.1", newer: true }
         : null),
       openLink: async (url) => toast("Preview: this opens " + url),
       openHistoryFolder: async () => toast("Preview: this opens " + HIST_DIR.replace(/\\$/, "")),

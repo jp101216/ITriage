@@ -78,13 +78,24 @@ impl TriageModule for ApplicationConnections {
             return Err("At most 16 application URLs per run; split larger profiles.".into());
         }
         let mut findings = Vec::new();
-        for app in configured {
+        let mut tested = 0;
+        for (index, app) in configured.iter().enumerate() {
             if ctx.cancelled() {
                 break;
             }
+            tested += 1;
+            // What a row is called when the entry has no label (or no URL
+            // that can stand in for one).
+            let named = |fallback: String| -> String {
+                if app.label.trim().is_empty() {
+                    fallback
+                } else {
+                    app.label.trim().chars().take(150).collect()
+                }
+            };
             if app.expected_status.is_empty() || app.expected_status.iter().any(|s| !(100..=599).contains(s)) {
                 findings.push(Finding::warn(
-                    &app.label,
+                    named(format!("Application {}", index + 1)),
                     "Invalid expected_status: use one or more HTTP status codes.",
                 ));
                 continue;
@@ -92,15 +103,11 @@ impl TriageModule for ApplicationConnections {
             let url = match checked_url(&app.url) {
                 Ok(u) => u,
                 Err(e) => {
-                    findings.push(Finding::warn(&app.label, e));
+                    findings.push(Finding::warn(named(format!("Application {}", index + 1)), e));
                     continue;
                 }
             };
-            let label = if app.label.trim().is_empty() {
-                display_url(&url)
-            } else {
-                app.label.chars().take(150).collect()
-            };
+            let label = named(display_url(&url));
             ctx.log(format!("Testing {label}: {}", display_url(&url)));
             let host = url.host_str().unwrap_or_default().trim_matches(['[', ']']).to_string();
             let timeout = Duration::from_millis(app.timeout_ms.clamp(500, 15_000));
@@ -159,8 +166,9 @@ impl TriageModule for ApplicationConnections {
                 .with_detail("WinHTTP uses automatic proxy discovery for its own account. When elevated as a different technician, re-run without elevation as the affected user to test that user's proxy path. Browser sign-in is not simulated."));
         }
         let n = findings.iter().filter(|f| f.severity.rank() >= 2).count();
+        let stopped = if tested < configured.len() { format!(" (stopped after {tested} of {})", configured.len()) } else { String::new() };
         Ok(Output::new(
-            format!("{} application(s) · {n} finding(s) need attention", configured.len()),
+            format!("{tested} application(s) · {n} finding(s) need attention{stopped}"),
             findings,
         ))
     }
@@ -254,13 +262,11 @@ mod tests {
         let u = checked_url("https://app.example:8443/health?secret=hidden").unwrap();
         assert_eq!(display_url(&u), "https://app.example:8443/health");
     }
-    #[test]
-    fn real_http_status_is_preserved_even_when_it_is_not_success() {
+    /// Answers one request with a 401 and checks no credentials came with it.
+    fn answer_once(listener: std::net::TcpListener) -> std::thread::JoinHandle<()> {
         use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
-        let server = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             let until = std::time::Instant::now() + Duration::from_secs(8);
             let mut s = loop {
                 match listener.accept() {
@@ -271,6 +277,7 @@ mod tests {
                     Err(e) => panic!("fixture server: {e}"),
                 }
             };
+            s.set_nonblocking(false).unwrap();
             s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut b = [0; 4096];
             let n = s.read(&mut b).unwrap();
@@ -279,9 +286,29 @@ mod tests {
                 b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"fixture\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
             )
             .unwrap();
-        });
+        })
+    }
+
+    #[test]
+    fn real_http_status_is_preserved_even_when_it_is_not_success() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = answer_once(listener);
         let answer = http_probe(&checked_url(&format!("http://{address}/health")).unwrap(), Duration::from_secs(2)).unwrap();
         server.join().unwrap();
         assert_eq!(answer.status, 401);
+    }
+
+    #[test]
+    fn an_ipv6_address_in_the_url_reaches_its_server() {
+        // Not every build machine has IPv6 switched on.
+        let Ok(listener) = std::net::TcpListener::bind("[::1]:0") else {
+            return;
+        };
+        let port = listener.local_addr().unwrap().port();
+        let server = answer_once(listener);
+        let answer = http_probe(&checked_url(&format!("http://[::1]:{port}/health")).unwrap(), Duration::from_secs(2));
+        server.join().unwrap();
+        assert_eq!(answer.map(|a| a.status), Ok(401));
     }
 }

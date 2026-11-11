@@ -420,6 +420,11 @@ fn timeline_near(report: Report, problem_at: String, window_seconds: u64) -> Res
     let at = timeline::problem_time(&problem_at)?;
     Ok(timeline::near(&report, at, window_seconds))
 }
+/// Every change and network-authentication event in a report, oldest first.
+#[tauri::command]
+fn timeline_rows(report: Report) -> Vec<timeline::ChangeEvent> {
+    timeline::rows(&report)
+}
 #[tauri::command]
 async fn preview_case_bundle(report: Report, options: bundle::Options) -> Result<bundle::Preview, String> {
     tauri::async_runtime::spawn_blocking(move || bundle::prepare(&report, &options).map(|p| p.preview))
@@ -641,6 +646,7 @@ fn main() {
             mark_recording,
             compare_baseline,
             timeline_near,
+            timeline_rows,
             preview_case_bundle,
             export_case_bundle,
             open_cases_folder,

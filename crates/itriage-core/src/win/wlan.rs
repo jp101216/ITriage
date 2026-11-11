@@ -13,6 +13,9 @@ pub struct Wifi {
     pub adapter: String,
     pub connected: bool,
     pub ssid: Option<String>,
+    /// The access point's address (`aa:bb:cc:dd:ee:ff`): it changes when
+    /// the PC roams to another one on the same network.
+    pub bssid: Option<String>,
     /// 0–100, as Windows reports it.
     pub signal: Option<u32>,
     /// DOT11_AUTH_ALGORITHM value.
@@ -54,6 +57,7 @@ pub fn interfaces() -> Result<Vec<Wifi>, String> {
                 adapter,
                 connected,
                 ssid: None,
+                bssid: None,
                 signal: None,
                 auth: None,
                 one_x: false,
@@ -82,6 +86,8 @@ pub fn interfaces() -> Result<Vec<Wifi>, String> {
                     // Windows 11 24H2+ withholds the SSID from apps without
                     // location permission; the signal still comes through.
                     wifi.ssid = (!ssid.is_empty()).then_some(ssid);
+                    let ap = assoc.dot11Bssid;
+                    wifi.bssid = ap.iter().any(|b| *b != 0).then(|| ap.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":"));
                     wifi.signal = Some(assoc.wlanSignalQuality);
                     wifi.rx_kbps = Some(assoc.ulRxRate);
                     wifi.tx_kbps = Some(assoc.ulTxRate);

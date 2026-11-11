@@ -735,6 +735,16 @@ body::after {
 }
 .log-toggle:hover { color: var(--accent-hi); }
 .log-toggle svg { width: 13px; height: 13px; }
+/* "Show N older event rows", in a history check's card. */
+.more-rows {
+  display: flex; align-items: center; gap: 7px; width: 100%;
+  padding: 8px 14px;
+  font-family: var(--mono); font-size: 12.5px; color: var(--muted); text-align: left;
+  background: none; border: none; border-top: 1px solid rgb(var(--line-rgb) / 0.08);
+  cursor: pointer;
+}
+.more-rows:hover, .more-rows:focus-visible { color: var(--accent-hi); }
+.more-rows svg { width: 13px; height: 13px; }
 
 /* ---------------- confirm modal ---------------- */
 .scrim {
@@ -1785,6 +1795,20 @@ body.previewing .run-btn .plate { color: #dbe7f3; text-shadow: 0 0 10px rgb(var(
 }
 .run-opts .ticket::placeholder { color: var(--dim); letter-spacing: 1px; font-size: 11px; }
 .run-opts .ticket:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow-soft); }
+
+/* ---- the checks filter (beside All checks / Clear) ---- */
+.rail-actions { align-items: center; }
+.mod-filter {
+  /* Takes what the two buttons leave, and gives way before they wrap. */
+  flex: 1 1 8ch; min-width: 0; width: 0; height: 30px;
+  font-family: var(--mono); font-size: 12.5px; color: var(--title);
+  background: rgb(var(--bg-rgb) / 0.85); border: 1px solid var(--line-2); border-radius: 6px;
+  padding: 3px 8px; outline: none;
+}
+.mod-filter::placeholder { color: var(--dim); letter-spacing: 1px; font-size: 11px; }
+.mod-filter:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--glow-soft); }
+.mod-filter::-webkit-search-cancel-button { filter: grayscale(1) opacity(0.6); cursor: pointer; }
+.no-match { margin: 18px 6px; font-size: 13px; line-height: 1.5; color: var(--muted); }
 
 /* ---- "a newer version is out" (brand bar) ---- */
 .tag.update {
