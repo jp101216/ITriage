@@ -67,6 +67,10 @@ impl Redactor {
         let mut values: BTreeMap<String, String> = BTreeMap::new();
         if options.redact_identifiers {
             values.insert(report.host.hostname.clone(), "host".into());
+            if let Some(baseline) = &report.baseline {
+                values.insert(baseline.baseline_host.clone(), "host".into());
+                values.insert(baseline.current_host.clone(), "host".into());
+            }
             for m in &report.results {
                 for f in &m.findings {
                     let label = f.label.to_ascii_lowercase();
@@ -179,7 +183,24 @@ impl Redactor {
         match value {
             serde_json::Value::String(s) => *s = self.text(s),
             serde_json::Value::Array(a) => a.iter_mut().for_each(|v| self.value(v)),
-            serde_json::Value::Object(o) => o.values_mut().for_each(|v| self.value(v)),
+            serde_json::Value::Object(o) => o
+                .iter_mut()
+                .filter(|(k, _)| {
+                    !matches!(
+                        k.as_str(),
+                        "category"
+                            | "severity"
+                            | "module_id"
+                            | "module"
+                            | "platform"
+                            | "unit"
+                            | "tool_version"
+                            | "generated"
+                            | "started"
+                            | "at"
+                    )
+                })
+                .for_each(|(_, v)| self.value(v)),
             _ => (),
         }
     }
@@ -350,6 +371,32 @@ impl Prepared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn privacy_terms_cannot_corrupt_structural_enums_or_leave_baseline_hostnames() {
+        let mut host = crate::host_context();
+        host.hostname = "critical".into();
+        let mut m = crate::ModuleResult::failed(
+            &crate::ModuleInfo::new("system.info", "System", crate::Category::Network, ""),
+            "critical on critical",
+        );
+        m.findings = vec![crate::Finding::crit("Host", "critical")];
+        let mut r = Report::new(host, None, vec![m], false);
+        r.baseline = Some(crate::investigate::baseline::Comparison {
+            baseline_host: "PRIVATE-BASELINE".into(),
+            current_host: "critical".into(),
+            baseline_generated: r.generated.clone(),
+            current_generated: r.generated.clone(),
+            role: None,
+            differences: vec![],
+            gaps: vec![],
+        });
+        let case = prepare(&r, &Options::default()).unwrap();
+        let exported: Report = serde_json::from_str(&case.preview.contents["report.json"]).unwrap();
+        assert_eq!(exported.results[0].findings[0].severity, crate::Severity::Critical);
+        assert_eq!(exported.results[0].category, crate::Category::Network);
+        assert!(!case.preview.contents["baseline.json"].contains("PRIVATE-BASELINE"));
+        assert_eq!(exported.baseline.unwrap().current_host, exported.host.hostname);
+    }
     #[test]
     fn identifiers_are_consistent_and_the_manifest_hashes_exported_bytes() {
         let mut host = crate::host_context();

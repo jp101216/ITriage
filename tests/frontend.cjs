@@ -270,6 +270,6 @@ test("timeline uses the chosen onset and explains temporal uncertainty",async(t)
   const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
   await page.locator("#timelineBtn").click();await page.getByText("Driver installation activity").waitFor();
   assert.match(await page.getByRole("dialog").innerText(),/timing alone does not establish the cause/);
-  await page.locator("#caseOnset").fill("2026-11-10T12:34:00");await page.locator("#caseWindow").selectOption("900");await page.locator("#caseFindChanges").click();
+  await page.locator("#caseOnset").fill("2026-11-10T12:34");await page.locator("#caseWindow").selectOption("900");await page.locator("#caseFindChanges").click();
   await page.waitForFunction(()=>testState.args.some((c)=>c.command==="timeline_near"&&c.args.windowSeconds===900));
 });
