@@ -58,6 +58,9 @@ pub fn conclusion(results: &[ModuleResult]) -> String {
 }
 
 pub fn next(id: &str, results: &[ModuleResult]) -> Result<Decision, String> {
+    next_for(id, results, false)
+}
+fn next_for(id: &str, results: &[ModuleResult], has_target: bool) -> Result<Decision, String> {
     let initial: &[&str] = match id {
         "printing" => &["desk.printers", "proc.services"],
         "vpn" => &["desk.wifi", "net.connectivity", "net.proxy"],
@@ -72,7 +75,10 @@ pub fn next(id: &str, results: &[ModuleResult]) -> Result<Decision, String> {
             .map(|id| id.to_string())
             .collect::<Vec<_>>()
     };
-    let first = missing(initial);
+    let mut first = missing(initial);
+    if has_target && !results.iter().any(|r| r.module_id == "net.target") {
+        first.push("net.target".into());
+    }
     if !first.is_empty() {
         return Ok(Decision {
             modules: first,
@@ -103,6 +109,13 @@ pub fn next(id: &str, results: &[ModuleResult]) -> Result<Decision, String> {
 /// `execute` stops at a safe module boundary and preserves completed results.
 pub fn run(
     id: &str,
+    execute: impl FnMut(&dyn TriageModule, usize, usize, &str) -> Option<ModuleResult>,
+) -> Result<(Vec<ModuleResult>, RunbookTrace), String> {
+    run_for(id, false, execute)
+}
+pub fn run_for(
+    id: &str,
+    has_target: bool,
     mut execute: impl FnMut(&dyn TriageModule, usize, usize, &str) -> Option<ModuleResult>,
 ) -> Result<(Vec<ModuleResult>, RunbookTrace), String> {
     let mut results = Vec::new();
@@ -113,7 +126,7 @@ pub fn run(
         conclusion: String::new(),
     };
     for _ in 0..4 {
-        let decision = next(id, &results)?;
+        let decision = next_for(id, &results, has_target)?;
         if decision.modules.is_empty() {
             trace.finished = true;
             break;
@@ -142,6 +155,34 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn an_explicit_target_is_not_lost_in_a_guided_run() {
+        let (results, trace) = run_for("vpn", true, |m, _, _, _| Some(ModuleResult::failed(&m.info(), "fixture"))).unwrap();
+        assert_eq!(results.iter().filter(|r| r.module_id == "net.target").count(), 1);
+        assert!(trace.steps[0].modules.iter().any(|id| id == "net.target"));
+    }
+    #[test]
+    fn every_runbook_finishes_and_printing_branches_on_actual_findings() {
+        for book in RUNBOOKS {
+            for problem in [false, true] {
+                let (_, trace) = run(book.id, |m, _, _, _| {
+                    let mut r = ModuleResult::failed(&m.info(), "");
+                    r.error = None;
+                    r.findings = vec![if problem {
+                        crate::Finding::warn("Fixture", "needs attention")
+                    } else {
+                        crate::Finding::ok("Fixture", "healthy")
+                    }];
+                    Some(r)
+                })
+                .unwrap();
+                assert!(trace.finished);
+                if book.id == "printing" {
+                    assert_eq!(trace.steps.len(), if problem { 2 } else { 1 });
+                }
+            }
+        }
+    }
     #[test]
     fn adaptive_vpn_plan_is_read_only_bounded_and_keeps_its_reasoning() {
         let (results, trace) = run("vpn", |m, _, _, _| {

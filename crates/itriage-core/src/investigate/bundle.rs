@@ -92,6 +92,7 @@ impl Redactor {
                 (r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}", "account"),
                 (r"(?:[0-9]{1,3}\.){3}[0-9]{1,3}", "address"),
                 (r"(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:]{0,39}", "address"),
+                (r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b", "network"),
             ] {
                 let re = Regex::new(pattern).map_err(|e| e.to_string())?;
                 for found in re.find_iter(&serialized) {
@@ -112,7 +113,7 @@ impl Redactor {
             let mut texts = Vec::new();
             strings(&serde_json::to_value(report).map_err(|e| e.to_string())?, &mut texts);
             for (pattern, group) in [
-                (r"(?i)\b[A-Z0-9_.-]+\\[A-Z0-9_.$-]+", 0),
+                (r"(?i)\b[A-Z0-9_.-]{2,}\\[A-Z0-9_.$-]+", 0),
                 (r"(?i)(?:C:\\Users\\|/home/)([^\\/\s]+)", 1),
             ] {
                 let re = Regex::new(pattern).map_err(|e| e.to_string())?;
@@ -129,8 +130,11 @@ impl Redactor {
             values.insert(term.into(), "custom".into());
         }
         let mut values = values.into_iter().filter(|(s, _)| !s.is_empty()).collect::<Vec<_>>();
+        if values.len() > 2000 {
+            return Err("More than 2000 distinct privacy terms were found. Export a smaller case or omit logs.".into());
+        }
         values.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then(a.0.cmp(&b.0)));
-        // One alternation and one pass: pseudonyms can never be rewritten by
+        // One replacement pass: pseudonyms can never be rewritten by
         // a later dictionary entry. Boundaries avoid replacing "PC" in TCP.
         let mut counters: BTreeMap<String, usize> = BTreeMap::new();
         let mut terms = Vec::new();

@@ -68,7 +68,7 @@ pub fn summarize(events: &[WirelessEvent]) -> Vec<Finding> {
     let mut out = Vec::new();
     let associations = events.iter().filter(|e| e.event_id == 8001 && e.channel.contains("WLAN")).count();
     let disconnects = events.iter().filter(|e| e.event_id == 8003 && e.channel.contains("WLAN")).count();
-    out.push(Finding::info("Wireless session history (24 h)", format!("{associations} successful association(s), {disconnects} disconnect(s)"))
+    out.push(Finding::info("Wireless session history (collected events)", format!("{associations} successful association(s), {disconnects} disconnect(s)"))
         .with_detail("An association or a disconnect alone does not prove a roam or a fault. Compare access-point identifiers and the problem's time."));
     for e in events.iter().take(80) {
         let severity = match e.level {
@@ -78,7 +78,11 @@ pub fn summarize(events: &[WirelessEvent]) -> Vec<Finding> {
         out.push(
             Finding::new(
                 format!("{} · {} {}", e.at, e.channel, e.event_id),
-                e.details.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(" · "),
+                if e.details.is_empty() {
+                    "No summarized reason fields in this event; inspect the source event for additional detail.".into()
+                } else {
+                    e.details.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(" · ")
+                },
                 severity,
             )
             .with_detail("A certificate event must match the same time and connection before it can explain an authentication failure."),
@@ -108,7 +112,7 @@ fn platform() -> Result<Output, String> {
     findings.extend(gaps);
     findings.push(Finding::info(
         "Collection scope",
-        "Existing logs only. A disabled or inaccessible channel is a gap, not a successful authentication check.",
+        "Up to 40 recent events per channel from the last 24 hours; only 80 event rows are summarized. Existing logs only. A disabled or inaccessible channel is a gap, not a successful authentication check.",
     ));
     Ok(Output::new(
         format!("{} recent network-authentication event(s)", events.len()),

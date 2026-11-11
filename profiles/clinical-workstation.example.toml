@@ -10,7 +10,16 @@
 # parse, ITriage runs read-only rather than ignoring it.
 
 name = "Clinical workstation (example)"
+role = "clinical-workstation"
 description = "Shared nursing-unit PC: badge-tap sign-in, virtual desktop, label printer"
+
+# Optional application health check. Uncomment and replace the placeholder.
+# [[require.application]]
+# label = "Clinical portal"
+# url = "https://portal.example.org/health"
+# expected_status = [200, 401]
+# timeout_ms = 8000
+# slow_ms = 2000
 
 [policy]
 # Patching comes from the management platform, so the install modules are locked.

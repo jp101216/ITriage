@@ -66,6 +66,9 @@ pub fn now_ms() -> u64 {
 }
 pub fn mark(markers: &Mutex<Vec<Marker>>, label: &str) -> Result<Marker, String> {
     let mut rows = markers.lock().map_err(|_| "The marker list is unavailable.")?;
+    append_marker(&mut rows, label)
+}
+pub fn append_marker(rows: &mut Vec<Marker>, label: &str) -> Result<Marker, String> {
     if rows.len() >= MAX_MARKERS {
         return Err("This recording already has 100 markers.".into());
     }
@@ -105,7 +108,11 @@ pub fn record(
             .map(|r| r.addresses)
     });
     if let Some((host, port)) = &target {
-        recording.target = Some(format!("{host}:{port}"));
+        recording.target = Some(if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        });
         if addresses.is_none() {
             recording
                 .gaps
@@ -200,6 +207,11 @@ pub fn result(recording: &Recording) -> ModuleResult {
     let mut result = ModuleResult::failed(&info, "");
     result.error = None;
     let failures = recording.samples.iter().filter(|s| s.tcp_error.is_some()).count();
+    let attempts = recording
+        .samples
+        .iter()
+        .filter(|s| s.tcp_error.is_some() || s.tcp_ms.is_some())
+        .count();
     let cpu = recording.samples.iter().map(|s| s.cpu_pct).fold(0.0, f32::max);
     let memory = recording.samples.iter().map(|s| s.memory_pct).fold(0.0, f32::max);
     result.summary = format!(
@@ -213,10 +225,25 @@ pub fn result(recording: &Recording) -> ModuleResult {
         Finding::info("Peak RAM use", format!("{memory:.1}%")).with_metric(memory as f64, "%", true),
     ];
     if recording.target.is_some() {
-        result.findings.push(if failures > 0 {
+        result.findings.push(if attempts == 0 {
+            Finding::info("TCP samples", "No TCP attempts could be sampled; inspect coverage gaps")
+        } else if failures > 0 {
             Finding::warn("TCP samples", format!("{failures} connection attempt(s) failed"))
         } else {
             Finding::ok("TCP samples", "all sampled connections answered")
+        });
+    }
+    let dns_attempts = recording
+        .samples
+        .iter()
+        .filter(|s| s.dns_ms.is_some() || s.dns_error.is_some())
+        .count();
+    let dns_failures = recording.samples.iter().filter(|s| s.dns_error.is_some()).count();
+    if dns_attempts > 0 {
+        result.findings.push(if dns_failures > 0 {
+            Finding::warn("DNS samples", format!("{dns_failures} of {dns_attempts} probes failed"))
+        } else {
+            Finding::ok("DNS samples", format!("{dns_attempts} probes answered"))
         });
     }
     result
@@ -250,6 +277,27 @@ pub fn csv(recording: &Recording) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unsampled_connections_never_get_a_success_verdict() {
+        let capture = Recording {
+            started: "2026-11-10T12:00:00Z".into(),
+            config: Config::default(),
+            target: Some("unresolved.example:443".into()),
+            samples: vec![],
+            markers: vec![],
+            stopped_early: false,
+            gaps: vec!["Name lookup failed".into()],
+        };
+        let r = result(&capture);
+        assert!(r
+            .findings
+            .iter()
+            .any(|f| f.label == "TCP samples" && f.severity == crate::Severity::Info));
+        assert!(!r
+            .findings
+            .iter()
+            .any(|f| f.label == "TCP samples" && f.severity == crate::Severity::Ok));
+    }
     #[test]
     fn recording_and_marker_limits_are_enforced() {
         let config = Config {

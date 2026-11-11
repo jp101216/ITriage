@@ -124,6 +124,26 @@ pub fn near(report: &crate::Report, problem_at: u64, window_seconds: u64) -> Vec
         .collect()
 }
 
+pub fn problem_time(text: &str) -> Result<u64, String> {
+    let s = text.trim();
+    let invalid = || "Use a valid ISO 8601 UTC problem time ending in Z.".to_string();
+    let body = s.strip_suffix('Z').ok_or_else(invalid)?;
+    let suffix = body.get(19..).ok_or_else(invalid)?;
+    if body.as_bytes().get(10) != Some(&b'T')
+        || (!suffix.is_empty() && !(suffix.starts_with('.') && suffix.len() > 1 && suffix[1..].bytes().all(|b| b.is_ascii_digit())))
+    {
+        return Err(invalid());
+    }
+    let epoch = iso8601_utc_to_epoch(s).ok_or_else(invalid)?;
+    if epoch_to_utc_prefix(epoch) != body[..19] {
+        return Err(invalid());
+    }
+    Ok(epoch)
+}
+fn epoch_to_utc_prefix(epoch: u64) -> String {
+    crate::parse::time::epoch_to_rfc3339(epoch).chars().take(19).collect()
+}
+
 #[cfg(windows)]
 fn collect() -> (Vec<ChangeEvent>, Vec<String>) {
     const SYSTEM: &str = "*[System[TimeCreated[timediff(@SystemTime) <= 604800000] and (Provider[@Name='Microsoft-Windows-WindowsUpdateClient'] or Provider[@Name='Microsoft-Windows-Kernel-PnP'] or Provider[@Name='User32'] or (Provider[@Name='Microsoft-Windows-Kernel-General'] and EventID=12) or (Provider[@Name='Service Control Manager'] and (EventID=7040 or EventID=7045)))]]";
@@ -242,6 +262,31 @@ fn dpkg_line(line: &str) -> Option<ChangeEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn onset_requires_a_real_utc_time_and_nearby_events_are_bounded() {
+        for s in [
+            "2026-02-31T12:00:00Z",
+            "2026-11-10T12:00:00+02:00",
+            "2026-11-10T12:00:00garbageZ",
+            "2026-11-10T12:00:00",
+        ] {
+            assert!(problem_time(s).is_err(), "{s}");
+        }
+        assert_eq!(problem_time("2026-11-10T12:00:00.125Z"), problem_time("2026-11-10T12:00:00Z"));
+        let mut m = crate::ModuleResult::failed(
+            &crate::ModuleInfo::new("system.changes", "Changes", crate::Category::System, ""),
+            "",
+        );
+        m.error = None;
+        m.findings = vec![
+            Finding::info("2026-11-10T12:01:00Z · Driver", "nearby"),
+            Finding::info("2026-11-10T09:00:00Z · Driver", "outside"),
+        ];
+        let r = crate::Report::new(crate::host_context(), None, vec![m], false);
+        let rows = near(&r, problem_time("2026-11-10T12:00:00Z").unwrap(), 120);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].description, "nearby");
+    }
     #[test]
     fn installer_activity_is_not_assumed_success_or_causation() {
         let e = from_xml("Application", "<Event><System><Provider Name='MsiInstaller'/><EventID>1033</EventID><Level>2</Level><TimeCreated SystemTime='2026-11-10T12:00:00Z'/></System><EventData><Data Name='ProductName'>App</Data></EventData></Event>").unwrap();

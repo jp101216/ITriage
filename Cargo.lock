@@ -1503,7 +1503,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
 name = "itriage"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "itriage-core",
  "serde",
@@ -1514,7 +1514,7 @@ dependencies = [
 
 [[package]]
 name = "itriage-core"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "crc32fast",
  "libc",

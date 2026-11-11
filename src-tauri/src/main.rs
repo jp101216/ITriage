@@ -282,7 +282,7 @@ async fn run_modules(
             Some(result)
         };
         let (results, trace) = if let Some(id) = &runbook {
-            let (results,trace) = guided::run(id, &mut execute)?;
+            let (results,trace) = guided::run_for(id, target.is_some(), &mut execute)?;
             (results,Some(trace))
         } else {
             (chosen.iter().enumerate().filter_map(|(index,m)|execute(m.as_ref(),index,total,"")).collect(),None)
@@ -313,65 +313,121 @@ async fn run_modules(
 }
 
 struct RecordingFlag(Arc<AtomicBool>);
-impl Drop for RecordingFlag { fn drop(&mut self) { self.0.store(false,Ordering::SeqCst); } }
+impl Drop for RecordingFlag {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 #[tauri::command]
-async fn record_problem(window: Window, app: State<'_, App>, config: recording::Config, target: Option<String>, ticket: Option<String>, base_report:Option<Report>) -> Result<RunOutcome,String> {
-    if base_report.as_ref().is_some_and(|r| !r.host.hostname.eq_ignore_ascii_case(&host_context().hostname) || r.host.platform != std::env::consts::OS) {
+async fn record_problem(
+    window: Window,
+    app: State<'_, App>,
+    config: recording::Config,
+    target: Option<String>,
+    ticket: Option<String>,
+    base_report: Option<Report>,
+) -> Result<RunOutcome, String> {
+    if base_report
+        .as_ref()
+        .is_some_and(|r| !r.host.hostname.eq_ignore_ascii_case(&host_context().hostname) || r.host.platform != std::env::consts::OS)
+    {
         return Err("Return to this PC's live report before attaching a recording. An opened report from another PC cannot contain local measurements.".into());
     }
-    let target = target.as_deref().map(str::trim).filter(|s|!s.is_empty()).map(|s|Target::parse(s,&app.profile.network.target_ports)).transpose()?;
-    let busy = claim(&app,Some(window.clone()))?;
-    app.cancel.store(false,Ordering::SeqCst);
-    app.markers.lock().map_err(|_|"Marker list unavailable")?.clear();
-    app.recording.store(true,Ordering::SeqCst);
+    let target = target
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| Target::parse(s, &app.profile.network.target_ports))
+        .transpose()?;
+    let busy = claim(&app, Some(window.clone()))?;
+    app.cancel.store(false, Ordering::SeqCst);
+    app.markers.lock().map_err(|_| "Marker list unavailable")?.clear();
+    app.recording.store(true, Ordering::SeqCst);
     let flag = RecordingFlag(app.recording.clone());
-    let (markers,cancel,profile) = (app.markers.clone(),app.cancel.clone(),app.profile.clone());
-    let profile_name = (app.status.source != "built-in").then(||app.status.name.clone());
+    let (markers, cancel, profile) = (app.markers.clone(), app.cancel.clone(), app.profile.clone());
+    let profile_name = (app.status.source != "built-in").then(|| app.status.name.clone());
     tauri::async_runtime::spawn_blocking(move || {
-        let _busy = busy; let _flag = flag;
-        let sink = |_: &str|{};
+        let _busy = busy;
+        let _flag = flag;
+        let sink = |_: &str| {};
         let ctx = RunContext::new(&sink).with_profile(&profile).with_cancel(&cancel);
-        let capture = recording::record(config,target.as_ref(),&ctx,&markers,|sample| { let _ = window.emit("recording-sample",sample); })?;
+        let mut capture = recording::record(config, target.as_ref(), &ctx, &markers, |sample| {
+            let _ = window.emit("recording-sample", sample);
+        })?;
+        {
+            let rows = markers.lock().map_err(|_| "Marker list unavailable")?;
+            _flag.0.store(false, Ordering::SeqCst);
+            capture.markers = rows.clone();
+        }
         let result = recording::result(&capture);
-        audit::run_finished(std::slice::from_ref(&result),false,ticket.as_deref());
-        let mut report = base_report.unwrap_or_else(||Report::new(host_context(),profile_name,Vec::new(),false).with_ticket(ticket.as_deref()).with_role(&profile.role));
-        report.results.retain(|r|r.module_id != "capture.recording"); report.results.push(result);
+        audit::run_finished(std::slice::from_ref(&result), false, ticket.as_deref());
+        let mut report = base_report.unwrap_or_else(|| {
+            Report::new(host_context(), profile_name, Vec::new(), false)
+                .with_ticket(ticket.as_deref())
+                .with_role(&profile.role)
+        });
+        report.results.retain(|r| r.module_id != "capture.recording");
+        report.results.push(result);
         report.recording = Some(capture);
         report.refresh();
-        let (saved,save_error) = match report::save(&report,profile.history.keep) { Ok(p)=>(Some(p.display().to_string()),None), Err(e)=>(None,Some(e)) };
-        Ok(RunOutcome { report,saved,save_error,diff:None })
-    }).await.map_err(|e|format!("Recording stopped unexpectedly: {e}"))?
+        let (saved, save_error) = match report::save(&report, profile.history.keep) {
+            Ok(p) => (Some(p.display().to_string()), None),
+            Err(e) => (None, Some(e)),
+        };
+        Ok(RunOutcome {
+            report,
+            saved,
+            save_error,
+            diff: None,
+        })
+    })
+    .await
+    .map_err(|e| format!("Recording stopped unexpectedly: {e}"))?
 }
 
 #[tauri::command]
-fn mark_recording(app: State<'_,App>,label:String) -> Result<recording::Marker,String> {
-    if !app.recording.load(Ordering::SeqCst) { return Err("No recording is running.".into()); }
-    recording::mark(&app.markers,&label)
+fn mark_recording(app: State<'_, App>, label: String) -> Result<recording::Marker, String> {
+    let mut markers = app.markers.lock().map_err(|_| "Marker list unavailable")?;
+    if !app.recording.load(Ordering::SeqCst) {
+        return Err("No recording is running.".into());
+    }
+    recording::append_marker(&mut markers, &label)
 }
 #[tauri::command]
-fn list_runbooks() -> Vec<guided::Runbook> { guided::RUNBOOKS.to_vec() }
-#[tauri::command]
-fn runbook_plan(id:String) -> Result<guided::Decision,String> { guided::next(&id,&[]) }
-#[tauri::command]
-fn compare_baseline(baseline:Report,current:Report) -> Result<baseline::Comparison,String> { baseline::compare(&baseline,&current) }
-#[tauri::command]
-fn timeline_near(report:Report, problem_at:String, window_seconds:u64) -> Result<Vec<timeline::ChangeEvent>,String> {
-    let at = itriage_core::parse::time::iso8601_utc_to_epoch(&problem_at).ok_or("Use an ISO 8601 UTC problem time.")?;
-    Ok(timeline::near(&report,at,window_seconds))
+fn list_runbooks() -> Vec<guided::Runbook> {
+    guided::RUNBOOKS.to_vec()
 }
 #[tauri::command]
-async fn preview_case_bundle(report:Report, options:bundle::Options) -> Result<bundle::Preview,String> {
-    tauri::async_runtime::spawn_blocking(move ||bundle::prepare(&report,&options).map(|p|p.preview)).await.map_err(|e|e.to_string())?
+fn runbook_plan(id: String) -> Result<guided::Decision, String> {
+    guided::next(&id, &[])
 }
 #[tauri::command]
-async fn export_case_bundle(report:Report, options:bundle::Options) -> Result<String,String> {
-    tauri::async_runtime::spawn_blocking(move ||bundle::prepare(&report,&options)?.save().map(|p|p.display().to_string())).await.map_err(|e|e.to_string())?
+fn compare_baseline(baseline: Report, current: Report) -> Result<baseline::Comparison, String> {
+    baseline::compare(&baseline, &current)
 }
 #[tauri::command]
-fn open_cases_folder() -> Result<(),String> {
+fn timeline_near(report: Report, problem_at: String, window_seconds: u64) -> Result<Vec<timeline::ChangeEvent>, String> {
+    let at = timeline::problem_time(&problem_at)?;
+    Ok(timeline::near(&report, at, window_seconds))
+}
+#[tauri::command]
+async fn preview_case_bundle(report: Report, options: bundle::Options) -> Result<bundle::Preview, String> {
+    tauri::async_runtime::spawn_blocking(move || bundle::prepare(&report, &options).map(|p| p.preview))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn export_case_bundle(report: Report, options: bundle::Options) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || bundle::prepare(&report, &options)?.save().map(|p| p.display().to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+fn open_cases_folder() -> Result<(), String> {
     let dir = itriage_core::paths::data_dir().ok_or("No local data folder")?.join("cases");
-    std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?; host::open_folder(&dir)
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    host::open_folder(&dir)
 }
 
 /// The diff against this machine's last comparable saved run.

@@ -328,7 +328,7 @@ pub fn main(argv: Vec<String>) -> i32 {
         ctx = ctx.with_target(t);
     }
     let (results, trace, capture) = if let Some(id) = &args.runbook {
-        match guided::run(id,|m,_,_,reason| { if !quiet { eprintln!("▶ {} · {reason}",m.info().title); } Some(m.run(&ctx)) }) {
+        match guided::run_for(id,target.is_some(),|m,_,_,reason| { if !quiet { eprintln!("▶ {} · {reason}",m.info().title); } Some(m.run(&ctx)) }) {
             Ok((results,trace))=>(results,Some(trace),None),
             Err(e)=>{ eprintln!("itriage: {e}"); return 1; }
         }
@@ -414,6 +414,8 @@ fn list(profile: &Profile, remote_safe: bool) {
         let script = if p.script.is_empty() { String::new() } else { format!(" ({})", p.script) };
         println!("  --preset {:<8} {}{script}: {}", p.id, p.title, p.modules.join(" "));
     }
+    println!("\nGuided troubleshooting (read-only):");
+    for book in guided::RUNBOOKS { println!("  --runbook {:<10} {}",book.id,book.title); }
 }
 
 /// How each measurement has moved over this computer's saved runs.
@@ -450,27 +452,46 @@ fn trends(json: bool) -> i32 {
 
 /// Compare-NetTriage: two saved runs of one computer, as text (or JSON),
 /// and with `--out` as a JSON file with the text beside it.
-fn case_command(args: &Args) -> Result<(),String> {
-    let text = if let Some((good,now)) = &args.baseline {
-        serde_json::to_string_pretty(&baseline::compare(&report::load(good)?,&report::load(now)?)?).map_err(|e|e.to_string())?
+fn case_command(args: &Args) -> Result<(), String> {
+    let text = if let Some((good, now)) = &args.baseline {
+        serde_json::to_string_pretty(&baseline::compare(&report::load(good)?, &report::load(now)?)?).map_err(|e| e.to_string())?
     } else if let Some(path) = args.bundle.as_ref().or(args.bundle_preview.as_ref()) {
         let report = report::load(path)?;
-        let prepared = bundle::prepare(&report,&bundle::Options { include_logs:args.include_logs,redact_identifiers:!args.no_redact,custom_terms:Vec::new() })?;
+        let prepared = bundle::prepare(
+            &report,
+            &bundle::Options {
+                include_logs: args.include_logs,
+                redact_identifiers: !args.no_redact,
+                custom_terms: Vec::new(),
+            },
+        )?;
         if args.bundle.is_some() {
-            let path = args.out.as_ref().ok_or("--bundle requires --out CASE.zip. Use --bundle-preview first to review the contents.")?;
-            prepared.write_new(path)?; println!("Case saved: {}",path.display()); return Ok(());
+            let path = args
+                .out
+                .as_ref()
+                .ok_or("--bundle requires --out CASE.zip. Use --bundle-preview first to review the contents.")?;
+            prepared.write_new(path)?;
+            println!("Case saved: {}", path.display());
+            return Ok(());
         }
-        serde_json::to_string_pretty(&prepared.preview).map_err(|e|e.to_string())?
+        serde_json::to_string_pretty(&prepared.preview).map_err(|e| e.to_string())?
     } else if let Some(path) = &args.timeline {
         let report = report::load(path)?;
         let rows = if let Some(at) = &args.problem_at {
-            let at = crate::parse::time::iso8601_utc_to_epoch(at).ok_or("Use an ISO 8601 UTC problem time.")?;
-            timeline::near(&report,at,3600)
-        } else { timeline::rows(&report) };
-        serde_json::to_string_pretty(&rows).map_err(|e|e.to_string())?
-    } else { return Err("No case command selected.".into()); };
-    if let Some(path) = &args.out { std::fs::write(path,&text).map_err(|e|format!("Can't write {}: {e}",path.display()))?; }
-    println!("{text}"); Ok(())
+            let at = timeline::problem_time(at)?;
+            timeline::near(&report, at, 3600)
+        } else {
+            timeline::rows(&report)
+        };
+        serde_json::to_string_pretty(&rows).map_err(|e| e.to_string())?
+    } else {
+        return Err("No case command selected.".into());
+    };
+    if let Some(path) = &args.out {
+        std::fs::write(path, &text).map_err(|e| format!("Can't write {}: {e}", path.display()))?;
+    }
+    println!("{text}");
+    Ok(())
 }
 
 fn compare(old: &std::path::Path, new: &std::path::Path, json: bool, out: Option<&std::path::Path>) -> i32 {
@@ -528,6 +549,15 @@ mod tests {
 
     fn args(list: &[&str]) -> Args {
         parse(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn case_command_modes_cannot_silently_ignore_other_work() {
+        for argv in [vec!["--runbook","vpn","--record","5"],vec!["--record","4"],vec!["--record","10","--interval-ms","0"],vec!["--runbook","printing","fix.dns"],vec!["--bundle","report.json","--preset","tuneup"],vec!["--interval-ms","1000"],vec!["--no-redact"],vec!["--problem-at","2026-11-10T12:00:00Z"]] {
+            let values=argv.iter().map(|s|s.to_string()).collect::<Vec<_>>();assert!(parse(&values).is_err(),"{argv:?}");
+        }
+        assert_eq!(args(&["--record","5","--interval-ms","2000"]).record,Some(5));
+        assert_eq!(args(&["--baseline","good.json","now.json"]).baseline.unwrap().0,PathBuf::from("good.json"));
     }
 
     #[test]

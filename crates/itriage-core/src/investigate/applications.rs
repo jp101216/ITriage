@@ -254,18 +254,31 @@ mod tests {
         let u = checked_url("https://app.example:8443/health?secret=hidden").unwrap();
         assert_eq!(display_url(&u), "https://app.example:8443/health");
     }
-    #[cfg(not(windows))]
     #[test]
     fn real_http_status_is_preserved_even_when_it_is_not_success() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
+            let until = std::time::Instant::now() + Duration::from_secs(8);
+            let mut s = loop {
+                match listener.accept() {
+                    Ok((s, _)) => break s,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < until => {
+                        std::thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(e) => panic!("fixture server: {e}"),
+                }
+            };
+            s.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
             let mut b = [0; 4096];
-            let _ = s.read(&mut b);
-            s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                .unwrap();
+            let n = s.read(&mut b).unwrap();
+            assert!(!String::from_utf8_lossy(&b[..n]).to_lowercase().contains("authorization:"));
+            s.write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Basic realm=\"fixture\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .unwrap();
         });
         let answer = http_probe(&checked_url(&format!("http://{address}/health")).unwrap(), Duration::from_secs(2)).unwrap();
         server.join().unwrap();
