@@ -14,54 +14,164 @@
           "'": "&#39;",
         })[c],
     );
-  const stamp = (ms) => new Date(ms).toLocaleString();
-  const button = (id, label) =>
-    `<button class="bk-btn" type="button" id="${id}">${label}</button>`;
-  const table = (heads, rows) =>
-    `<div class="case-scroll"><table class="mtable"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
-  const sampleTable = (rows) =>
-    table(
-      [
-        "Time",
-        "CPU %",
-        "RAM %",
-        "TCP ms / failure",
-        "DNS ms / failure",
-        "Disk R/W B/s",
-        "Network Rx/Tx B/s",
-        "Wi-Fi",
-      ],
-      rows.map((s) => [
-        stamp(s.at_ms),
-        Number(s.cpu_pct).toFixed(1),
-        Number(s.memory_pct).toFixed(1),
-        s.tcp_error || (s.tcp_ms == null ? "not sampled" : s.tcp_ms.toFixed(1)),
-        s.dns_error || (s.dns_ms == null ? "not sampled" : s.dns_ms.toFixed(1)),
-        `${s.disk_read} / ${s.disk_write}`,
-        `${s.net_rx} / ${s.net_tx}`,
-        s.wifi || "unavailable",
-      ]),
+  const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s"}`;
+  /** Bytes a second, in the unit a person reads. */
+  const rate = (n) => {
+    const v = Number(n) || 0;
+    if (v >= 1048576) return (v / 1048576).toFixed(1) + " MB/s";
+    if (v >= 1024) return (v / 1024).toFixed(0) + " KB/s";
+    return Math.round(v) + " B/s";
+  };
+  const button = (id, label, title) =>
+    `<button class="bk-btn" type="button" id="${id}"${title ? ` title="${esc(title)}"` : ""}>${label}</button>`;
+  const table = (heads, rows, cls) =>
+    `<div class="case-scroll"><table class="mtable${cls ? " " + cls : ""}"><thead><tr>${heads.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((v) => `<td>${esc(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  /** The marker a sample carries: the first sample at or after it (the
+   *  last one, for a marker made after that). The CSV does the same. */
+  function markersBySample(recording) {
+    const out = recording.samples.map(() => []);
+    recording.markers.forEach((m, n) => {
+      if (!out.length) return;
+      const at = recording.samples.findIndex((s) => s.at_ms >= m.at_ms);
+      out[at < 0 ? out.length - 1 : at].push({ n: n + 1, label: m.label });
+    });
+    return out;
+  }
+  /** Moves to another access point: the samples where the address changed. */
+  function roamSamples(samples) {
+    const out = [];
+    let last = null;
+    samples.forEach((s, i) => {
+      const ap = s.wifi_bssid ? String(s.wifi_bssid).toLowerCase() : null;
+      if (!ap) return;
+      if (last && ap !== last) out.push(i);
+      last = ap;
+    });
+    return out;
+  }
+  const sampleTable = (recording, rows) => {
+    const marks = markersBySample(recording);
+    return table(
+      ["Time", "CPU", "RAM", "Connection", "DNS", "Disk read / write", "Network in / out", "Wi-Fi", "Marker"],
+      rows.map((i) => {
+        const s = recording.samples[i];
+        return [
+          clock(s.at_ms),
+          Number(s.cpu_pct).toFixed(1) + "%",
+          Number(s.memory_pct).toFixed(1) + "%",
+          s.tcp_error ? "failed: " + s.tcp_error : s.tcp_ms == null ? "not sampled" : s.tcp_ms < 1 ? "under 1 ms" : s.tcp_ms.toFixed(0) + " ms",
+          s.dns_error ? "failed: " + s.dns_error : s.dns_ms == null ? "" : s.dns_ms < 1 ? "under 1 ms" : s.dns_ms.toFixed(0) + " ms",
+          `${rate(s.disk_read)} / ${rate(s.disk_write)}`,
+          `${rate(s.net_rx)} / ${rate(s.net_tx)}`,
+          s.wifi || "",
+          marks[i].map((m) => `${m.n}: ${m.label}`).join(" | "),
+        ];
+      }),
+      "case-samples-table",
     );
-  function chart(samples) {
+  };
+  /** CPU, memory and Wi-Fi signal over a recording, with its markers, the
+   *  moves between access points and the failed probes. Colour is never the
+   *  only cue: each line has its own dash, each mark its own shape, and the
+   *  sample table has every figure. */
+  function chartSvg(recording) {
+    const samples = recording.samples;
     if (!samples.length) return "<p>Waiting for the first sample…</p>";
+    const X0 = 40, X1 = 630, Y0 = 20, Y1 = 150, FAIL_Y = 168;
     const first = samples[0].at_ms,
       span = Math.max(1000, samples[samples.length - 1].at_ms - first);
-    const points = (key) =>
+    const x = (ms) => X0 + (Math.min(Math.max(ms - first, 0), span) / span) * (X1 - X0);
+    const y = (pct) => Y1 - (Math.min(100, Math.max(0, pct)) / 100) * (Y1 - Y0);
+    const line = (key) =>
       samples
-        .map(
-          (s) =>
-            `${40 + ((s.at_ms - first) / span) * 590},${160 - Math.min(100, Math.max(0, s[key])) * 1.4}`,
-        )
+        .filter((s) => s[key] != null)
+        .map((s) => `${x(s.at_ms).toFixed(1)},${y(s[key]).toFixed(1)}`)
         .join(" ");
-    return `<svg class="case-chart" viewBox="0 0 650 195" role="img" aria-label="CPU and RAM percentage over the recording; exact values in the sample table">
-      <path d="M40 20V160H630" stroke="currentColor" fill="none" opacity=".4"/>
-      <text x="4" y="25">100%</text><text x="18" y="164">0%</text><text x="40" y="187">0 s</text><text x="565" y="187">${Math.round(span / 1000)} s</text>
-      <polyline points="${points("cpu_pct")}" fill="none" stroke="var(--accent)" stroke-width="2"/>
-      <polyline points="${points("memory_pct")}" fill="none" stroke="currentColor" stroke-dasharray="6 4" stroke-width="2"/>
-    </svg><p class="case-legend">CPU: solid accent line · RAM: dashed line · local samples, not process tracing</p>`;
+    const wifi = samples.some((s) => s.wifi_signal != null);
+    const tcpFails = samples.filter((s) => s.tcp_error),
+      dnsFails = samples.filter((s) => s.dns_error);
+    const marks = recording.markers
+      .map((m, n) => {
+        const mx = x(m.at_ms).toFixed(1);
+        return `<g class="mk"><title>${esc(`Marker ${n + 1}: ${m.label} (${clock(m.at_ms)})`)}</title><line x1="${mx}" y1="${Y0}" x2="${mx}" y2="${FAIL_Y + 6}"/><rect x="${mx - 7}" y="${Y0 - 15}" width="14" height="14" rx="2"/><text x="${mx}" y="${Y0 - 4}" text-anchor="middle">${n + 1}</text></g>`;
+      })
+      .join("");
+    const roams = roamSamples(samples)
+      .map((i) => {
+        const s = samples[i], rx = x(s.at_ms), ry = y(s.wifi_signal == null ? 50 : s.wifi_signal);
+        return `<path class="roam" d="M${rx - 5} ${ry - 9}h10l-5 8z"><title>${esc(`Moved to another access point at ${clock(s.at_ms)}`)}</title></path>`;
+      })
+      .join("");
+    const fails =
+      tcpFails.map((s) => `<rect class="fail" x="${(x(s.at_ms) - 3).toFixed(1)}" y="${FAIL_Y - 3}" width="6" height="6"><title>${esc(`Connection failed at ${clock(s.at_ms)}: ${s.tcp_error}`)}</title></rect>`).join("") +
+      dnsFails.map((s) => `<circle class="fail hollow" cx="${x(s.at_ms).toFixed(1)}" cy="${FAIL_Y}" r="4"><title>${esc(`DNS probe failed at ${clock(s.at_ms)}: ${s.dns_error}`)}</title></circle>`).join("");
+    const legend = [
+      '<span><i class="k cpu"></i>CPU</span>',
+      '<span><i class="k ram"></i>RAM</span>',
+      wifi ? '<span><i class="k sig"></i>Wi-Fi signal</span>' : "",
+      recording.markers.length ? '<span><i class="k mark">1</i>Marker</span>' : "",
+      roams ? '<span><i class="k move"></i>Moved access point</span>' : "",
+      tcpFails.length ? '<span><i class="k bad"></i>Connection failed</span>' : "",
+      dnsFails.length ? '<span><i class="k bad hollow"></i>DNS probe failed</span>' : "",
+    ].join("");
+    const said = `CPU and memory use${wifi ? " and Wi-Fi signal" : ""} over ${Math.round(span / 1000)} seconds, with ${count(recording.markers.length, "marker")}, ${count(tcpFails.length, "failed connection")} and ${count(dnsFails.length, "failed DNS probe")}. Every figure is in the sample table.`;
+    return `<div class="case-plot"><svg class="case-chart" viewBox="0 0 650 196" role="img" aria-label="${esc(said)}">
+      <path class="axis" d="M${X0} ${Y0}V${Y1}H${X1}"/><path class="grid" d="M${X0} ${y(50)}H${X1}"/>
+      <text x="${X0 - 6}" y="${Y0 + 4}" text-anchor="end">100%</text><text x="${X0 - 6}" y="${y(50) + 4}" text-anchor="end">50%</text><text x="${X0 - 6}" y="${Y1 + 4}" text-anchor="end">0%</text>
+      <text x="${X0}" y="190">${esc(clock(first))}</text><text x="${X1}" y="190" text-anchor="end">${esc(clock(first + span))}</text>
+      ${tcpFails.length + dnsFails.length ? `<text x="${X0 - 6}" y="${FAIL_Y + 4}" text-anchor="end">fail</text>` : ""}
+      ${wifi ? `<polyline class="sig" points="${line("wifi_signal")}"/>` : ""}
+      <polyline class="ram" points="${line("memory_pct")}"/>
+      <polyline class="cpu" points="${line("cpu_pct")}"/>
+      ${roams}${fails}${marks}
+      <line class="cross" x1="0" y1="${Y0}" x2="0" y2="${FAIL_Y + 6}" hidden/>
+    </svg><div class="case-tip" hidden></div></div><p class="case-legend">${legend}<span>Local samples, not process tracing</span></p>`;
+  }
+  /** Draw a recording into `box`, with a readout that follows the pointer. */
+  function mountChart(box, recording) {
+    box.innerHTML = chartSvg(recording);
+    const svg = box.querySelector("svg"),
+      tip = box.querySelector(".case-tip"),
+      cross = box.querySelector(".cross"),
+      samples = recording.samples;
+    if (!svg || !samples.length) return;
+    const first = samples[0].at_ms,
+      span = Math.max(1000, samples[samples.length - 1].at_ms - first);
+    const marks = markersBySample(recording);
+    const show = (e) => {
+      const r = svg.getBoundingClientRect();
+      const vx = ((e.clientX - r.left) / r.width) * 650;
+      const at = first + (Math.min(Math.max(vx, 40), 630) - 40) / 590 * span;
+      let i = 0;
+      samples.forEach((s, n) => { if (Math.abs(s.at_ms - at) < Math.abs(samples[i].at_ms - at)) i = n; });
+      const s = samples[i],
+        sx = 40 + ((s.at_ms - first) / span) * 590;
+      cross.setAttribute("x1", sx);
+      cross.setAttribute("x2", sx);
+      cross.removeAttribute("hidden");
+      const rows = [
+        ["CPU", Number(s.cpu_pct).toFixed(1) + "%"],
+        ["RAM", Number(s.memory_pct).toFixed(1) + "%"],
+        s.tcp_error ? ["Connection", "failed"] : s.tcp_ms != null ? ["Connection", s.tcp_ms < 1 ? "under 1 ms" : s.tcp_ms.toFixed(0) + " ms"] : null,
+        s.wifi_signal != null ? ["Wi-Fi", s.wifi_signal + "%"] : null,
+        marks[i].length ? ["Marker", marks[i].map((m) => m.label).join(" | ")] : null,
+      ].filter(Boolean);
+      tip.innerHTML = `<b>${esc(clock(s.at_ms))}</b>${rows.map(([k, v]) => `<span><em>${esc(k)}</em>${esc(v)}</span>`).join("")}`;
+      tip.hidden = false;
+      const left = (sx / 650) * r.width;
+      tip.style.left = Math.min(Math.max(left + 10, 0), Math.max(r.width - tip.offsetWidth, 0)) + "px";
+      if (left + 10 + tip.offsetWidth > r.width) tip.style.left = Math.max(left - tip.offsetWidth - 10, 0) + "px";
+    };
+    const hide = () => { tip.hidden = true; cross.setAttribute("hidden", ""); };
+    svg.addEventListener("pointermove", show);
+    svg.addEventListener("pointerdown", show);
+    svg.addEventListener("pointerleave", hide);
   }
   function create(c) {
     const { api, modal, toast } = c;
+    const local = c.fmtLocal || ((iso) => new Date(iso).toLocaleString());
+    const titleOf = c.titleOf || ((id) => id);
     const ready = () => {
       if (c.busy()) {
         toast("Wait for the current operation to finish first.");
@@ -119,7 +229,7 @@
         actions: [{ label: "Close" }],
         onMount: (root) => {
           const q = (s) => root.querySelector(s),
-            samples = [];
+            live = { samples: [], markers: [] };
           let active = false;
           q("#caseStop").disabled = q("#caseMark").disabled = true;
           q("#caseStart").onclick = async () => {
@@ -130,7 +240,7 @@
             }
             if (c.busy()) return;
             active = true;
-            samples.length = 0;
+            live.samples.length = live.markers.length = 0;
             q("#caseMarkers").replaceChildren();
             root
               .querySelectorAll(".case-fields input,.case-fields select")
@@ -145,11 +255,11 @@
                 { seconds, interval_ms: Number(q("#caseInterval").value) },
                 q("#caseTarget").value.trim(),
                 (s) => {
-                  samples.push(s);
+                  live.samples.push(s);
                   if (!root.isConnected) return;
-                  q("#caseCaptureChart").innerHTML = chart(samples);
+                  mountChart(q("#caseCaptureChart"), live);
                   q("#caseRecordStatus").textContent =
-                    `Recording · ${samples.length} sample(s) · CPU ${s.cpu_pct.toFixed(1)}% · RAM ${s.memory_pct.toFixed(1)}%`;
+                    `Recording · ${count(live.samples.length, "sample")} · CPU ${s.cpu_pct.toFixed(1)}% · RAM ${s.memory_pct.toFixed(1)}%${s.tcp_error ? " · connection failed" : ""}`;
                 },
               );
               if (root.isConnected)
@@ -171,17 +281,28 @@
             q("#caseStop").disabled = true;
             c.cancel();
           };
-          q("#caseMark").onclick = async () => {
+          const mark = async () => {
             if (!active) return;
             try {
               const m = await api.markRecording(q("#caseMarker").value);
+              live.markers.push(m);
               if (root.isConnected) {
                 const li = document.createElement("li");
-                li.textContent = stamp(m.at_ms) + " · " + m.label;
+                li.textContent = `${live.markers.length}: ${clock(m.at_ms)} · ${m.label}`;
                 q("#caseMarkers").appendChild(li);
+                if (live.samples.length) mountChart(q("#caseCaptureChart"), live);
+                q("#caseMarker").select();
               }
             } catch (e) {
               toast(String(e));
+            }
+          };
+          q("#caseMark").onclick = mark;
+          // Enter in the marker box marks the moment: no reaching for the mouse.
+          q("#caseMarker").onkeydown = (e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              mark();
             }
           };
         },
@@ -190,24 +311,36 @@
     function replay(r) {
       const recording = r.recording;
       if (!recording) return;
+      const fails = recording.samples.filter((s) => s.tcp_error).length,
+        moves = roamSamples(recording.samples).length;
+      const facts = [
+        count(recording.samples.length, "sample"),
+        count(recording.markers.length, "marker"),
+        recording.target ? "target " + recording.target : "no TCP target",
+        fails ? count(fails, "failed connection") : "",
+        moves ? `moved access point ${moves === 1 ? "once" : moves + " times"}` : "",
+        recording.stopped_early ? "stopped early" : "",
+      ].filter(Boolean);
       modal({
         title: "Replay recording",
         cls: "wide",
-        body: `<p>${recording.samples.length} samples · ${recording.markers.length} markers · ${esc(recording.target || "no TCP target")}${recording.stopped_early ? " · stopped early" : ""}</p>${chart(recording.samples)}
-        <label>Inspect near a marker<select class="case-marker-pick"><option value="all">All samples (first 120 shown)</option>${recording.markers.map((m, i) => `<option value="${i}">${esc(stamp(m.at_ms) + " · " + m.label)}</option>`).join("")}</select></label><p>Marker views show samples within 10 seconds. JSON and case exports retain every sample.</p><div class="case-samples"></div><ul>${recording.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`,
+        body: `<p>${esc(facts.join(" · "))} · started ${esc(local(recording.started))}</p><div class="case-replay-chart"></div>
+        <label>Show samples<select class="case-marker-pick"><option value="all">All samples (first 120)</option>${fails ? '<option value="fails">Failed connections only</option>' : ""}${recording.markers.map((m, i) => `<option value="${i}">Within 10 seconds of marker ${i + 1}: ${esc(m.label)} (${esc(clock(m.at_ms))})</option>`).join("")}</select></label><div class="case-samples"></div>${recording.gaps.length ? `<p class="case-legend">Coverage</p><ul>${recording.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>` : ""}<p class="case-legend">The JSON report and a case bundle keep every sample.</p>`,
         actions: [{ label: "Close" }],
         onMount: (root) => {
+          mountChart(root.querySelector(".case-replay-chart"), recording);
           const pick = root.querySelector("select"),
+            all = recording.samples.map((_, i) => i),
             show = () => {
               const m = recording.markers[Number(pick.value)];
               const rows =
                 pick.value === "all"
-                  ? recording.samples
-                  : recording.samples.filter(
-                      (s) => Math.abs(s.at_ms - m.at_ms) <= 10000,
-                    );
+                  ? all
+                  : pick.value === "fails"
+                    ? all.filter((i) => recording.samples[i].tcp_error)
+                    : all.filter((i) => Math.abs(recording.samples[i].at_ms - m.at_ms) <= 10000);
               root.querySelector(".case-samples").innerHTML = rows.length
-                ? sampleTable(rows.slice(0, 120))
+                ? sampleTable(recording, rows.slice(0, 120))
                 : "<p>No samples in this marker window.</p>";
             };
           pick.onchange = show;
@@ -225,8 +358,8 @@
       modal({
         title: "Change timeline",
         cls: "wide",
-        body: `<p>Find changes near the user's reported onset. Nearby events are possible links; timing alone does not establish the cause.</p>${has ? "" : "<p>No timeline checks were collected in this report.</p>"}<div class="case-actions">${button("caseCollectTimeline", "Collect change and network-authentication history")}</div>
-        <div class="case-fields"><label>Problem began (local time)<input id="caseOnset" type="datetime-local" step="1"></label><label>Window either side<select id="caseWindow"><option value="3600">1 hour</option><option value="900">15 minutes</option><option value="86400">24 hours</option></select></label>${button("caseFindChanges", "Find nearby changes")}</div><div id="caseTimelineRows" aria-live="polite"></div>`,
+        body: `<p>Find changes near the user's reported onset. Nearby events are possible links; timing alone does not establish the cause.</p>${has ? "" : "<p>No timeline checks were collected in this report.</p>"}<div class="case-actions">${button("caseCollectTimeline", "Collect history now", "Collect change and network-authentication history into this report")}</div>
+        <div class="case-fields"><label>Problem began (local time)<input id="caseOnset" type="datetime-local" step="1"></label><label>Show<select id="caseWindow"><option value="3600">1 hour either side</option><option value="900">15 minutes either side</option><option value="86400">24 hours either side</option><option value="all">Everything collected</option></select></label>${button("caseFindChanges", "Find changes")}</div><div id="caseTimelineRows" aria-live="polite"></div>`,
         actions: [{ label: "Close" }],
         onMount: (root, close) => {
           const q = (s) => root.querySelector(s),
@@ -241,22 +374,39 @@
             close();
             c.collectCase(["system.changes", "net.wifi-auth"]);
           };
+          // "12 min before", "3 min after": where an event sits against the onset.
+          const from = (iso, onset) => {
+            const d = Math.round((Date.parse(iso) - onset) / 1000),
+              a = Math.abs(d);
+            const size = a < 90 ? a + " s" : a < 5400 ? Math.round(a / 60) + " min" : a < 172800 ? (a / 3600).toFixed(1) + " h" : Math.round(a / 86400) + " d";
+            return a < 5 ? "at onset" : `${size} ${d < 0 ? "before" : "after"}`;
+          };
           q("#caseFindChanges").onclick = async () => {
             try {
               const at = new Date(q("#caseOnset").value);
               if (!Number.isFinite(at.getTime()))
                 throw "Enter the problem's onset time.";
-              const rows = await api.timelineNear(
-                report,
-                at.toISOString(),
-                Number(q("#caseWindow").value),
-              );
+              const everything = q("#caseWindow").value === "all";
+              const rows = everything
+                ? await api.timelineRows(report)
+                : await api.timelineNear(report, at.toISOString(), Number(q("#caseWindow").value));
               q("#caseTimelineRows").innerHTML = rows.length
-                ? table(
-                    ["UTC time", "Source", "Activity", "Evidence"],
-                    rows.map((e) => [e.at, e.source, e.description, e.detail]),
+                ? `<p class="case-legend">${count(rows.length, "row")}, oldest first. Times are this computer's local time.</p>` +
+                  table(
+                    ["When", "From onset", "Kind", "What happened", "Evidence"],
+                    rows.map((e) => [
+                      local(e.at) + (e.until ? " until " + clock(Date.parse(e.until)) : ""),
+                      from(e.at, at.getTime()),
+                      e.kind || "",
+                      // The When column already says when a burst ended.
+                      e.until ? e.description.replace(/^(\d+ events) until \S+?Z:/, "$1:") : e.description,
+                      e.detail,
+                    ]),
+                    "case-timeline-table",
                   )
-                : "<p>No recorded events in this window. This does not rule out a change; check log availability, retention and collection limits.</p>";
+                : everything
+                  ? "<p>No change or network-authentication events are in this report. Collect history now, or check that the logs are available.</p>"
+                  : "<p>No recorded events in this window. This does not rule out a change; check log availability, retention and collection limits.</p>";
             } catch (e) {
               toast(String(e));
             }
@@ -270,22 +420,24 @@
       const report = current();
       if (!report) return;
       try {
-        const history = await api.listHistory();
+        // A PC isn't its own working example: only other computers' reports.
+        const here = String(report.host.hostname).toLowerCase();
+        const others = (await api.listHistory()).filter((h) => !h.cancelled && String(h.hostname).toLowerCase() !== here);
         modal({
           title: "Compare with a working PC",
           cls: "wide",
-          body: `<p>Current report: <strong>${esc(report.host.hostname)}</strong>. Choose a finished report from a PC that performs the same role and is known to work. Import its JSON through Open if it is not listed.</p><p>Compares observed configuration and required app versions. Unique identities, addresses and live performance are excluded. A difference is not automatically a fault.</p><select id="caseBaselinePick">${history
-            .filter((h) => !h.cancelled)
-            .map(
-              (h) =>
-                `<option value="${esc(h.path)}">${esc(h.hostname + " · " + (h.evidence_updated || h.generated))}</option>`,
-            )
-            .join(
-              "",
-            )}</select><div class="case-actions">${button("caseCompareBaseline", "Compare configuration")}</div><div id="caseBaselineResult" aria-live="polite"></div>`,
+          body: `<p>Current report: <strong>${esc(report.host.hostname)}</strong>. Choose a finished report from a PC that performs the same role and is known to work.</p><p>Compares observed configuration and required app versions. Unique identities, addresses and live performance are excluded. A difference is not automatically a fault.</p>${
+            others.length
+              ? `<label>Working PC's report<select id="caseBaselinePick">${others
+                  .map((h) => `<option value="${esc(h.path)}">${esc(`${h.hostname} · ${local(h.evidence_updated || h.generated)}${h.modules == null ? "" : " · " + count(h.modules, "check")}`)}</option>`)
+                  .join("")}</select></label><div class="case-actions">${button("caseCompareBaseline", "Compare configuration")}</div>`
+              : `<p class="case-empty"><strong>No report from another PC is here yet.</strong> On the working PC, run the same checks and export its JSON report; then bring it in with <strong>Open</strong> and come back to this dialog.</p>`
+          }<div id="caseBaselineResult" aria-live="polite"></div>`,
           actions: [{ label: "Close" }],
           onMount: (root) => {
-            root.querySelector("#caseCompareBaseline").onclick = async () => {
+            const go = root.querySelector("#caseCompareBaseline");
+            if (!go) return;
+            go.onclick = async () => {
               try {
                 const path = root.querySelector("select").value;
                 if (!path) throw "Import a finished working-PC report first.";
@@ -294,15 +446,19 @@
                 report.baseline = diff;
                 c.attach(report);
                 root.querySelector("#caseBaselineResult").innerHTML =
-                  `<p><strong>Working baseline: ${esc(diff.baseline_host)} → Current: ${esc(diff.current_host)}</strong></p><p>${diff.differences.length} configuration difference(s). Comparison attached to this report for export.</p>${table(
-                    ["Check", "Setting", "Working PC", "Current PC"],
-                    diff.differences.map((d) => [
-                      d.module,
-                      d.label,
-                      d.baseline == null ? "not observed" : d.baseline,
-                      d.current == null ? "not observed" : d.current,
-                    ]),
-                  )}<ul>${diff.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`;
+                  `<p><strong>Working baseline: ${esc(diff.baseline_host)} → Current: ${esc(diff.current_host)}</strong></p><p>${count(diff.differences.length, "configuration difference")}. Comparison attached to this report for export.</p>${
+                    diff.differences.length
+                      ? table(
+                          ["Check", "Setting", "Working PC", "Current PC"],
+                          diff.differences.map((d) => [
+                            titleOf(d.module),
+                            d.label,
+                            d.baseline == null ? "not observed" : d.baseline,
+                            d.current == null ? "not observed" : d.current,
+                          ]),
+                        )
+                      : ""
+                  }<ul>${diff.gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul>`;
               } catch (e) {
                 toast(String(e));
               }
@@ -358,11 +514,11 @@
               if (mine !== generation || !root.isConnected) return;
               reviewed = selected;
               q("#caseBundleFiles").innerHTML = table(
-                ["File", "Bytes", "SHA-256"],
-                preview.files.map((f) => [f.name, f.bytes, f.sha256]),
+                ["File", "Size", "SHA-256"],
+                preview.files.map((f) => [f.name, rate(f.bytes).replace("/s", ""), f.sha256]),
               );
               q("#caseBundleStatus").textContent =
-                `${preview.bytes} uncompressed bytes. ${preview.note}`;
+                `${count(preview.files.length, "file")}, ${rate(preview.bytes).replace("/s", "")} before zipping. ${preview.note}`;
               const names = Object.keys(preview.contents);
               q("#caseInspect").innerHTML = names
                 .map((n) => `<option>${esc(n)}</option>`)
@@ -409,13 +565,29 @@
       if (report.runbook) {
         const box = document.createElement("div");
         box.className = "case-note";
-        box.innerHTML = `<strong>Guided troubleshooting · ${esc(report.runbook.id)}</strong><p>${esc(report.runbook.conclusion)}</p><details><summary>Why these checks ran</summary><ol>${report.runbook.steps.map((s) => `<li>${esc(s.reason)}<br><small>${esc(s.modules.join(", "))}</small></li>`).join("")}</ol></details>`;
+        box.innerHTML = `<strong>Guided troubleshooting · ${esc(report.runbook.id)}</strong><p>${esc(report.runbook.conclusion)}</p><details><summary>Why these checks ran</summary><ol>${report.runbook.steps.map((s) => `<li>${esc(s.reason)}<br><small>${esc(s.modules.map(titleOf).join(", "))}</small></li>`).join("")}</ol></details>`;
+        container.prepend(box);
+      }
+      if (report.baseline) {
+        const b = report.baseline,
+          box = document.createElement("div");
+        box.className = "case-note";
+        box.innerHTML = `<strong>Working-PC comparison · ${esc(b.baseline_host)} → ${esc(b.current_host)}</strong><p>${count(b.differences.length, "configuration difference")}. A difference is not automatically a fault.</p>${
+          b.differences.length
+            ? `<details><summary>What differs</summary>${table(
+                ["Check", "Setting", "Working PC", "Current PC"],
+                b.differences.map((d) => [titleOf(d.module), d.label, d.baseline == null ? "not observed" : d.baseline, d.current == null ? "not observed" : d.current]),
+              )}</details>`
+            : ""
+        }`;
         container.prepend(box);
       }
       if (report.recording) {
-        const box = document.createElement("div");
+        const rec = report.recording,
+          fails = rec.samples.filter((s) => s.tcp_error).length,
+          box = document.createElement("div");
         box.className = "case-note";
-        box.innerHTML = `<strong>Intermittent issue · ${report.recording.samples.length} samples · ${report.recording.markers.length} markers</strong><p>CPU, RAM, disk/network rates, connection probes and available Wi-Fi state.</p>`;
+        box.innerHTML = `<strong>Intermittent issue · ${count(rec.samples.length, "sample")} · ${count(rec.markers.length, "marker")}${fails ? " · " + count(fails, "failed connection") : ""}</strong><p>CPU, RAM, disk/network rates, connection probes and available Wi-Fi state.</p>`;
         const b = document.createElement("button");
         b.type = "button";
         b.className = "bk-btn";
@@ -509,14 +681,22 @@
         .flatMap((m) =>
           m.findings
             .filter((f) => /^\d{4}-\d\d-\d\dT/.test(f.label))
-            .map((f) => ({
-              at: f.label.split(" ")[0],
-              source: m.title,
-              kind: "Recorded event",
-              description: f.value,
-              detail: f.detail || "",
-            })),
-        );
+            .map((f) => {
+              const [at, kind] = f.label.split(" · ");
+              const burst = /^\d+ events until (\S+Z):/.exec(f.value);
+              return Object.assign(
+                {
+                  at,
+                  source: m.title,
+                  kind: kind || "Recorded event",
+                  description: f.value,
+                  detail: f.detail || "",
+                },
+                burst ? { until: burst[1] } : {},
+              );
+            }),
+        )
+        .sort((a, b) => a.at.localeCompare(b.at));
     const hash = async (text) =>
       Array.from(
         new Uint8Array(
@@ -773,20 +953,29 @@
           start = Date.now();
         try {
           while (Date.now() - start < config.seconds * 1000 && !stopped) {
+            // A sample story: the PC moves to a weaker access point a few
+            // samples in, and one connection attempt fails just after.
+            const n = capture.samples.length,
+              moved = n >= 3,
+              signal = Math.round((moved ? 44 : 71) + Math.random() * 4),
+              ap = moved ? "7c:10:c9:2b:6e:a1" : "7c:10:c9:2b:41:d0",
+              failed = !!target && n === 4;
             const t = sample(),
               s = {
                 at_ms: Date.now(),
                 cpu_pct: t.cpu,
                 memory_pct: t.mem_pct,
-                disk_read: t.disk_read,
-                disk_write: t.disk_write,
-                net_rx: t.net_rx,
-                net_tx: t.net_tx,
-                tcp_ms: target ? 14 + Math.random() * 8 : null,
-                tcp_error: null,
-                dns_ms: 3,
+                disk_read: Math.round(t.disk_read),
+                disk_write: Math.round(t.disk_write),
+                net_rx: Math.round(t.net_rx),
+                net_tx: Math.round(t.net_tx),
+                tcp_ms: target && !failed ? 14 + Math.random() * 8 : null,
+                tcp_error: failed ? "timed out" : null,
+                dns_ms: n % 5 === 0 ? 3 : null,
                 dns_error: null,
-                wifi: "Sample Wi-Fi · 71%",
+                wifi: `CORP · signal ${signal}% · AP ${ap}`,
+                wifi_signal: signal,
+                wifi_bssid: ap,
               };
             capture.samples.push(s);
             onSample(s);
@@ -797,7 +986,7 @@
             ? clone(previous)
             : {
                 schema: 1,
-                tool_version: "0.8.0",
+                tool_version: "0.9.0",
                 generated: new Date().toISOString(),
                 host: clone(host()),
                 ticket: ticket || null,
@@ -847,9 +1036,12 @@
         stopped = true;
         return base.cancel();
       },
+      timelineRows: async (r) => rows(r),
       timelineNear: async (r, at, window) =>
         rows(r).filter(
-          (e) => Math.abs(Date.parse(e.at) - Date.parse(at)) <= window * 1000,
+          (e) =>
+            Date.parse(e.at) <= Date.parse(at) + window * 1000 &&
+            Date.parse(e.until || e.at) >= Date.parse(at) - window * 1000,
         ),
       compareBaseline: async (a, b) => {
         if (a.cancelled || b.cancelled) throw "Choose finished reports.";

@@ -45,6 +45,13 @@ async function pageFor(t, options = {}) {
     ].concat(options.timeline ? [{id:"system.changes",title:"Recent changes timeline",category:"system"},{id:"net.wifi-auth",title:"Network authentication history",category:"network"}] : []).map((m) => Object.assign(m, { description: "Fixture", platforms: ["windows", "linux"], mutating: false, disruptive: false, takes_target: false, requires_admin: false }));
     const result = (id, fixed = false) => {
       const module = modules.find((m) => m.id === id);
+      if (id === "system.changes" && options.events) {
+        const rows = Array.from({ length: options.events }, (_, i) => ({ label: `2026-11-10T12:${String(59 - i).padStart(2, "0")}:00Z · Package change`, value: `Installed lib${i}`, severity: "info" }));
+        rows.splice(15, 0, { label: "2026-11-10T11:00:00Z · Windows update", value: "Failed to install: KB1", severity: "warning" });
+        rows.push({ label: "Timeline coverage", value: "the last seven days", severity: "info" });
+        return { module_id: id, title: module.title, category: module.category, summary: `${options.events} change events`, findings: rows, error: null,
+          preview: false, restart_required: false, duration_ms: 1, log: [] };
+      }
       const finding = id === "desk.printers" && !fixed
         ? { label: "Queue", value: "1 stuck job", severity: "warning", action: { id: "restart-spooler", label: "Restart Print Spooler", requires_admin: false } }
         : { label: id === "desk.printers" ? "Queue" : "Free", value: "healthy", severity: "ok" };
@@ -77,20 +84,24 @@ async function pageFor(t, options = {}) {
           case "list_runbooks": return [{id:"printing",title:"Printing fails",symptom:"Read-only diagnostic steps"}];
           case "runbook_plan": return {modules:["desk.printers","system.disk"],reason:"Inspect printing and storage first."};
           case "record_problem": {
-            const sample = {at_ms:Date.now(),cpu_pct:17,memory_pct:42,disk_read:10,disk_write:20,net_rx:30,net_tx:40,tcp_ms:12,tcp_error:null,dns_ms:2,dns_error:null,wifi:"TEST-NET"};
+            const sample = {at_ms:Date.now(),cpu_pct:17,memory_pct:42,disk_read:10,disk_write:2500000,net_rx:30,net_tx:40,tcp_ms:12,tcp_error:null,dns_ms:2,dns_error:null,wifi:"TEST-NET",wifi_signal:71,wifi_bssid:"aa:aa:aa:aa:aa:01"};
             emit("recording-sample",sample);
             await new Promise((done)=>{state.recordingDone=done;});
             const r = args.baseReport || report([]);
-            r.recording={started:new Date(sample.at_ms).toISOString(),config:args.config,target:args.target,samples:[sample],markers:state.markers,stopped_early:true,gaps:["Fixture collection"]};
+            // A second sample after the marker: the PC has moved access point and the connection fails.
+            const later = Object.assign({}, sample, {at_ms:Date.now()+1000,cpu_pct:64,tcp_ms:null,tcp_error:"timed out",wifi_signal:38,wifi_bssid:"aa:aa:aa:aa:aa:02"});
+            r.recording={started:new Date(sample.at_ms).toISOString(),config:args.config,target:args.target,samples:[sample,later],markers:state.markers,stopped_early:true,gaps:["Fixture collection"]};
             r.results.push({module_id:"capture.recording",title:"Intermittent problem recording",category:"system",summary:"1 sample",findings:[],error:null,log:[],duration_ms:1});
             return {report:r,saved:"fixture-case.json"};
           }
           case "mark_recording": {const marker={at_ms:Date.now(),label:args.label||"Problem happened now"};state.markers.push(marker);return marker;}
           case "cancel_run": if(state.recordingDone)state.recordingDone();return true;
-          case "list_history": return [{path:"good.json",generated:"2026-11-09T17:00:00Z",hostname:"WORKING-PC",cancelled:false}];
+          case "list_history": return [{path:"mine.json",generated:"2026-11-10T16:00:00Z",hostname:"test-pc",modules:2,cancelled:false}]
+            .concat(options.onlyOwnHistory ? [] : [{path:"good.json",generated:"2026-11-09T17:00:00Z",hostname:"WORKING-PC",modules:9,cancelled:false}]);
           case "load_report": return Object.assign(report([result("system.disk",true)]),{host:Object.assign({},host,{hostname:"WORKING-PC"})});
           case "compare_baseline": return {baseline_host:args.baseline.host.hostname,current_host:args.current.host.hostname,differences:[{module:"system.info",label:"OS",baseline:"24H2",current:"23H2"}],gaps:["Confirm matching workstation roles."]};
           case "timeline_near": return [{at:args.problemAt,source:"System",description:"Driver installation activity",detail:"Timing alone does not establish causation."}];
+          case "timeline_rows": return [{at:"2026-11-10T16:21:08Z",until:"2026-11-10T16:38:50Z",source:"Recent changes timeline",kind:"Windows update",description:"31 events until 2026-11-10T16:38:50Z: Package KB1: Installed; and 30 more",detail:"Setup"}];
           case "preview_case_bundle": {
             const r=JSON.parse(JSON.stringify(args.report));if(args.options.redact_identifiers)r.host.hostname="[host-1]";
             const text=JSON.stringify(r,null,2),contents={"report.json":text,"report.txt":text};if(args.options.include_logs)contents["logs/fixture.txt"]="Reviewed fixture log";
@@ -295,4 +306,104 @@ test("a failed case refresh preserves the report and its recording",async(t)=>{
   await page.locator("#timelineBtn").click();await page.locator("#caseCollectTimeline").click();
   await page.getByText(/Controlled case refresh failure/).waitFor();await page.getByRole("button",{name:"Replay recording",exact:true}).waitFor();
   assert.equal(await page.locator("#results .card").count(),5);assert.equal(await page.locator("#run").isDisabled(),false);
+});
+
+test("the checks filter narrows the list without touching what is ticked",async(t)=>{
+  const page=await pageFor(t,{timeline:true});
+  const ticked=()=>page.evaluate(()=>[...document.querySelectorAll('.mod[aria-checked="true"]')].map((m)=>m.dataset.id).sort());
+  const before=await ticked();assert.ok(before.length>=2);
+  await page.locator("body").press("/");
+  assert.equal(await page.evaluate(()=>document.activeElement.id),"modFilter","/ jumps to the filter");
+  await page.keyboard.type("print");
+  assert.deepEqual(await page.locator(".mod:visible").evaluateAll((rows)=>rows.map((r)=>r.dataset.id)),["desk.printers"]);
+  assert.deepEqual(await page.locator(".cat:visible").allInnerTexts().then((c)=>c.map((x)=>x.toLowerCase())),["workstation"],"a heading with nothing under it goes too");
+  assert.deepEqual(await ticked(),before,"hidden checks keep their ticks");
+  await page.locator("#modFilter").fill("no such check");
+  assert.match(await page.locator(".no-match").innerText(),/No check matches "no such check"/);
+  await page.locator("#modFilter").press("Escape");
+  assert.equal(await page.locator("#modFilter").inputValue(),"");
+  assert.equal(await page.locator(".mod:visible").count(),4);
+  assert.equal(await page.locator(".no-match").count(),0);
+});
+
+test("a long history shows its newest rows, and exports say what they left out",async(t)=>{
+  const page=await pageFor(t,{timeline:true,events:30});
+  await page.locator("#run").click();
+  const card=page.locator('.card[data-mod="system.changes"]');await card.waitFor();
+  // Twelve events and the flagged one show; the coverage note at the end stays in sight.
+  assert.equal(await card.locator(".fr:visible").count(),12+1+1);
+  assert.match(await card.locator(".fr:visible").allInnerTexts().then((r)=>r.join("\n")),/Failed to install: KB1[\s\S]*Timeline coverage/);
+  assert.match(await card.locator(".more-rows").innerText(),/Show 18 older event rows/);
+  await page.locator("#exportBtn").click();await page.locator('[data-fmt="md"]').click();
+  const md=await page.evaluate(()=>testState.copied);
+  assert.match(md,/Installed lib7 \|/);assert.doesNotMatch(md,/Installed lib8 \|/);
+  assert.match(md,/Failed to install: KB1/,"a flagged row is never left out");
+  assert.match(md,/7 more event rows: in the full transcript/);assert.match(md,/15 more event rows/);
+  await card.locator(".more-rows").click();
+  assert.equal(await card.locator(".fr:visible").count(),30+1+1);
+  assert.equal(await card.locator(".more-rows").count(),0);
+});
+
+test("a working PC is another PC, and the dialog says so when there is none",async(t)=>{
+  const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#baselineBtn").click();
+  assert.deepEqual(await page.locator("#caseBaselinePick option").evaluateAll((o)=>o.map((x)=>x.value)),["good.json"],"this PC's own reports aren't offered");
+  assert.match(await page.locator("#caseBaselinePick option").innerText(),/WORKING-PC · .* · 9 checks/);
+  await page.getByRole("button",{name:"Close",exact:true}).click();
+  const alone=await pageFor(t,{onlyOwnHistory:true});await alone.locator("#run").click();await alone.locator("#results .card").first().waitFor();
+  await alone.locator("#baselineBtn").click();
+  assert.match(await alone.getByRole("dialog").innerText(),/No report from another PC is here yet/);
+  assert.equal(await alone.locator("#caseCompareBaseline").count(),0);
+});
+
+test("a replay opens at its top and draws the marker, the move and the failure",async(t)=>{
+  const page=await pageFor(t);await page.setViewportSize({width:1240,height:560});
+  await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#recordBtn").click();await page.locator("#caseStart").click();
+  await page.waitForFunction(()=>typeof testState.recordingDone==="function");
+  await page.locator("#caseMarker").fill("Call dropped");await page.locator("#caseMarker").press("Enter");
+  await page.locator("#caseMarkers li").filter({hasText:/^1: .*Call dropped$/}).waitFor();
+  await page.locator("#caseStop").click();await page.getByText(/Capture finished/).waitFor();
+  await page.getByRole("button",{name:"Close",exact:true}).click();
+  assert.match(await page.locator(".case-note").first().innerText(),/2 samples · 1 marker · 1 failed connection/);
+  await page.getByRole("button",{name:"Replay recording",exact:true}).click();
+  const dialog=page.getByRole("dialog");
+  assert.equal(await dialog.evaluate((m)=>m.scrollTop),0,"a dialog taller than the window opens at its top");
+  assert.ok(await dialog.evaluate((m)=>m.scrollHeight>m.clientHeight),"and this one is taller than the window");
+  assert.match(await dialog.innerText(),/2 samples · 1 marker · no TCP target · 1 failed connection · moved access point once/);
+  assert.equal(await dialog.locator("svg .mk").count(),1);
+  assert.equal(await dialog.locator("svg .roam").count(),1);
+  assert.equal(await dialog.locator("svg rect.fail").count(),1);
+  assert.match(await dialog.locator("svg").getAttribute("aria-label"),/1 marker, 1 failed connection/);
+  await dialog.locator(".case-marker-pick").selectOption("fails");
+  const rows=await dialog.locator(".case-samples tbody tr").allInnerTexts();
+  assert.equal(rows.length,1);assert.match(rows[0],/failed: timed out/);assert.match(rows[0],/2\.4 MB\/s/,"rates are written for people");
+  assert.match(rows[0],/1: Call dropped/,"the marker is on the first sample after it");
+});
+
+test("exports carry what the investigation added",async(t)=>{
+  const page=await pageFor(t);
+  await page.locator("#guidedBtn").click();await page.getByRole("button",{name:/Printing fails/}).click();
+  await page.locator(".case-note").waitFor();
+  await page.locator("#baselineBtn").click();await page.locator("#caseCompareBaseline").click();
+  await page.getByText(/Working baseline: WORKING-PC/).waitFor();await page.getByRole("button",{name:"Close",exact:true}).click();
+  await page.locator("#exportBtn").click();await page.locator('[data-fmt="md"]').click();
+  const md=await page.evaluate(()=>testState.copied);
+  assert.match(md,/### Investigation/);
+  assert.match(md,/- Troubleshooting: printing — Review findings/);
+  assert.match(md,/  - Phase 1: Inspect printing and storage first\. \[desk\.printers, system\.disk\]/);
+  assert.match(md,/- Working-PC baseline: WORKING-PC -> TEST-PC: 1 configuration difference\(s\)/);
+  assert.match(md,/  - system\.info · OS: 24H2 -> 23H2/);
+});
+
+test("the timeline can show everything collected, with each row placed against the onset",async(t)=>{
+  const page=await pageFor(t);await page.locator("#run").click();await page.locator("#results .card").first().waitFor();
+  await page.locator("#timelineBtn").click();await page.getByText("Driver installation activity").waitFor();
+  await page.locator("#caseOnset").fill("2026-11-10T16:40");
+  await page.locator("#caseWindow").selectOption("all");await page.locator("#caseFindChanges").click();
+  await page.getByText(/Package KB1: Installed/).waitFor();
+  const row=await page.locator("#caseTimelineRows tbody tr").innerText();
+  assert.match(row,/Windows update/);assert.match(row,/before|after/);
+  assert.match(row,/31 events: Package KB1/,"the end of a burst is in the When column, not repeated in the text");
+  assert.equal(await page.evaluate(()=>testState.calls.includes("timeline_rows")),true);
 });
