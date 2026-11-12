@@ -1,0 +1,46 @@
+name: Event manifests (scratch)
+on: push
+permissions:
+  contents: read
+jobs:
+  dump:
+    runs-on: windows-latest
+    steps:
+      - name: Dump event templates
+        shell: pwsh
+        run: |
+          $want = [ordered]@{
+            'Microsoft-Windows-Windows Defender' = @(1116,1117,1121,1122,1123,1124)
+            'Microsoft-Windows-AppLocker' = @(8002,8003,8004,8006,8007)
+            'Microsoft-Windows-CodeIntegrity' = @(3033,3063,3076,3077,3089)
+            'Microsoft-Windows-GroupPolicy' = @(1058,1129,4000,4001,4016,5016,5312,5313,6016,7016,8000,8001)
+            'Microsoft-Windows-User Profiles Service' = @(1,2,67)
+            'Microsoft-Windows-Kernel-Processor-Power' = @(37,55)
+            'Microsoft-Windows-WHEA-Logger' = @(1,17,18,19,47)
+            'Microsoft-Windows-Security-Kerberos' = @(3,4)
+            'Microsoft-Windows-Wired-AutoConfig' = 15500..15520
+            'Microsoft-Windows-AAD' = @(1025,1097,1098,1104)
+            'Application Hang' = @(1002)
+            'Application Error' = @(1000)
+          }
+          $out = @()
+          foreach ($name in $want.Keys) {
+            try {
+              $p = New-Object System.Diagnostics.Eventing.Reader.ProviderMetadata($name)
+              $events = @($p.Events | Where-Object { $want[$name] -contains [int]$_.Id })
+              if ($events.Count -eq 0) { $out += [ordered]@{ Provider = $name; Note = 'no matching events'; Ids = (@($p.Events | Select-Object -ExpandProperty Id -Unique) -join ',') } }
+              foreach ($e in $events) {
+                $names = @()
+                if ($e.Template) { $names = @([regex]::Matches($e.Template, 'name="([^"]+)"') | ForEach-Object { $_.Groups[1].Value }) }
+                $out += [ordered]@{ Provider = $name; Id = [int]$e.Id; Version = [int]$e.Version; Level = [string]$e.Level.Name; Fields = $names; Template = [string]$e.Template; Message = [string]$e.Description }
+              }
+            } catch { $out += [ordered]@{ Provider = $name; Error = [string]$_.Exception.Message } }
+          }
+          $json = $out | ConvertTo-Json -Depth 6
+          Set-Content -Path manifests.json -Value $json -Encoding utf8
+          foreach ($row in $out) { "{0} {1} v{2} [{3}]: {4}" -f $row.Provider, $row.Id, $row.Version, $row.Level, (($row.Fields) -join ' | ') ; if ($row.Note) { "  NOTE $($row.Note) ids: $($row.Ids)" }; if ($row.Error) { "  ERROR $($row.Error)" } }
+          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version | Format-List
+      - uses: actions/upload-artifact@v7
+        with:
+          name: manifests
+          path: manifests.json
