@@ -6,30 +6,23 @@ jobs:
   dump:
     runs-on: windows-latest
     steps:
-      - name: Dump event templates
+      - name: Policy definitions and power settings
         shell: pwsh
         run: |
-          $want = [ordered]@{
-            'Microsoft-Windows-Security-Kerberos' = @(3,4)
-            'Microsoft-Windows-AppLocker' = @(8004)
-            'Microsoft-Windows-User Profiles Service' = @(1,2)
-            'Microsoft-Windows-Kernel-Processor-Power' = @(37)
-            'Microsoft-Windows-GroupPolicy' = @(5016,5312,8001,1129)
-            'Microsoft-Windows-Wired-AutoConfig' = @(15514)
-            'Microsoft-Windows-WHEA-Logger' = @(17,19,47)
-            'Microsoft-Windows-CodeIntegrity' = @(3077)
+          $admx = Get-ChildItem C:\Windows\PolicyDefinitions\*.admx
+          foreach ($pat in 'WindowsProtectedPrint', 'RestrictDriverInstallationToAdministrators', 'PackagePointAndPrintOnly', 'PackagePointAndPrintServerList', 'NoWarningNoElevationOnInstall', 'TrustedServers', 'ServerList') {
+            "===== $pat"
+            Select-String -Path $admx -Pattern $pat -Context 2,4 | Select-Object -First 3 | ForEach-Object { "--- $($_.Filename):$($_.LineNumber)"; $_.Context.PreContext; $_.Line; $_.Context.PostContext }
           }
-          foreach ($name in $want.Keys) {
-            try {
-              $p = New-Object System.Diagnostics.Eventing.Reader.ProviderMetadata($name)
-              foreach ($e in @($p.Events)) {
-                $id = [int64]$e.Id -band 0xFFFF
-                if ($want[$name] -notcontains $id) { continue }
-                "===== $name $id (raw $([int64]$e.Id)) v$($e.Version) level=$($e.Level.Name) channel=$($e.LogLink.LogName)"
-                "TEMPLATE: $($e.Template)"
-                "MESSAGE: $($e.Description)"
-              }
-            } catch { "ERROR $name $($_.Exception.Message)" }
-          }
-          wevtutil gp "Microsoft-Windows-AppLocker" /ge /f:xml | Select-String -Pattern 'RuleAndFileData|UserData' -Context 0,3 | Select-Object -First 6
-          Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version | Format-List
+          "===== USB selective suspend"
+          powercfg /qh SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226
+          "===== Edge version"
+          Get-ItemProperty 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{56EB18F8-B008-4CBD-B6D2-8C97FE7E9062}' -ErrorAction SilentlyContinue | Select-Object pv, name | Format-List
+          Get-ChildItem 'C:\Program Files (x86)\Microsoft\Edge\Application' -ErrorAction SilentlyContinue | Select-Object Name
+          "===== Wired AutoConfig"
+          Get-Service dot3svc | Format-List Name, Status, StartType
+          Start-Service dot3svc -ErrorAction SilentlyContinue
+          netsh lan show interfaces
+          netsh lan show settings
+          "===== AAD broker"
+          Test-Path C:\Windows\SystemApps\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy
