@@ -59,7 +59,8 @@ OTHER COMMANDS
   --fix ID [TARGET]      Run one one-click fix (restart-spooler, flush-dns,
                          restart-computer, cancel-restart, start-service NAME,
                          clear-saved-credentials, unlock-account NAME,
-                         revert-tuneup…)
+                         purge-kerberos-tickets, revert-tuneup…); with
+                         --what-if, say what it would do and change nothing
   --compare OLD NEW      Compare two saved reports from the same computer
   --baseline GOOD NOW    Compare configuration with a working PC's report
   --timeline REPORT      Show saved change / authentication events
@@ -70,6 +71,8 @@ OTHER COMMANDS
   --no-redact            Explicitly keep identifiers in a case
   --trends               How each measurement has moved over this computer's
                          saved runs (with --json, every point)
+  --verify-audit [PATH]  Check the audit log's hash chain (default: this
+                         account's audit.jsonl); exit 1 if a line was changed
   -h, --help             Show this help
 
 EXIT CODES
@@ -96,6 +99,7 @@ struct Args {
     out: Option<PathBuf>,
     ticket: Option<String>,
     trends: bool,
+    verify_audit: Option<Option<PathBuf>>,
     fix: Option<(String, Option<String>)>,
     compare: Option<(PathBuf, PathBuf)>,
     baseline: Option<(PathBuf, PathBuf)>,
@@ -147,6 +151,13 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--out" => a.out = Some(PathBuf::from(take("--out")?)),
             "--ticket" => a.ticket = Some(take("--ticket")?),
             "--trends" => a.trends = true,
+            "--verify-audit" => {
+                let path = match &inline {
+                    Some(v) => Some(v.clone()),
+                    None => it.next_if(|n| !n.starts_with("--")).cloned(),
+                };
+                a.verify_audit = Some(path.map(PathBuf::from));
+            }
             "--include-logs" => a.include_logs = true,
             "--no-redact" => a.no_redact = true,
             "--runbook" => a.runbook = Some(take("--runbook")?),
@@ -174,7 +185,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             _ => a.modules.push(arg.clone()),
         }
     }
-    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends];
+    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends,a.verify_audit.is_some()];
     if modes.iter().filter(|v|**v).count() > 1 { return Err("Choose one command mode at a time.".into()); }
     if modes.iter().any(|v|*v) && (!a.modules.is_empty() || !a.presets.is_empty()) { return Err("A command mode cannot be combined with module or preset selections.".into()); }
     if a.record.is_some_and(|v|!(5..=1800).contains(&v)) || a.interval_ms.is_some_and(|v|!(1000..=10000).contains(&v)) { return Err("Recording needs 5–1800 seconds and an interval of 1000–10000 ms.".into()); }
@@ -199,6 +210,7 @@ pub fn main(argv: Vec<String>) -> i32 {
     }
     let loaded = profile::load();
     let mut profile = loaded.profile.clone();
+    crate::audit::set_system_log(crate::audit::system_log_wanted(&profile, loaded.status.source));
     if args.redact_serial {
         profile.privacy.redact_serial = true;
     }
@@ -217,7 +229,22 @@ pub fn main(argv: Vec<String>) -> i32 {
     if args.trends {
         return trends(args.json);
     }
+    if let Some(path) = &args.verify_audit {
+        return verify_audit(path.clone());
+    }
     if let Some((id, target)) = &args.fix {
+        if args.what_if {
+            return match crate::actions::preview(id, target.as_deref(), &profile, remote_safe) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("itriage: {e}");
+                    1
+                }
+            };
+        }
         return match crate::actions::run_for(id, target.as_deref(), &profile, remote_safe, args.ticket.as_deref()) {
             Ok(msg) => {
                 println!("{msg}");
@@ -419,6 +446,36 @@ fn list(profile: &Profile, remote_safe: bool) {
     for book in guided::RUNBOOKS { println!("  --runbook {:<10} {}",book.id,book.title); }
 }
 
+/// `--verify-audit`: walk the hash chain and say whether it holds.
+fn verify_audit(path: Option<PathBuf>) -> i32 {
+    let Some(path) = path.or_else(crate::audit::log_path) else {
+        eprintln!("itriage: there's no audit log folder for this account.");
+        return 1;
+    };
+    match crate::audit::verify(&path) {
+        Err(e) => {
+            eprintln!("itriage: {e}");
+            1
+        }
+        Ok(v) => {
+            if let Some((file, line, why)) = &v.broken {
+                println!("BROKEN: {} line {line}: {why}.", file.display());
+                println!("{} line(s) before it checked out.", v.chained);
+                return 1;
+            }
+            println!("Intact: {} chained line(s) in {}.", v.chained, path.display());
+            if v.unchained > 0 {
+                println!("{} older line(s) were written before the chain existed (ITriage 0.9 or earlier) and can't be checked.", v.unchained);
+            }
+            if v.starts_mid_chain {
+                println!("The first line links to one that was rotated away; the chain is checked from there.");
+            }
+            println!("A chain can't show lines cut off the end; compare with the copy in the system log for that.");
+            0
+        }
+    }
+}
+
 /// How each measurement has moved over this computer's saved runs.
 fn trends(json: bool) -> i32 {
     let host = crate::host_context().hostname;
@@ -559,6 +616,9 @@ mod tests {
         }
         assert_eq!(args(&["--record","5","--interval-ms","2000"]).record,Some(5));
         assert_eq!(args(&["--baseline","good.json","now.json"]).baseline.unwrap().0,PathBuf::from("good.json"));
+        assert_eq!(args(&["--verify-audit"]).verify_audit, Some(None));
+        assert_eq!(args(&["--verify-audit", "copy.jsonl"]).verify_audit, Some(Some(PathBuf::from("copy.jsonl"))));
+        assert!(parse(&["--verify-audit".to_string(), "--trends".to_string()]).is_err());
     }
 
     #[test]
@@ -628,6 +688,13 @@ mod tests {
         let text = std::fs::read_to_string(out.with_extension("txt")).unwrap();
         assert!(text.contains("38 ms → 3 ms"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fix_preview_changes_nothing() {
+        let run = |a: &[&str]| main(a.iter().map(|s| s.to_string()).collect());
+        assert_eq!(run(&["--fix", "flush-dns", "--what-if"]), 0);
+        assert_eq!(run(&["--fix", "no-such-fix", "--what-if"]), 1);
     }
 
     #[test]

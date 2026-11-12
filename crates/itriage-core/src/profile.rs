@@ -39,6 +39,7 @@ pub struct Profile {
     pub security: SecuritySettings,
     pub cleanup: CleanupSettings,
     pub history: HistorySettings,
+    pub audit: AuditSettings,
     pub ui: UiSettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
@@ -305,11 +306,14 @@ pub struct SecuritySettings {
     pub require_encryption: Option<bool>,
     /// `false` flags a signed-in user who is an administrator of the PC.
     pub user_may_be_admin: bool,
+    /// Warn when a machine certificate's revocation list expires within
+    /// this many hours (unless the CA publishes a new one first).
+    pub crl_warn_hours: u32,
 }
 
 impl Default for SecuritySettings {
     fn default() -> Self {
-        Self { require_encryption: None, user_may_be_admin: true }
+        Self { require_encryption: None, user_may_be_admin: true, crl_warn_hours: 24 }
     }
 }
 
@@ -334,6 +338,21 @@ pub struct CleanupSettings {
 impl Default for CleanupSettings {
     fn default() -> Self {
         Self { temp_min_age_hours: 24 }
+    }
+}
+
+/// The audit trail. The local file is always written.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuditSettings {
+    /// Copy each audit line to the Windows Application event log or syslog,
+    /// for WEF and SIEM collection. Only a managed profile can turn it off.
+    pub event_log: bool,
+}
+
+impl Default for AuditSettings {
+    fn default() -> Self {
+        Self { event_log: true }
     }
 }
 
@@ -765,7 +784,11 @@ mod tests {
         let old = Profile::from_toml("[thresholds]\nstartup_seconds = { warn = 45, crit = 90 }\n[security]\nuser_may_be_admin = false\n").unwrap();
         assert_eq!(old.thresholds.startup_seconds, Band::new(45.0, 90.0));
         assert_eq!(old.thresholds.logon_seconds, Band::new(60.0, 120.0));
-        let tuned = Profile::from_toml("[thresholds]\nlogon_seconds = { warn = 30, crit = 60 }").unwrap();
+        assert_eq!(old.security.crl_warn_hours, 24);
+        assert!(old.audit.event_log, "the system-log copy is on unless a profile says otherwise");
+        assert!(!old.security.user_may_be_admin, "the keys it had are kept");
+        let tuned = Profile::from_toml("[thresholds]\nlogon_seconds = { warn = 30, crit = 60 }\n[security]\ncrl_warn_hours = 48").unwrap();
+        assert_eq!(tuned.security.crl_warn_hours, 48);
         assert_eq!(tuned.thresholds.logon_seconds.high(45.0), Severity::Warning);
     }
 

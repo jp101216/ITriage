@@ -123,11 +123,11 @@
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
     mod("desk.logon", "Sign-in speed (Group Policy)", "workstation", "How long the last sign-in spent loading the profile and applying Group Policy, which policy step took the time or failed, and lost contact with the domain controller during policy processing.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
-    mod("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device join and authentication, Windows Hello and affected-user PRT/WAM diagnostic status. Reads no tokens.", WIN),
+    mod("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
     mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, plus devices the site profile requires."),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
-    mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN) and when they expire. Warns 14 days out.", WIN),
+    mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN), when they expire (warns 14 days out), and whether their revocation lists are reachable and current.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),
     mod("sec.posture", "Security posture", "security", "Disk encryption, antivirus and how old its definitions are, the firewall, Secure Boot, the TPM, and who is an administrator of this PC."),
     mod("sec.blocks", "Policy blocks", "security", "Which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules, Controlled folder access, antivirus detections, AppLocker and App Control (WDAC)."),
@@ -257,6 +257,8 @@
       description: "Signs out this person's disconnected session on this PC. Programs still open in it are closed, and unsaved work in it is lost." },
     { id: "unlock-account", label: "Unlock the account", requires_admin: true, disruptive: false, technician_only: true,
       description: "Clears the account's lockout. It needs an account that's allowed to unlock users. If something is still using the old password, the account locks again." },
+    { id: "purge-kerberos-tickets", label: "Clear Kerberos tickets", requires_admin: false, disruptive: false,
+      description: "Removes the Kerberos tickets cached for this sign-in (klist purge). Windows gets new ones the next time each file share, intranet site or app is opened; nothing else changes. It acts on the account ITriage runs as, so run ITriage as the signed-in user, not elevated." },
     { id: "revert-tuneup", label: "Revert tune-up", requires_admin: true, disruptive: true, technician_only: true,
       description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts." },
   ];
@@ -349,7 +351,15 @@
       F("2026-11-10T14:02:41Z · Wi-Fi 8001", "WLAN AutoConfig service has successfully connected to a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ProfileName: CORP · SSID: CORP"),
       F("Collection scope", "Up to 40 recent events per channel from the last 24 hours (certificate events: failures only); only 80 event rows are summarized. Existing logs only. A disabled or inaccessible channel is a gap, not a successful authentication check."),
     ]),
-    "desk.identity": R("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device identity (sample)", 10, [F("Device join", "Microsoft Entra hybrid joined"),F("Entra device authentication", "device is present and enabled", "ok"),F("User SSO checks", "not graded in an elevated or different-user context", "info", "Run without elevation as the affected user for PRT/WAM status.")]),
+    "desk.identity": R("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device identity and SSO diagnostic status · Kerberos TGT valid until 22:20 UTC", 10, [
+      F("Device join", "Microsoft Entra hybrid joined"),
+      F("Entra device authentication", "device is present and enabled", "ok"),
+      F("User SSO checks", "not graded in an elevated or different-user context", "info", "Run without elevation as the affected user for PRT/WAM status."),
+      F("Kerberos TGT", "valid until 22:20 UTC (another 7h)", "ok", "krbtgt/CORP.EXAMPLE.ORG for jparker@CORP.EXAMPLE.ORG · renewable until 2026-11-19T08:01:11Z UTC"),
+      F("Kerberos service tickets", "9 cached", "info", "cifs/fs01.corp.example.org, HTTP/intranet.corp.example.org, LDAP/DC01.corp.example.org, MSSQLSvc/oldsql.corp.example.org:1433"),
+      F("Kerberos RC4 tickets", "1 ticket: MSSQLSvc/oldsql.corp.example.org:1433", "warning", "Microsoft is removing RC4 from Kerberos on domain controllers; these services (or their accounts) still only offer it, and will stop working when it goes. Their owners need AES enabled on the service account (msDS-SupportedEncryptionTypes)."),
+      F("Kerberos KDC", "DC01.corp.example.org"),
+    ]),
     "system.storage": R("system.storage", "What's using the space", "system", "Biggest: C:\\Users\\jparker\\Downloads · 96.4 GB", 14180, [
       F("C:\\ in use", "469.7 GB of 476.9 GB (98%)"),
       F("C:\\Users\\jparker (whole profile)", "241.8 GB · 51% of what's in use"),
@@ -506,6 +516,8 @@
     "desk.certs": R("desk.certs", "Machine certificates", "workstation", "1 machine certificate expired or expiring within 14 days", 12, [
       F("WS-FLINT-07.corp.example.org", "expires in 9 days · 2026-11-15", "warning", "Issued by Example Issuing CA 2 · has a private key"),
       F("WS-FLINT-07", "valid for 301 more days · 2027-09-03", "ok", "Issued by Example Device CA · has a private key"),
+      F("Revocation: WS-FLINT-07.corp.example.org", "CRL current until 2026-11-13 09:00 UTC · chain check: passed", "ok",
+        "CRL http://pki.corp.example.org/CertEnroll/Example%20Issuing%20CA%202.crl: fetched; issued 2026-11-10 09:00 UTC, next update 2026-11-13 09:00 UTC · CRL ldap:///CN=Example%20Issuing%20CA%202,CN=PKI01,CN=CDP: LDAP, checked by the chain build only · OCSP http://ocsp.corp.example.org/ocsp: listed, not queried"),
     ]),
     "desk.battery": R("desk.battery", "Battery health", "workstation", "Battery wearing: 76% of design capacity left", 1840, [
       F("Charge", "86% · on AC power", "ok"),
@@ -723,6 +735,7 @@
     "clear-saved-credentials": () => "Removed 2 saved credentials: fs01, TERMSRV/rds-clin01. Windows asks for the password the next time each is used.",
     "logoff-session": (t) => `Asked Windows to sign out CORP\\jparker's disconnected session ${t}.`,
     "unlock-account": (t) => `${t} is unlocked. If something is still using the old password, it will lock again: clear the sources the report lists.`,
+    "purge-kerberos-tickets": () => "Cleared 14 Kerberos tickets for this sign-in. New ones are fetched as each server is used.",
     "revert-tuneup": () => "Put back the settings from before the tune-up. Wi-Fi: DeviceSleepOnDisconnect, SelectiveSuspend turned back on (applies at the next adapter restart).",
   };
   const MOCK_DIFF = {
@@ -2130,7 +2143,13 @@
     return res;
   }
 
-  function confirmFix(action, f) {
+  async function confirmFix(action, f) {
+    // What it would do on this PC, when the engine can say (a preview
+    // changes nothing). A shell without previews just shows the description.
+    let would = "";
+    if (api.previewFix) {
+      try { would = String(await api.previewFix(action.id, action.target || null, remoteSafe) || ""); } catch (_) { would = ""; }
+    }
     let notice = "";
     if (action.requires_admin && host && !host.elevated) {
       notice = host.platform === "windows"
@@ -2149,6 +2168,7 @@
       title: `${I.bolt} ${esc(action.label)}`,
       body: `
         <p>${esc(fixDescription(action))}</p>
+        ${would && would !== "Preview: " + fixDescription(action).replace(/\.$/, "") + ". Nothing was changed." ? `<p class="fix-preview">${esc(would)}</p>` : ""}
         <ul><li><b>${esc(f.label)}</b>: ${esc(f.value)}</li></ul>
         ${notice}
         <p>It's recorded in the audit log and in ${log}.</p>`,
@@ -3526,6 +3546,7 @@
         return (outcome && outcome.report.results[0]) || null;
       },
       runFix: (id, target, remoteSafe, ticket) => invoke("run_fix", { id, target, remoteSafe: !!remoteSafe, ticket: ticket || null }),
+      previewFix: (id, target, remoteSafe) => invoke("preview_fix", { id, target, remoteSafe: !!remoteSafe }),
       trends: () => invoke("trends", { hostname: null }),
       likelyCauses: (results) => invoke("likely_causes", { results }),
       checkUpdate: () => invoke("check_update"),
@@ -3891,6 +3912,10 @@
         if (spec.requires_admin && !host.elevated) throw ADMIN_REQUIRED;
         if (!["restart-computer", "cancel-restart"].includes(id)) fixed.add(id + ":" + (target || ""));
         return FIX_MESSAGES[id](target);
+      },
+      previewFix: async (id) => {
+        const counts = { "purge-kerberos-tickets": "Preview: would clear 14 Kerberos tickets cached for CORP\\jparker. Nothing was changed." };
+        return counts[id] || "";
       },
       listHistory: async () => { await sleep(120); return MOCK_HISTORY.slice(); },
       loadReport: async (path) => {

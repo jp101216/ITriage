@@ -184,7 +184,8 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers | CUPS `lpstat` |
 | Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers | USB devices from sysfs |
 | Wi-Fi & VPN | **WLAN API**: SSID, signal (warns at 70%), security, radio, channel, link rates; Cisco Secure Client and Zscaler clients and tunnels | `nmcli`, VPN clients and tunnel interfaces |
-| Machine certificates | LocalMachine\My expiry; warns 14 days out | n/a |
+| Machine certificates | LocalMachine\My expiry; warns 14 days out. For each one in use (it has a private key): its CRL fetched live from each HTTP distribution point (expired is critical, expiring within `[security] crl_warn_hours` a warning, unreachable a warning; LDAP points are left to the chain check), its OCSP and issuer URLs, and the chain engine's own revocation verdict, so a check that passes on a cached CRL while the distribution point is down still shows | n/a |
+| Entra, Kerberos & SSO sign-in | device join and authentication, Windows Hello and the signed-in user's PRT/WAM status (`dsregcmd`, skipped with `public_probes = false`); the Kerberos ticket cache through LSA (TGT and when it expires, service tickets, RC4 or DES tickets, the KDC), only when ITriage runs as the signed-in user unelevated; and servers that rejected a ticket (System event 4, KRB_AP_ERR_MODIFIED: a duplicate SPN or a stale account password) | the Kerberos cache from MIT `klist -e` |
 | Battery health | design vs. full-charge capacity (`powercfg /batteryreport`), cycles | sysfs `power_supply` |
 | Policy blocks | which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules (named from Microsoft's GUID table), Controlled folder access, antivirus detections, AppLocker and App Control (WDAC), each folded by rule and file with how often and when. A block today on an app the profile requires is critical; audit-mode rules are information | AppArmor and SELinux denials from the kernel and audit journal (and `audit.log` as root) |
 | Security posture | BitLocker on the system drive, Defender real-time protection and definition age (warns at 3 days), other antivirus and EDR sensors, the firewall per profile (critical when it's off for the profile in use), Secure Boot, TPM, UAC, and who is an administrator of the PC | LUKS under the root file system, endpoint agents, firewalld / ufw / nftables, Secure Boot, TPM, sudo and wheel members |
@@ -336,7 +337,7 @@ They connect eight capabilities:
 |---|---|
 | Application connections | Select **Application connections** after configuring `[[require.application]]` URLs; see DNS, direct route/TCP, proxy context, TLS validation and expected HTTP statuses. |
 | Intermittent recordings | **Record issue** captures bounded resource/connection samples and the Wi-Fi signal and access point; **Problem happened now** (or Enter in the marker box) adds a marker. Stop safely and use **Replay recording**: a chart with the markers, moves between access points and failed connections on it, and the samples near a marker or the failures alone. |
-| Entra / Microsoft 365 identity | **Entra & Microsoft 365 sign-in** inspects device join/authentication and diagnostic PRT/WAM/Hello state on Windows, without reading tokens. Run as the affected user without elevation for user SSO. |
+| Entra / Microsoft 365 identity | **Entra, Kerberos & SSO sign-in** inspects device join/authentication and diagnostic PRT/WAM/Hello state on Windows, and the Kerberos ticket cache, without reading tokens or tickets. Run as the affected user without elevation for user SSO and tickets. |
 | Wi-Fi / wired authentication history | **Wi-Fi & wired authentication history** summarizes existing connection, 802.1X and certificate-related logs, preserving timestamps and reason fields. |
 | Change timeline | Collect **Recent changes timeline**, then **Timeline** to inspect changes near the reported onset, or everything collected: each row in local time, placed against the onset ("12 min before"), with its kind and what happened in a sentence. A burst of one kind is one row. Nearby activity is a possible link, not proof of causation. |
 | Working-PC baseline | Open the affected PC's report, then **Working PC** to choose a known-working report of the same platform and role (only other PCs' reports are offered). Import another PC's JSON through **Open** first. Proxy, clock and domain settings are compared along with apps, services and posture. |
@@ -435,6 +436,8 @@ Every setting, with its default:
 | `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), `startup_seconds` 60/120 (time to the desktop), `logon_seconds` 60/120 (profile load plus sign-in policy), each as `{ warn, crit }` |
 | `[security] require_encryption` | unset | unset: an unencrypted laptop is a warning and a desktop is only noted. `true`: critical on every PC. `false`: only noted |
 | `[security] user_may_be_admin` | `true` | `false` flags a signed-in user who is an administrator of the PC |
+| `[security] crl_warn_hours` | `24` | warn when a machine certificate's revocation list expires within this many hours |
+| `[audit] event_log` | `true` | copy each audit line to the Windows event log or syslog. Only a managed profile can turn it off |
 | `[privacy] redact_serial` | `false` | show REDACTED for the serial number (also `--redact-serial`) |
 | `[updates] windows_update_drivers` | `"auto"` | `"always"` installs Windows Update drivers after the OEM tool too |
 | `[updates] suspend_bitlocker` | `true` | before the manufacturer's tool runs, BitLocker is suspended for one restart, so a BIOS update doesn't leave the PC asking for its recovery key; if protection is on and can't be suspended, nothing is installed. `false` leaves BitLocker to the tool |
@@ -457,7 +460,14 @@ profile can switch fixes off but never define new commands. Before running,
 the policy (and remote-safe mode) is checked again in the engine, whatever the
 UI showed. Every attempt, allowed, refused or failed, is written to the audit
 log (`audit.jsonl` in the app's state folder) **and** to the Windows
-Application event log (source `itriage`) or syslog. After a fix runs, the
+Application event log (source `itriage`, registered by the installers) or
+syslog: event 1100 when a fix succeeds, 1101 when it fails, and 1102 when the
+policy or remote-safe mode refused it (1000 is a run, 1001 a module that
+changed the machine). Each event's last line carries the ticket, the account
+and whether it ran elevated. Each line of `audit.jsonl` holds the SHA-256 of
+the line before it, so `itriage --verify-audit` finds a line that was edited,
+removed or slipped in. `--fix ID --what-if` (and the confirmation dialog) says
+what a fix would do on this PC before it runs. After a fix runs, the
 module re-checks itself so you see whether it worked. A fix never repeats a
 change, though: on a module that changes the machine, a preview is refreshed
 as a preview and the results of a real run stay as they were, and the engine
@@ -478,6 +488,7 @@ turns any re-check of such a module into a preview whatever the UI asks for.
 | Remove saved credentials | credentials are saved under the signed-in account's name | removes those entries from Credential Manager; other accounts' are left alone | n/a | |
 | Sign out the session | the same person has a disconnected session on the PC | signs that session out, and only if it's still disconnected | n/a | ✔ |
 | Unlock the account | the account is locked out | clears the lockout on the domain controller (or the PC, for a local account) | resets the `faillock` count | ✔ |
+| Clear Kerberos tickets | the TGT is missing or expired, or a server rejected a ticket | `klist purge` through LSA, for the session ITriage runs in; refused when elevated or another user's | `kdestroy`; refused as root | |
 | Revert tune-up | TCP autotuning & NIC power changed something | puts TCP autotuning and the adapters' sleep settings back as they were (locked by remote-safe) | n/a | ✔ |
 
 Targets are validated before use (a service name, a Windows Update ID, one of

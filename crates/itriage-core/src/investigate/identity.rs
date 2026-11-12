@@ -1,4 +1,6 @@
-//! Device and SSO diagnostic status, never tokens or private keys.
+//! Device and SSO diagnostic status, and the Kerberos ticket cache. Never
+//! tokens, ticket contents or private keys: names, times and encryption
+//! types only.
 use crate::model::{Category, Finding, ModuleInfo, Output};
 use crate::module::{RunContext, TriageModule};
 use std::collections::BTreeMap;
@@ -6,26 +8,136 @@ use std::collections::BTreeMap;
 pub struct IdentityHealth;
 impl TriageModule for IdentityHealth {
     fn info(&self) -> ModuleInfo {
-        ModuleInfo::new(
-            "desk.identity",
-            "Entra & Microsoft 365 sign-in",
-            Category::Workstation,
-            "Device join and authentication, Windows Hello, and signed-in-user PRT/WAM diagnostic status. Reads no tokens.",
-        )
-        .only("windows")
+        let description = if cfg!(windows) {
+            "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."
+        } else {
+            "The signed-in user's Kerberos tickets: TGT, RC4 tickets and when they expire. Reads no tickets' contents."
+        };
+        ModuleInfo::new("desk.identity", "Entra, Kerberos & SSO sign-in", Category::Workstation, description)
     }
     fn execute(&self, ctx: &RunContext) -> Result<Output, String> {
-        if !ctx.profile().network.public_probes {
-            return Ok(Output::new(
-                "Cloud identity query skipped by site policy",
-                vec![Finding::info(
+        let mut findings = Vec::new();
+        let mut summary = Vec::new();
+        if cfg!(windows) {
+            if !ctx.profile().network.public_probes {
+                findings.push(Finding::info(
                     "Identity coverage",
-                    "dsregcmd may contact Microsoft Entra. public_probes is disabled; local domain and account checks remain available.",
-                )],
-            ));
+                    "dsregcmd may contact Microsoft Entra. public_probes is disabled; local domain, account and Kerberos checks remain available.",
+                ));
+            } else {
+                match platform() {
+                    Ok(out) => {
+                        summary.push(out.summary);
+                        findings.extend(out.findings);
+                    }
+                    Err(e) => findings.push(Finding::info("Device identity", format!("couldn't be read: {e}"))),
+                }
+            }
         }
-        platform()
+        let kerberos = kerberos();
+        if let Some(tgt) = kerberos.iter().find(|f| f.label == "Kerberos TGT") {
+            summary.push(format!("Kerberos TGT {}", tgt.value.split(" (").next().unwrap_or(&tgt.value)));
+        }
+        findings.extend(kerberos);
+        Ok(Output::new(if summary.is_empty() { "Sign-in identity status".to_string() } else { summary.join(" · ") }, findings))
     }
+}
+
+/// Is ITriage running as the person signed in at this PC, unelevated?
+/// Kerberos tickets (and the PRT) belong to a logon session, and an
+/// elevated or different-user run has its own.
+pub fn require_user_context() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        if crate::host::is_elevated() {
+            return Err("ITriage is running elevated, which is a separate sign-in session: it would act on that session's tickets, not the user's. Run ITriage without elevation as the signed-in user.".into());
+        }
+        let current = crate::win::session::current_account();
+        let session = crate::win::session::current_session().and_then(crate::win::session::session_user);
+        if let (Some(a), Some(b)) = (&current, &session) {
+            if !a.eq_ignore_ascii_case(b) {
+                return Err(format!("ITriage is running as {a}, not as {b}, who is signed in here."));
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return Err("ITriage is running as root: it would act on root's Kerberos tickets, not the user's.".into());
+        }
+        Ok(())
+    }
+}
+
+/// The Kerberos rows: the ticket cache (only in the user's own context)
+/// and, on Windows, servers that rejected a ticket in the last week.
+fn kerberos() -> Vec<Finding> {
+    use crate::parse::kerberos::{findings, rejections};
+    let now = crate::util::now_epoch();
+    let in_context = require_user_context();
+    let purge = in_context.is_ok().then(|| crate::actions::offer("purge-kerberos-tickets", None));
+    let mut out = match &in_context {
+        Err(why) => vec![Finding::info("Kerberos tickets", "not listed in this elevated or different-user context").with_detail(format!(
+            "{why} A missing ticket in an administrator's session says nothing about the user's."
+        ))],
+        Ok(()) => match tickets() {
+            Ok(t) => findings(&t, now, purge.clone()),
+            Err(e) => vec![Finding::info("Kerberos tickets", format!("couldn't be listed: {e}"))],
+        },
+    };
+    out.extend(rejections(&modified_errors(), now, purge));
+    out
+}
+
+#[cfg(windows)]
+fn tickets() -> Result<Vec<crate::parse::kerberos::Ticket>, String> {
+    crate::win::kerberos::tickets()
+}
+
+#[cfg(not(windows))]
+fn tickets() -> Result<Vec<crate::parse::kerberos::Ticket>, String> {
+    use crate::util::{capture_for, cmd, command_exists};
+    if !command_exists("klist") {
+        return Ok(Vec::new());
+    }
+    let mut c = cmd("klist");
+    c.arg("-e").env("LC_ALL", "C");
+    let out = capture_for(c, std::time::Duration::from_secs(10))?;
+    // klist exits 1 with "No credentials cache found": that's no tickets.
+    let offset = local_offset();
+    Ok(crate::parse::kerberos::klist_mit(&out.stdout, &|local| (local as i64 - offset) as u64).1)
+}
+
+/// This machine's offset from UTC in seconds, now (klist prints local times).
+#[cfg(not(windows))]
+fn local_offset() -> i64 {
+    let now = crate::util::now_epoch() as libc::time_t;
+    // SAFETY: localtime_r fills a zeroed tm from a valid time_t.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return 0;
+        }
+        tm.tm_gmtoff
+    }
+}
+
+/// System event 4 (KRB_AP_ERR_MODIFIED) over the last week.
+#[cfg(windows)]
+fn modified_errors() -> Vec<(u64, String, String)> {
+    const QUERY: &str = "*[System[Provider[@Name='Microsoft-Windows-Security-Kerberos'] and EventID=4 and TimeCreated[timediff(@SystemTime) <= 604800000]]]";
+    crate::win::eventlog::query_xml("System", QUERY, 100)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|x| crate::parse::kerberos::modified_error(x))
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn modified_errors() -> Vec<(u64, String, String)> {
+    Vec::new()
 }
 
 pub fn parse(text: &str) -> BTreeMap<String, String> {

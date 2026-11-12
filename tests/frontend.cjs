@@ -127,6 +127,7 @@ async function pageFor(t, options = {}) {
             if(args.runbook)r.runbook={id:args.runbook,steps:[{modules:args.selected,reason:"Inspect printing and storage first."}],finished:true,conclusion:"Review findings; completing checks does not mean the issue is repaired."};
             return { report:r, diff: diff(false), save_error: options.saveError || null };
           }
+          case "preview_fix": return "Preview: would restart the Print Spooler; 1 job is waiting. Nothing was changed.";
           case "run_fix": await new Promise((done) => { state.fixDone = done; }); return "Print Spooler restarted.";
           case "refresh_report": {
             if (options.failRefresh) throw "Controlled refresh failure";
@@ -148,6 +149,12 @@ async function runAndFix(page, self = false) {
   const button = page.locator(self ? ".ss-fix" : ".fix-btn").first();
   await button.waitFor();
   await button.click();
+  if (!self) {
+    // The confirmation says what the fix would do here, from its preview.
+    const preview = page.locator(".modal .fix-preview");
+    await preview.waitFor();
+    assert.match(await preview.textContent(), /1 job is waiting/);
+  }
   await page.getByRole("button", { name: self ? "Go ahead" : "Run fix", exact: true }).click();
   await page.waitForFunction(() => typeof testState.fixDone === "function");
 }
