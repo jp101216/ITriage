@@ -27,6 +27,54 @@ fn check(what: &str, rc: u32) -> Result<(), String> {
     }
 }
 
+/// One counter that stays open between readings (the HUD sampler reads it
+/// about once a second).
+pub struct Counter {
+    query: Query,
+    counter: PDH_HCOUNTER,
+}
+
+// SAFETY: PDH query and counter handles aren't tied to the thread that
+// opened them; the sampler that owns this is used behind a Mutex, one call
+// at a time.
+unsafe impl Send for Counter {}
+
+impl Counter {
+    /// Open an English counter path and take the first reading.
+    pub fn open(path: &str) -> Result<Self, String> {
+        // SAFETY: the query is owned by `Query` and closed on every path.
+        unsafe {
+            let mut query = PDH_HQUERY::default();
+            check("performance counters unavailable", PdhOpenQueryW(PCWSTR::null(), 0, &mut query))?;
+            let query = Query(query);
+            let mut counter = PDH_HCOUNTER::default();
+            check("no such counter", PdhAddEnglishCounterW(query.0, &HSTRING::from(path), 0, &mut counter))?;
+            check("sampling a counter", PdhCollectQueryData(query.0))?;
+            Ok(Self { query, counter })
+        }
+    }
+
+    /// The value now (a rate counter compares with the last reading).
+    pub fn read(&self) -> Option<f64> {
+        // SAFETY: handles owned by self; the value is a plain out-parameter.
+        unsafe {
+            if PdhCollectQueryData(self.query.0) != 0 {
+                return None;
+            }
+            let mut value = PDH_FMT_COUNTERVALUE::default();
+            if PdhGetFormattedCounterValue(self.counter, PDH_FMT_DOUBLE, None, &mut value) != 0 {
+                return None;
+            }
+            Some(value.Anonymous.doubleValue).filter(|v| v.is_finite())
+        }
+    }
+}
+
+/// The processor's clock as a percentage of its rated maximum, across all
+/// processors. Below 100 under load means something (firmware, heat, a weak
+/// charger, the power plan) is holding it back.
+pub const CLOCK_PCT: &str = r"\Processor Information(_Total)\% of Maximum Frequency";
+
 /// Average milliseconds per disk transfer and the disk queue length across
 /// all physical disks (`\PhysicalDisk(_Total)`), sampled over `interval`:
 /// what Invoke-NetTriage reads from Win32_PerfFormattedData_PerfDisk_PhysicalDisk.

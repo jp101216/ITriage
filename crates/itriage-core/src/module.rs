@@ -242,6 +242,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::triage::storage::StorageBreakdown),
         Box::new(crate::triage::memory::MemoryUsage),
         Box::new(crate::triage::reliability::Reliability),
+        Box::new(crate::triage::hardware::Hardware),
         Box::new(crate::triage::startup::Startup),
         Box::new(crate::investigate::timeline::ChangeTimeline),
         // --- Processes & services ---
@@ -259,6 +260,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         // --- Workstation (service desk) ---
         Box::new(crate::desk::time::ClockSync),
         Box::new(crate::desk::domain::DomainPolicy),
+        Box::new(crate::desk::logon::SignInWaterfall),
         Box::new(crate::desk::account::SignInAccount),
         Box::new(crate::investigate::identity::IdentityHealth),
         Box::new(crate::desk::printers::Printers),
@@ -268,6 +270,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::desk::battery::BatteryHealth),
         // --- Security ---
         Box::new(crate::security::posture::SecurityPosture),
+        Box::new(crate::security::blocks::PolicyBlocks),
         // --- Site & clinical (driven by the site profile) ---
         Box::new(crate::site::apps::SiteApps),
         Box::new(crate::site::checks::SiteChecks),
@@ -360,8 +363,8 @@ pub const PRESETS: &[Preset] = &[
         id: "health",
         title: "Health check",
         script: "",
-        description: "Is this PC sound: drive health and crashes, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-        modules: &["system.info", "system.disk", "system.reliability", "system.startup", "sec.posture", "desk.battery", "update.scan"],
+        description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
+        modules: &["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan"],
     },
 ];
 

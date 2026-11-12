@@ -29,6 +29,12 @@ pub fn parse_system(xml: &str) -> Option<EvtSystem> {
     })
 }
 
+/// The ActivityID in `<Correlation>`: the same for every event of one
+/// operation (a Group Policy cycle, say). `None` when it's empty.
+pub fn activity_id(xml: &str) -> Option<String> {
+    attr(xml, "Correlation", "ActivityID").filter(|id| !id.trim().is_empty())
+}
+
 /// The named values in an event's `<EventData>`: `<Data Name='TargetUserName'>jparker</Data>`.
 /// Unnamed and empty entries are skipped.
 pub fn event_data(xml: &str) -> Vec<(String, String)> {

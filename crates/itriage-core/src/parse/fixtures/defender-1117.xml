@@ -1,0 +1,59 @@
+<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Windows Defender" Guid="{11cd958a-c507-4ef3-b3f2-5fd9dfbd2c78}"></Provider>
+<EventID Qualifiers="">1117</EventID>
+<Version>0</Version>
+<Level>4</Level>
+<Task>0</Task>
+<Opcode>0</Opcode>
+<Keywords>0x8000000000000000</Keywords>
+<TimeCreated SystemTime="2019-07-18T20:51:50.2754710Z"></TimeCreated>
+<EventRecordID>101</EventRecordID>
+<Correlation ActivityID="{6e1a750f-42c6-491e-941a-12f6af57ebd2}" RelatedActivityID=""></Correlation>
+<Execution ProcessID="6024" ThreadID="6068"></Execution>
+<Channel>Microsoft-Windows-Windows Defender/Operational</Channel>
+<Computer>WS-07</Computer>
+<Security UserID="S-1-5-18"></Security>
+</System>
+<EventData><Data Name="Product Name">%%827</Data>
+<Data Name="Product Version">4.18.1906.3</Data>
+<Data Name="Detection ID">{511224D4-1EB4-47B9-BC4A-37E21F923FED}</Data>
+<Data Name="Detection Time">2019-07-18T20:40:00.580Z</Data>
+<Data Name="Unused"></Data>
+<Data Name="Unused2"></Data>
+<Data Name="Threat ID">2147725349</Data>
+<Data Name="Threat Name">Trojan:PowerShell/Powersploit.M</Data>
+<Data Name="Severity ID">5</Data>
+<Data Name="Severity Name">Severe</Data>
+<Data Name="Category ID">8</Data>
+<Data Name="Category Name">Trojan</Data>
+<Data Name="FWLink">https://go.microsoft.com/fwlink/?linkid=37020&amp;name=Trojan:PowerShell/Powersploit.M&amp;threatid=2147725349&amp;enterprise=0</Data>
+<Data Name="Status Code">103</Data>
+<Data Name="Status Description"></Data>
+<Data Name="State">2</Data>
+<Data Name="Source ID">3</Data>
+<Data Name="Source Name">%%818</Data>
+<Data Name="Process Name">C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</Data>
+<Data Name="Detection User">WS-07\jparker</Data>
+<Data Name="Unused3"></Data>
+<Data Name="Path">file:_C:\AtomicRedTeam\atomic-red-team-master\atomics\T1056\Get-Keystrokes.ps1</Data>
+<Data Name="Origin ID">1</Data>
+<Data Name="Origin Name">%%845</Data>
+<Data Name="Execution ID">1</Data>
+<Data Name="Execution Name">%%813</Data>
+<Data Name="Type ID">0</Data>
+<Data Name="Type Name">%%822</Data>
+<Data Name="Pre Execution Status">0</Data>
+<Data Name="Action ID">2</Data>
+<Data Name="Action Name">%%809</Data>
+<Data Name="Unused4"></Data>
+<Data Name="Error Code">0x80508023</Data>
+<Data Name="Error Description">The program could not find the malware and other potentially unwanted software on this device. </Data>
+<Data Name="Unused5"></Data>
+<Data Name="Post Clean Status">0</Data>
+<Data Name="Additional Actions ID">0</Data>
+<Data Name="Additional Actions String">No additional actions required</Data>
+<Data Name="Remediation User">NT AUTHORITY\SYSTEM</Data>
+<Data Name="Unused6"></Data>
+<Data Name="Signature Version">AV: 1.297.1333.0, AS: 1.297.1333.0, NIS: 0.0.0.0</Data>
+<Data Name="Engine Version">AM: 1.1.16100.4, NIS: 0.0.0.0</Data>
+</EventData>
+</Event>

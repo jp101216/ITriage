@@ -168,6 +168,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | What's using the space | the biggest places on the system drive, by adding up folders: each profile and the folders inside it (`AppData` one level further in), `Windows.old`, the Recycle Bin, `Windows\Temp`, update downloads, memory dumps, `ProgramData`, `Program Files`, and the page and hibernation files, each with what can be done about it. It names folders, never files; skips links, other volumes and cloud files that aren't downloaded; and stops after 25 s, saying what it didn't reach | each home folder and the folders inside it, `/var/log`, `/var/cache`, `/tmp`, crash dumps, Docker, snap and flatpak data, `/opt`, `/usr` and swap files; sizes are blocks on disk |
 | Memory usage | RAM and page file (warns at 80% used) | RAM and swap |
 | Drive health & reliability | each drive's health, and (as administrator) wear, temperature and uncorrected errors and SMART's own failure prediction; then 30 days of the System and Application logs: blue screens with their stop codes, unexpected shutdowns, disk errors, and the apps that crash or hang most | drives from `/sys/block`; health and NVMe wear from `smartctl` as root; disk errors from the kernel journal; crashes from `coredumpctl` |
+| Throttling & hardware errors | the processor's clock against its maximum right now (`% of Maximum Frequency`), judged against how busy it is; firmware speed limits from Kernel-Processor-Power event 37 over 7 days, with the time limited; WHEA corrected and fatal hardware errors (PCI Express, machine check, memory) over 30 days | the cpufreq clock against its maximum, the kernel's thermal-throttle counters, EDAC memory errors |
 | Startup & sign-in speed | each start as Windows timed it (the Diagnostics-Performance log): the last one's time to the desktop, against 60 s / 120 s and against this PC's own usual; what Windows recorded as slowing a start (apps, drivers, services), with how often and by how much; the startup apps, and which are switched off | `systemd-analyze` (time to sign-in, the slowest units) and the autostart folders |
 | Top processes | overall CPU load (warns at 75%), busiest processes, biggest memory users | same |
 | Services | **native SCM**: Automatic services not running, exit codes decoded | `systemctl`: failed units and `is-system-running` |
@@ -178,12 +179,14 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Recent errors | **native Evt\* API**: System + Application, Critical/Error, last 24 h, grouped by provider + event ID | `journalctl -p err`, grouped by source + normalised message |
 | Clock & time sync | W32Time source, **SNTP offset** vs. the DC or configured server, time zone | `timedatectl`, SNTP vs. the timesyncd/chrony source |
 | Domain & Group Policy | domain join, **DC vs. cached-credential sign-in**, AD site, last computer policy refresh | n/a |
+| Sign-in speed (Group Policy) | the last sign-in as a waterfall: profile load (User Profile Service 1 → 2) plus user policy (GroupPolicy 4001 → 8001), each client-side extension's time (5016) and failures (6016/7016), how many GPOs applied or were filtered out, and lost domain controllers (1129) or unreadable SYSVOL files (1058). Warns at 60 s, critical at 120 s | n/a |
 | Sign-in & account lockouts | the signed-in account on its domain controller (**NetAPI**): locked, disabled, wrong-password count, password expiry (warns 14 days out), the lockout policy (a Microsoft Entra ID account lives in the cloud, so for those it says so and checks the rest); mapped drives and whether their servers answer; and [what on this PC keeps locking it](#account-lockouts) | `passwd -S`, `chage`, `faillock`, Kerberos ticket, network mounts |
 | Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers | CUPS `lpstat` |
 | Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers | USB devices from sysfs |
 | Wi-Fi & VPN | **WLAN API**: SSID, signal (warns at 70%), security, radio, channel, link rates; Cisco Secure Client and Zscaler clients and tunnels | `nmcli`, VPN clients and tunnel interfaces |
 | Machine certificates | LocalMachine\My expiry; warns 14 days out | n/a |
 | Battery health | design vs. full-charge capacity (`powercfg /batteryreport`), cycles | sysfs `power_supply` |
+| Policy blocks | which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules (named from Microsoft's GUID table), Controlled folder access, antivirus detections, AppLocker and App Control (WDAC), each folded by rule and file with how often and when. A block today on an app the profile requires is critical; audit-mode rules are information | AppArmor and SELinux denials from the kernel and audit journal (and `audit.log` as root) |
 | Security posture | BitLocker on the system drive, Defender real-time protection and definition age (warns at 3 days), other antivirus and EDR sensors, the firewall per profile (critical when it's off for the profile in use), Secure Boot, TPM, UAC, and who is an administrator of the PC | LUKS under the root file system, endpoint agents, firewalld / ufw / nftables, Secure Boot, TPM, sudo and wheel members |
 | Required & clinical apps | the profile's required apps and minimum versions, plus a watchlist of clinical clients | dpkg / rpm / pacman packages |
 | Site services & endpoints | the profile's required services; its servers checked by DNS + TCP, in parallel, with connect times | systemd units; same |
@@ -275,6 +278,13 @@ lines are worked out again.
 A full disk cites what **What's using the space** flagged as clearable (or
 its biggest folder), and says to run that check when it hasn't been. A slow
 start names what Windows recorded as holding it up.
+
+A program that won't run is named with the rule that stopped it ("natspeak.exe
+is being blocked by security policy, not failing on its own: ASR rule …
+stopped it 3 times"). A slow sign-in names its slowest Group Policy step
+("Folder Redirection took 41.0 s of a 63.0 s sign-in"), or the domain
+controller that didn't answer. A busy processor that's also being held back by
+firmware or heat is reported as that, and the busiest program isn't blamed.
 
 ### Fewer false positives in the Services check
 
@@ -422,7 +432,7 @@ Every setting, with its default:
 | `[network] target_ports` | `[443, 80, 445, 3389]` | the destination test's ports when none are given |
 | `[network] tcp_timeout_ms` | `1500` | per TCP check, shared by every address a name resolves to |
 | `[network] ping_count`, `ping_timeout_ms` | `4`, `1000` | ICMP echoes per probe and the wait for each |
-| `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), `startup_seconds` 60/120 (time to the desktop), each as `{ warn, crit }` |
+| `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), `startup_seconds` 60/120 (time to the desktop), `logon_seconds` 60/120 (profile load plus sign-in policy), each as `{ warn, crit }` |
 | `[security] require_encryption` | unset | unset: an unencrypted laptop is a warning and a desktop is only noted. `true`: critical on every PC. `false`: only noted |
 | `[security] user_may_be_admin` | `true` | `false` flags a signed-in user who is an administrator of the PC |
 | `[privacy] redact_serial` | `false` | show REDACTED for the serial number (also `--redact-serial`) |
@@ -1040,6 +1050,7 @@ RUSTC_BOOTSTRAP=1 cargo clippy -Zbuild-std=std,panic_abort \
 * The account that locked out, traced to its source computer from the domain controller's own log (needs rights there).
 * Per-percent Windows Update download progress (`IDownloadProgressChangedCallback`).
 * Gateway and DNS latency over the destination's route, as NetTriage does, rather than the default route.
+* The rest of the round-3 list in `docs/ideas/next-features.md`.
 * Secure-channel check for domain trust (needs elevation).
 * More OEMs, plus flatpak/snap on Linux.
 
