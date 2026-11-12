@@ -107,16 +107,10 @@ pub fn findings(user: Option<&Waterfall>, computer: Option<&Waterfall>, profile_
             if let Some(code) = &w.error {
                 out.push(Finding::warn("Sign-in policy result", format!("finished with error {code}")));
             }
-            match (w.applied, w.filtered) {
-                (None, None) => {}
-                (a, f) => out.push(Finding::info(
-                    "Group Policy objects",
-                    format!(
-                        "{} applied{}",
-                        a.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
-                        f.map(|n| format!(" · {n} filtered out")).unwrap_or_default()
-                    ),
-                )),
+            // Windows logs each list only when it has one to log.
+            let counts: Vec<String> = [w.applied.map(|n| format!("{n} applied")), w.filtered.map(|n| format!("{n} filtered out"))].into_iter().flatten().collect();
+            if !counts.is_empty() {
+                out.push(Finding::info("Group Policy objects", counts.join(" · ")));
             }
         }
     }
@@ -268,6 +262,9 @@ mod tests {
         let w = sign_in(9, vec![phase("Registry", 400, Outcome::Ok)]);
         let rows = findings(Some(&w), None, Some(1_500), &[], &band, 1_794_600_100);
         assert!(rows.iter().all(|f| f.severity.rank() < Severity::Warning.rank()), "{rows:#?}");
+        let only_filtered = Waterfall { applied: None, filtered: Some(1), ..sign_in(9, vec![]) };
+        let rows = findings(Some(&only_filtered), None, None, &[], &band, 1_794_600_100);
+        assert_eq!(rows.iter().find(|f| f.label == "Group Policy objects").unwrap().value, "1 filtered out", "seen on a Windows Server 2025 runner");
         let none = findings(None, None, None, &[], &band, 0);
         assert_eq!((none[0].label.as_str(), none[0].severity), ("Last sign-in", Severity::Info));
         assert_eq!(summarise(&none), "No sign-in policy processing to time");
