@@ -246,6 +246,7 @@ async fn run_modules(
     let profile = app.profile.clone();
     let cancel = app.cancel.clone();
     let profile_name = (app.status.source != "built-in").then(|| app.status.name.clone());
+    let profile_source = app.status.source;
     let record = record.unwrap_or(true);
     let preview = preview.unwrap_or(false) || !record;
     let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
@@ -304,6 +305,7 @@ async fn run_modules(
             base.append_evidence(results,cancelled); base
         } else { Report::new(host_context(), profile_name, results, cancelled).with_ticket(ticket.as_deref()).with_role(&profile.role) };
         if let Some(trace) = trace { report.runbook = Some(trace); }
+        if !cancelled { report.check_incidents(&profile, profile_source); }
         let (mut saved, mut save_error, mut diff) = (None, None, None);
         if record && !report.results.is_empty() {
             if !cancelled {

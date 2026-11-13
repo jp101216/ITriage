@@ -3,3 +3,4 @@
 
 pub mod apps;
 pub mod checks;
+pub mod status;

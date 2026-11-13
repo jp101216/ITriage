@@ -41,6 +41,10 @@ pub struct Profile {
     pub history: HistorySettings,
     pub audit: AuditSettings,
     pub ui: UiSettings,
+    /// The site's incident feed (honoured from a managed profile only).
+    pub status: StatusSettings,
+    /// Watch mode (off unless the profile turns it on).
+    pub advanced: AdvancedSettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
 }
@@ -428,6 +432,45 @@ pub struct KbRule {
     pub pattern: String,
     pub title: String,
     pub url: String,
+}
+
+/// `[status]`: where the site publishes its open incidents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusSettings {
+    /// An `https://` URL of the JSON feed. Only a managed profile's counts.
+    pub url: Option<String>,
+    pub timeout_ms: u64,
+}
+
+impl Default for StatusSettings {
+    fn default() -> Self {
+        Self { url: None, timeout_ms: 2000 }
+    }
+}
+
+/// `[advanced]`: unattended watch mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvancedSettings {
+    pub watch: bool,
+    /// Disk the saved captures may use, in MB.
+    pub watch_max_mb: u64,
+    /// Captures older than this are removed.
+    pub watch_keep_days: u64,
+    /// "cpu", "gateway_loss", "app_paths", "app_hang".
+    pub watch_triggers: Vec<String>,
+}
+
+impl Default for AdvancedSettings {
+    fn default() -> Self {
+        Self {
+            watch: false,
+            watch_max_mb: 200,
+            watch_keep_days: 7,
+            watch_triggers: ["cpu", "gateway_loss", "app_paths", "app_hang"].map(String::from).to_vec(),
+        }
+    }
 }
 
 /// What the UI needs to know about the active profile.

@@ -205,6 +205,42 @@ pub fn nmcli_connected(out: &str) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+/// An address/prefix from the profile (`10.250.0.0/16`, `fd00:250::/48`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Subnet {
+    pub network: std::net::IpAddr,
+    pub prefix: u8,
+}
+
+impl Subnet {
+    pub fn parse(text: &str) -> Result<Subnet, String> {
+        let (ip, prefix) = text.trim().split_once('/').ok_or_else(|| format!("`{text}` needs a prefix length, like 10.250.0.0/16"))?;
+        let network: std::net::IpAddr = ip.trim().parse().map_err(|_| format!("`{ip}` isn't an IP address"))?;
+        let prefix: u8 = prefix.trim().parse().map_err(|_| format!("`{prefix}` isn't a prefix length"))?;
+        let max = if network.is_ipv4() { 32 } else { 128 };
+        if prefix > max {
+            return Err(format!("/{prefix} is longer than an address"));
+        }
+        Ok(Subnet { network, prefix })
+    }
+
+    pub fn contains(&self, ip: std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        let bits = |n: u128, len: u32, prefix: u8| if prefix == 0 { 0 } else { n >> (len - u32::from(prefix)) };
+        match (self.network, ip) {
+            (IpAddr::V4(n), IpAddr::V4(a)) => bits(u32::from(n).into(), 32, self.prefix) == bits(u32::from(a).into(), 32, self.prefix),
+            (IpAddr::V6(n), IpAddr::V6(a)) => bits(u128::from(n), 128, self.prefix) == bits(u128::from(a), 128, self.prefix),
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for Subnet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
