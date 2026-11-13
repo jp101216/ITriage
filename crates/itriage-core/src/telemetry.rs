@@ -36,6 +36,11 @@ pub struct Telemetry {
     /// The fullest volume: percent used and where it's mounted.
     pub fullest_pct: f32,
     pub fullest_mount: String,
+    /// The processor clock as a percentage of its rated maximum, when the
+    /// OS reports it. Low while the CPU is busy means it's being held back
+    /// (firmware, heat, a weak charger), not that one program is greedy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clock_pct: Option<f32>,
 }
 
 pub struct Sampler {
@@ -44,6 +49,8 @@ pub struct Sampler {
     disks: Disks,
     last: Instant,
     storage_read: Instant,
+    #[cfg(windows)]
+    clock: Option<crate::win::pdh::Counter>,
 }
 
 impl Default for Sampler {
@@ -62,7 +69,19 @@ impl Sampler {
             disks: Disks::new_with_refreshed_list(),
             last: Instant::now(),
             storage_read: Instant::now(),
+            #[cfg(windows)]
+            clock: crate::win::pdh::Counter::open(crate::win::pdh::CLOCK_PCT).ok(),
         }
+    }
+
+    #[cfg(windows)]
+    fn clock_pct(&mut self) -> Option<f32> {
+        self.clock.as_ref().and_then(|c| c.read()).map(|v| v.clamp(0.0, 100.0) as f32)
+    }
+
+    #[cfg(not(windows))]
+    fn clock_pct(&mut self) -> Option<f32> {
+        linux_clock_pct().map(|v| v as f32)
     }
 
     pub fn sample(&mut self) -> Telemetry {
@@ -121,8 +140,30 @@ impl Sampler {
             disk_write: per_sec(write),
             fullest_pct: fullest.0,
             fullest_mount: fullest.1,
+            clock_pct: self.clock_pct(),
         }
     }
+}
+
+/// The average of every CPU's current clock against its maximum, from
+/// cpufreq (`scaling_cur_freq` / `cpuinfo_max_freq`). `None` where cpufreq
+/// isn't exposed (many VMs).
+#[cfg(not(windows))]
+pub fn linux_clock_pct() -> Option<f64> {
+    let read = |p: std::path::PathBuf| std::fs::read_to_string(p).ok().and_then(|s| s.trim().parse::<u64>().ok());
+    let mut pairs = Vec::new();
+    for entry in std::fs::read_dir("/sys/devices/system/cpu").ok()?.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.strip_prefix("cpu").is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())) {
+            continue;
+        }
+        let dir = entry.path().join("cpufreq");
+        if let (Some(cur), Some(max)) = (read(dir.join("scaling_cur_freq")), read(dir.join("cpuinfo_max_freq"))) {
+            pairs.push((cur, max));
+        }
+    }
+    crate::parse::hardware::clock_pct(&pairs)
 }
 
 fn is_loopback(name: &str) -> bool {
@@ -143,6 +184,7 @@ mod tests {
         assert!(t.mem_total > 0 && t.mem_used <= t.mem_total);
         assert!((0.0..=100.0).contains(&t.mem_pct));
         assert!((0.0..=100.0).contains(&t.fullest_pct));
+        assert!(t.clock_pct.is_none_or(|c| (0.0..=100.0).contains(&c)), "{:?}", t.clock_pct);
     }
 
     #[test]

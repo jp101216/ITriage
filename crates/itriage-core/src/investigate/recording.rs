@@ -56,6 +56,9 @@ pub struct Sample {
     pub wifi_signal: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi_bssid: Option<String>,
+    /// The processor clock as a percentage of its maximum, when reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_pct: Option<f32>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Recording {
@@ -180,6 +183,7 @@ pub fn record(
             wifi: None,
             wifi_signal: None,
             wifi_bssid: None,
+            clock_pct: telemetry.clock_pct,
         };
         if let (Some(addresses), Some((_, port))) = (&addresses, &target) {
             let check = crate::net::tcp_check(addresses, *port, Duration::from_millis(250));
@@ -274,6 +278,9 @@ pub fn result(recording: &Recording) -> ModuleResult {
     if let Some(wifi) = wifi_summary(recording) {
         result.findings.push(wifi);
     }
+    if let Some(held) = held_back(recording) {
+        result.findings.push(held);
+    }
     result
         .findings
         .extend(recording.gaps.iter().map(|g| Finding::info("Recording coverage", g)));
@@ -334,6 +341,21 @@ fn wifi_summary(recording: &Recording) -> Option<Finding> {
     };
     let finding = Finding::new("Wi-Fi during the recording", format!("{range} · {moved}"), if *low < 30 { Severity::Warning } else { Severity::Info });
     Some(finding.with_detail("Read every fifth sample. A drop in signal or a move at the moment of a marker is worth a look; neither is a fault alone."))
+}
+
+/// Samples where the processor was busy but running well below its rated
+/// speed: a firmware or heat limit, not a program, during the recording.
+fn held_back(recording: &Recording) -> Option<Finding> {
+    let busy: Vec<&Sample> = recording.samples.iter().filter(|s| s.cpu_pct >= 50.0 && s.clock_pct.is_some()).collect();
+    let slow = busy.iter().filter(|s| s.clock_pct.is_some_and(|c| c < 60.0)).count();
+    if slow == 0 {
+        return None;
+    }
+    let lowest = busy.iter().filter_map(|s| s.clock_pct).fold(100.0f32, f32::min);
+    Some(
+        Finding::warn("Processor held back", format!("{slow} of {} busy samples ran below 60% of its maximum clock (lowest {lowest:.0}%)", busy.len()))
+            .with_detail("Busy and slowed at the same time points at firmware or heat (a weak charger, the dock, blocked vents), not at the busiest program."),
+    )
 }
 
 /// One value in a CSV row: quoted when it holds a comma, a quote or a line
@@ -423,6 +445,7 @@ mod tests {
             wifi: None,
             wifi_signal: None,
             wifi_bssid: None,
+            clock_pct: None,
         }
     }
 
@@ -493,6 +516,16 @@ mod tests {
         assert!(lines[6].ends_with(",'=after the end"), "a marker can't become a formula: {}", lines[6]);
         // A wired PC has nothing to say about Wi-Fi.
         assert!(result(&capture(vec![sample(1)], vec![])).findings.iter().all(|f| !f.label.starts_with("Wi-Fi")));
+        // Busy and slowed is called out; busy at full speed, or idle and slow, isn't.
+        let mut throttled: Vec<Sample> = (0..4).map(|i| sample(1_794_300_000_000 + i * 1000)).collect();
+        for (s, (cpu, clock)) in throttled.iter_mut().zip([(95.0, 38.0), (92.0, 41.0), (97.0, 99.0), (5.0, 20.0)]) {
+            s.cpu_pct = cpu;
+            s.clock_pct = Some(clock);
+        }
+        let held = result(&capture(throttled, vec![]));
+        let row = held.findings.iter().find(|f| f.label == "Processor held back").unwrap();
+        assert_eq!(row.value, "2 of 3 busy samples ran below 60% of its maximum clock (lowest 38%)");
+        assert!(result(&capture(vec![sample(1)], vec![])).findings.iter().all(|f| f.label != "Processor held back"));
     }
 
     #[test]

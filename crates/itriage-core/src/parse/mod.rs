@@ -6,11 +6,15 @@
 //! unit-tested on any host. The OS-specific code stays thin: call the tool or
 //! API, hand the text to a parser here.
 
+pub mod asr;
 pub mod battery;
+pub mod blocks;
 pub mod devices;
 pub mod diskstats;
 pub mod dns;
 pub mod evtxml;
+pub mod gplogon;
+pub mod hardware;
 pub mod journal;
 pub mod net;
 pub mod ping;

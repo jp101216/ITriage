@@ -345,6 +345,40 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         ));
     }
 
+    // --- A processor held back by firmware or heat. It shows as a busy
+    // CPU, and would otherwise be blamed on whichever program is busiest.
+    let held_back: Vec<Hit> = v
+        .problems("system.hardware", |f| f.label == "Processor clock" || f.label == "Firmware speed limits (7 days)" || f.label == "Thermal throttling since start")
+        .into_iter()
+        .filter(|(_, f)| f.severity.rank() >= Severity::Warning.rank())
+        .collect();
+    let busy = v.problem("proc.top", "CPU load");
+    if !held_back.is_empty() {
+        let mut evidence: Vec<String> = held_back.iter().map(|h| cite(*h)).collect();
+        evidence.extend(busy.map(cite));
+        out.push(insight(
+            if busy.is_some() { 77 } else { 60 },
+            Severity::Warning,
+            if busy.is_some() {
+                "The processor is being held back by firmware or heat while it's busy, so everything is slow. It isn't one program's fault, even though one shows as busiest."
+            } else {
+                "The processor is running below its rated speed: firmware or heat is limiting it."
+            },
+            evidence,
+            "Check the charger's wattage and the dock, then the vents and fan. On a laptop, try it on mains power without the dock.",
+        ));
+    }
+    let hardware: Vec<Hit> = v.problems("system.hardware", |f| f.label.contains("processor errors") || f.label.contains("memory errors") || f.label.starts_with("Memory errors"));
+    if !hardware.is_empty() {
+        out.push(insight(
+            if worst(&hardware) == Severity::Critical { 87 } else { 68 },
+            worst(&hardware),
+            "The hardware is reporting errors: processor or memory faults explain freezes, crashes and corrupted files.",
+            hardware.iter().map(|h| cite(*h)).collect(),
+            "Run the manufacturer's diagnostics (memory and processor). If errors continue, the part needs replacing.",
+        ));
+    }
+
     // --- Memory and processor.
     if let Some(h) = v.problem("system.memory", "RAM") {
         let mut evidence = vec![cite(h)];
@@ -357,7 +391,7 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
             "Close the heaviest apps (Top processes names them). If this is the normal workload, the PC needs more memory.",
         ));
     }
-    if let Some(h) = v.problem("proc.top", "CPU load") {
+    if let Some(h) = busy.filter(|_| held_back.is_empty()) {
         let busiest = h.1.detail.as_deref().map(|d| format!(" {d}.")).unwrap_or_default();
         out.push(insight(
             if h.1.severity == Severity::Critical { 75 } else { 51 },
@@ -366,6 +400,45 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
             vec![cite(h)],
             "If one process is using it and shouldn't be, restart that app. A scan or an update finishing explains it too.",
         ));
+    }
+
+    // --- A security rule stopping an app (it looks like the app is broken).
+    let blocks = v.problems("sec.blocks", |f| f.value.starts_with("blocked") && (f.severity == Severity::Critical || !f.value.ends_with("d ago")));
+    if let Some((_, f)) = blocks.first() {
+        let (source, rest) = f.label.split_once(": ").unwrap_or(("A security rule", f.label.as_str()));
+        let (rule, file) = rest.rsplit_once(" · ").unwrap_or((rest, "a program"));
+        let count = f.metric.as_ref().map(|m| m.value as usize).unwrap_or(1);
+        out.push(insight(
+            if f.severity == Severity::Critical { 85 } else { 66 },
+            f.severity,
+            format!(
+                "{file} is being blocked by security policy, not failing on its own: {source} \"{rule}\" stopped it {}.",
+                match count { 1 => "once".to_string(), 2 => "twice".to_string(), n => format!("{n} times") }
+            ),
+            blocks.iter().take(3).map(|h| cite(*h)).collect(),
+            "If it's legitimate, ask security for an exclusion or an allow rule for it. Don't turn the rule off.",
+        ));
+    }
+
+    // --- A slow sign-in, and the step that took the time.
+    if let Some(total) = v.problem("desk.logon", "Last sign-in (profile + Group Policy)") {
+        let step = v.find("desk.logon", |f| f.label.starts_with("Policy step: ") && f.severity == Severity::Warning);
+        let failed = v.find("desk.logon", |f| f.label.starts_with("Policy step failed: "));
+        let dc = v.find("desk.logon", |f| f.label == "Domain controller during policy processing" && f.severity == Severity::Critical);
+        let seconds = head(&total.1.value).to_string();
+        let mut evidence = vec![cite(total)];
+        evidence.extend(step.into_iter().chain(failed).chain(dc).map(cite));
+        let (cause, next) = if dc.is_some() {
+            (format!("Sign-in took {seconds} because no domain controller answered while policy was applied."), "Check the network connection at sign-in (Wi-Fi that connects only after sign-in, or a VPN that starts later), then DNS for the domain.")
+        } else if let Some((_, s)) = step {
+            (
+                format!("{} took {} of a {seconds} sign-in.", s.label.trim_start_matches("Policy step: "), head(&s.value)),
+                "Look at what that policy step does for this user (a large redirected folder, a slow logon script, an unreachable mapped drive) in gpresult /h.",
+            )
+        } else {
+            (format!("Sign-in is slow ({seconds} of profile and policy processing)."), "Compare the policy steps listed under Sign-in speed with a quick PC's, and check the profile's size.")
+        };
+        out.push(insight(if dc.is_some() { 63 } else { 57 }, total.1.severity, cause, evidence, next));
     }
 
     // --- Printing.
@@ -618,6 +691,48 @@ mod tests {
         // Some replies lost is a fault, whatever else works.
         let lossy = result("net.latency", "Latency & packet loss", vec![Finding::warn("Gateway 10.20.32.1 packet loss", "25% (3 of 4 replies)")]);
         assert_eq!(likely_causes(&[lossy, working]).len(), 1);
+    }
+
+    #[test]
+    fn a_held_back_processor_is_the_cause_not_the_busiest_program() {
+        let results = vec![
+            result("proc.top", "Top processes", vec![Finding::crit("CPU load", "97%").with_detail("Busiest: EHRClient.exe 61%")]),
+            result("system.hardware", "Throttling & hardware errors", vec![
+                Finding::warn("Processor clock", "38% of its maximum · processor 97% busy"),
+                Finding::warn("Firmware speed limits (7 days)", "26 reports · limited for 3h 10m in total · last 4m ago"),
+            ]),
+        ];
+        let found = likely_causes(&results);
+        assert!(found[0].cause.starts_with("The processor is being held back by firmware or heat"), "{found:#?}");
+        assert_eq!(found[0].evidence.len(), 3);
+        assert!(!found.iter().any(|i| i.cause.starts_with("The processor is busy")), "the busy CPU is the symptom here");
+        // Without the hardware check, a busy CPU is still a busy CPU.
+        assert!(likely_causes(&results[..1])[0].cause.starts_with("The processor is busy"));
+    }
+
+    #[test]
+    fn a_blocked_app_is_named_with_the_rule_that_blocked_it() {
+        let results = vec![result("sec.blocks", "Policy blocks", vec![
+            Finding::crit("ASR rule: Block all Office applications from creating child processes · natspeak.exe", "blocked 3 times · last 1h ago").with_metric(3.0, "blocks", true),
+            Finding::warn("AppLocker: EXE rules: no rule allows it · tool.exe", "blocked once · last 4d ago").with_metric(1.0, "blocks", true),
+        ])];
+        let found = likely_causes(&results);
+        assert_eq!(found.len(), 1, "last week's block isn't today's cause");
+        assert_eq!(found[0].cause, "natspeak.exe is being blocked by security policy, not failing on its own: ASR rule \"Block all Office applications from creating child processes\" stopped it 3 times.");
+        assert_eq!(found[0].severity, Severity::Critical);
+    }
+
+    #[test]
+    fn a_slow_sign_in_names_its_slowest_step() {
+        let results = vec![result("desk.logon", "Sign-in speed (Group Policy)", vec![
+            Finding::warn("Last sign-in (profile + Group Policy)", "63.0 s · 1h ago"),
+            Finding::warn("Policy step: Folder Redirection", "41.0 s · 65% of the sign-in"),
+            Finding::info("Policy step: Scripts", "5.0 s · 8% of the sign-in"),
+        ])];
+        assert_eq!(likely_causes(&results)[0].cause, "Folder Redirection took 41.0 s of a 63.0 s sign-in.");
+        let mut lost = results.clone();
+        lost[0].findings.push(Finding::crit("Domain controller during policy processing", "no domain controller reachable once in 7 days · last 1h ago"));
+        assert!(likely_causes(&lost)[0].cause.contains("no domain controller answered"));
     }
 
     #[test]

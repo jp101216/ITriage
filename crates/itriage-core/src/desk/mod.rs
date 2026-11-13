@@ -7,6 +7,7 @@ pub mod battery;
 pub mod certs;
 pub mod devices;
 pub mod domain;
+pub mod logon;
 pub mod printers;
 pub mod time;
 pub mod wifi;

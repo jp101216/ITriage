@@ -83,7 +83,12 @@ fn clip(text: &str, max: usize) -> String {
 /// are a system event, not a restart.
 pub fn kind_of(provider: &str, event_id: u32) -> &'static str {
     let p = provider.to_ascii_lowercase();
-    if p.contains("windowsupdate") || p.contains("servicing") || p.contains("wusa") {
+    if (p.contains("windows defender") && matches!(event_id, 1117 | 1121 | 1123))
+        || (p.contains("applocker") && matches!(event_id, 8004 | 8007))
+        || (p.contains("codeintegrity") && event_id == 3077)
+    {
+        "Policy block"
+    } else if p.contains("windowsupdate") || p.contains("servicing") || p.contains("wusa") {
         "Windows update"
     } else if p.contains("msiinstaller") {
         "Application installer"
@@ -196,7 +201,14 @@ pub fn from_event(channel: &str, xml: &str, message: Option<&str>) -> Option<Cha
     let message = message.map(|m| m.replace(['\u{200e}', '\u{200f}'], ""));
     let first_line = message.as_deref().and_then(|m| m.lines().map(str::trim).find(|l| !l.is_empty()));
     let failed = system.level > 0 && system.level <= 2;
-    let description = match (known(&system, &data), first_line) {
+    // A block reads as which rule stopped which file, whatever the level.
+    let blocked = crate::parse::blocks::from_event(xml)
+        .filter(|b| b.enforced && kind_of(&system.provider, system.event_id) == "Policy block")
+        .map(|b| {
+            let file = b.path.rsplit(['\\', '/']).find(|p| !p.is_empty()).unwrap_or(&b.path).to_string();
+            format!("{} blocked {file}: {}", b.source, b.rule)
+        });
+    let description = match (blocked.or_else(|| known(&system, &data)), first_line) {
         (Some(text), _) => text,
         (None, Some(line)) => clip(line, 300),
         (None, None) => {
@@ -214,7 +226,7 @@ pub fn from_event(channel: &str, xml: &str, message: Option<&str>) -> Option<Cha
         at,
         source: channel.into(),
         kind: kind_of(&system.provider, system.event_id).into(),
-        description: if failed && !description.to_ascii_lowercase().contains("fail") { format!("{description} (error)") } else { description },
+        description: if failed && !description.to_ascii_lowercase().contains("fail") && !description.contains(" blocked ") { format!("{description} (error)") } else { description },
         detail: format!(
             "{} event {}{}",
             system.provider,
@@ -390,8 +402,30 @@ fn collect() -> (Vec<ChangeEvent>, Vec<String>) {
         ),
         ("Setup", "*[System[TimeCreated[timediff(@SystemTime) <= 604800000]]]", 48),
         (
-            "Microsoft-Windows-GroupPolicy/Operational",
+            crate::parse::gplogon::GP_CHANNEL,
             "*[System[(EventID=8000 or EventID=8001 or Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) <= 604800000]]]",
+            32,
+        ),
+        // Security-policy blocks (enforced ones only), so a block lines up
+        // with the time a program stopped working. sec.blocks has the detail.
+        (
+            "Microsoft-Windows-Windows Defender/Operational",
+            "*[System[(EventID=1117 or EventID=1121 or EventID=1123) and TimeCreated[timediff(@SystemTime) <= 604800000]]]",
+            32,
+        ),
+        (
+            "Microsoft-Windows-AppLocker/EXE and DLL",
+            "*[System[EventID=8004 and TimeCreated[timediff(@SystemTime) <= 604800000]]]",
+            32,
+        ),
+        (
+            "Microsoft-Windows-AppLocker/MSI and Script",
+            "*[System[EventID=8007 and TimeCreated[timediff(@SystemTime) <= 604800000]]]",
+            32,
+        ),
+        (
+            "Microsoft-Windows-CodeIntegrity/Operational",
+            "*[System[EventID=3077 and TimeCreated[timediff(@SystemTime) <= 604800000]]]",
             32,
         ),
     ];
@@ -400,11 +434,14 @@ fn collect() -> (Vec<ChangeEvent>, Vec<String>) {
     for (channel, query, most) in SOURCES {
         match crate::win::eventlog::query_rendered(channel, query, *most) {
             Ok(rows) => events.extend(rows.iter().filter_map(|r| from_event(channel, &r.xml, r.message.as_deref()))),
+            // The policy logs only exist where that policy is in use; a
+            // missing one isn't a gap in the timeline.
+            Err(_) if ["AppLocker", "CodeIntegrity", "Defender"].iter().any(|p| channel.contains(p)) => {}
             Err(e) if !gaps.contains(&e) => gaps.push(e),
             Err(_) => {}
         }
     }
-    gaps.push("The last seven days, and the most recent 32 to 64 events of each kind; log retention and permissions can leave gaps. Group Policy rows are startup and sign-in processing and errors, not every background refresh. An installer event is evidence of activity, not proof an upgrade succeeded.".into());
+    gaps.push("The last seven days, and the most recent 32 to 64 events of each kind; log retention and permissions can leave gaps. Group Policy rows are startup and sign-in processing and errors, not every background refresh. Policy blocks are the enforced ones only (Policy blocks has the audit-mode ones too). An installer event is evidence of activity, not proof an upgrade succeeded.".into());
     (events, gaps)
 }
 
@@ -635,6 +672,11 @@ mod tests {
         let other = from_event("Setup", &event("Microsoft-Windows-WUSA", 3, ""), Some("\r\nWindows update \u{200e}KB5031356\u{200e} could not be installed.\r\nMore text")).unwrap();
         assert_eq!((other.kind.as_str(), other.description.as_str()), ("Windows update", "Windows update KB5031356 could not be installed."));
         assert_eq!(kind_of("Some-Other-Provider", 1), "System event");
+        // A security-policy block says which rule stopped which file.
+        let asr = from_event("Microsoft-Windows-Windows Defender/Operational", &event("Microsoft-Windows-Windows Defender", 1121, "<EventData><Data Name='ID'>d4f940ab-401b-4efc-aadc-ad5f3c50688a</Data><Data Name='Path'>C:\\Program Files (x86)\\Nuance\\Dragon\\natspeak.exe</Data><Data Name='Process Name'>C:\\Office16\\WINWORD.EXE</Data></EventData>"), Some("Microsoft Defender Exploit Guard has blocked an operation that is not allowed by your IT administrator.")).unwrap();
+        assert_eq!(asr.kind, "Policy block");
+        assert_eq!(asr.description, "ASR rule blocked natspeak.exe: Block all Office applications from creating child processes");
+        assert_eq!(kind_of("Microsoft-Windows-Windows Defender", 1122), "System event", "audit mode blocked nothing");
         // And with no message text installed for it: what the event carries.
         let bare = from_event("Setup", &event("Contoso-Setup", 7, "<EventData><Data Name='Step'>Finalize</Data></EventData>"), None).unwrap();
         assert_eq!(bare.description, "Contoso-Setup event 7: Finalize");

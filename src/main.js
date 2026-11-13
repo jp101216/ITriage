@@ -106,6 +106,7 @@
     mod("system.disk", "Disk space & latency", "system", "Free vs. total space per volume (warns under 15% free) and disk latency with queue length (warns at 15 ms)."),
     mod("system.storage", "What's using the space", "system", "The biggest places on the system drive: each profile and its folders, old Windows installations, update downloads, memory dumps, the Recycle Bin, temp folders and the page file. Names folders, not files."),
     mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both)."),
+    mod("system.hardware", "Throttling & hardware errors", "system", "Whether the processor is running below its rated speed (firmware or heat limits), and corrected or fatal hardware errors in the last 30 days (WHEA)."),
     mod("system.reliability", "Drive health & reliability", "system", "Each drive's health, wear and errors (SMART), and the last 30 days of blue screens, unexpected shutdowns, disk errors and the apps that crash most."),
     mod("system.startup", "Startup & sign-in speed", "system", "How long the last starts took (warns past 60 s to the desktop), what Windows recorded as slowing them down, and what starts with the PC."),
     mod("system.changes", "Recent changes timeline", "system", "Recent update, installer, driver, service, policy and restart evidence. Correlates timing without claiming causation."),
@@ -120,6 +121,7 @@
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
+    mod("desk.logon", "Sign-in speed (Group Policy)", "workstation", "How long the last sign-in spent loading the profile and applying Group Policy, which policy step took the time or failed, and lost contact with the domain controller during policy processing.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
     mod("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device join and authentication, Windows Hello and affected-user PRT/WAM diagnostic status. Reads no tokens.", WIN),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
@@ -128,6 +130,7 @@
     mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN) and when they expire. Warns 14 days out.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),
     mod("sec.posture", "Security posture", "security", "Disk encryption, antivirus and how old its definitions are, the firewall, Secure Boot, the TPM, and who is an administrator of this PC."),
+    mod("sec.blocks", "Policy blocks", "security", "Which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules, Controlled folder access, antivirus detections, AppLocker and App Control (WDAC)."),
     mod("site.apps", "Required & clinical apps", "site", "Apps the site profile requires (with minimum versions), plus which clinical clients are installed: Citrix, Imprivata, Epic, Dragon, VPN, EDR."),
     mod("site.checks", "Site services & endpoints", "site", "Services the site profile requires are running, and the servers it lists (EHR, file, print, license) answer, with connect times."),
     mod("fix.dns", "Flush & re-register DNS", "repair", "Flushes the DNS resolver cache (ipconfig /flushdns) and re-registers this PC's DNS records (ipconfig /registerdns).",
@@ -176,8 +179,8 @@
       description: "Why an account keeps locking or can't sign in: its state on the domain controller, what on this PC still holds an old password, the domain connection, the clock and the network. Changes nothing.",
       modules: ["desk.account", "desk.domain", "desk.time", "net.connectivity"] },
     { id: "health", title: "Health check", script: "",
-      description: "Is this PC sound: drive health and crashes, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-      modules: ["system.info", "system.disk", "system.reliability", "system.startup", "sec.posture", "desk.battery", "update.scan"] },
+      description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
+      modules: ["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan"] },
   ];
 
   const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "security", "site", "repair", "fixes", "updates"];
@@ -208,6 +211,7 @@
     "system.reliability": "DRV-HLT", "desk.account": "ACC-LCK", "sec.posture": "SEC-PST",
     "system.changes": "CHG-LOG", "net.applications": "APP-CON", "net.wifi-auth": "NET-AUT", "desk.identity": "ID-SSO",
     "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
+    "sec.blocks": "SEC-BLK", "desk.logon": "LOG-GPO", "system.hardware": "HW-THR",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -224,6 +228,7 @@
     "system.reliability": I.pulse, "desk.account": I.key, "sec.posture": I.shield,
     "system.changes": I.trend, "net.applications": I.globe, "net.wifi-auth": I.wifi, "desk.identity": I.key,
     "system.storage": I.layers, "system.startup": I.power,
+    "sec.blocks": I.shield, "desk.logon": I.domain, "system.hardware": I.chip,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -507,6 +512,25 @@
       F("Health (SMP DELL 7FHXW37)", "76% of design · 48.1 of 63.0 Wh", "warning", "Plan a battery replacement; runtime is noticeably shorter than new."),
       F("Charge cycles (SMP DELL 7FHXW37)", "311"),
     ]),
+    "system.hardware": R("system.hardware", "Throttling & hardware errors", "system", "1 hardware finding needs attention", 1240, [
+      F("Processor clock", "97% of its maximum · processor 12% busy", "ok", null, { metric: M(97, "% of max clock", false) }),
+      F("Firmware speed limits (7 days)", "26 reports · limited for 3h 10m in total · last 4h ago", "warning",
+        "Windows event 37: the firmware capped the processor's speed, usually for heat or power. It's on mains power and still being limited: check the adapter's wattage against what the laptop needs, and the dock.",
+        { metric: M(190, "min") }),
+      F("Corrected PCI Express errors", "3 in 30 days · last 6d ago", "info", "A PCI Express link corrected an error. A few are common with link power saving; many point at the device, its slot or the dock.", { metric: M(3, "errors") }),
+    ]),
+    "desk.logon": R("desk.logon", "Sign-in speed (Group Policy)", "workstation", "Last sign-in: 63.0 s", 380, [
+      F("Last sign-in (profile + Group Policy)", "63.0 s · 1h ago", "warning",
+        "Profile 8.0 s + Group Policy 55.0 s for CORP\\jparker, started 2026-11-10T15:01:13Z UTC. The desktop (Explorer and startup apps) comes after this and isn't counted.",
+        { metric: M(63, "s") }),
+      F("User profile load", "8.0 s", "ok", null, { metric: M(8, "s") }),
+      F("Policy step: Folder Redirection", "41.0 s · 65% of the sign-in", "warning", null, { metric: M(41, "s") }),
+      F("Policy step: Scripts", "5.1 s · 8% of the sign-in", "info", null, { metric: M(5.1, "s") }),
+      F("Policy step: Group Policy Drive Maps", "2.0 s · 3% of the sign-in", "info", null, { metric: M(2, "s") }),
+      F("Policy step failed: Group Policy Drive Maps", "error 2 · 2.0 s", "critical", "Event 7016 (failed) or 6016 (warning) in the Group Policy log. Run gpresult /h on this PC for that extension's details."),
+      F("Group Policy objects", "12 applied · 3 filtered out"),
+      F("Computer policy at startup", "12.0 s · 2d ago", "info", null, { metric: M(12, "s") }),
+    ]),
     "sec.posture": R("sec.posture", "Security posture", "security", "1 to look at: antivirus definitions", 4180, [
       F("Disk encryption", "C: BitLocker is on (XtsAes256)", "ok"),
       F("Antivirus", "Microsoft Defender: real-time protection on · tamper protection on", "ok"),
@@ -517,6 +541,14 @@
       F("TPM", "Trusted Platform Module 2.0", "ok"),
       F("User Account Control", "on", "ok"),
       F("Administrators of this PC", "3: Administrator, CORP\\Domain Admins, CORP\\Workstation Admins"),
+    ]),
+    "sec.blocks": R("sec.blocks", "Policy blocks", "security", "1 program or file blocked by policy in the last 7 days", 610, [
+      F("ASR rule: Block all Office applications from creating child processes · natspeak.exe", "blocked 3 times · last 1h ago", "critical",
+        "Blocked: C:\\Program Files (x86)\\Nuance\\Dragon\\natspeak.exe · Started by: C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE · Account: CORP\\jparker · First 2026-11-10T14:02:11Z · last 2026-11-10T15:58:40Z UTC · This is the site's required app Dragon Medical One. · If it's legitimate, ask security for an exclusion; don't turn the rule off.",
+        { metric: M(3, "blocks") }),
+      F("ASR rule: Block JavaScript or VBScript from launching downloaded executable content · invoice.js", "audit mode: would have blocked it once · last 2d ago", "info",
+        "Blocked: C:\\Users\\jparker\\Downloads\\invoice.js · At 2026-11-08T09:14:02Z UTC", { metric: M(1, "blocks") }),
+      F("Coverage", "Up to 300 events from each log. A block shows here only if the policy logs it, and a third-party antivirus or app-control product keeps its own records."),
     ]),
     "site.apps": R("site.apps", "Required & clinical apps", "site", "1 of 2 required apps missing or out of date", 140, [
       F("Citrix Workspace", "23.11.1.45 · needs 24.2 or later", "warning", "Citrix Workspace 2311"),

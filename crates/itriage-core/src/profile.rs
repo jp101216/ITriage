@@ -242,6 +242,8 @@ pub struct Thresholds {
     pub password_expiry_days: Band,
     /// Seconds from power-on to a usable desktop (or to sign-in on Linux).
     pub startup_seconds: Band,
+    /// Seconds a sign-in spends loading the profile and applying Group Policy.
+    pub logon_seconds: Band,
 }
 
 impl Default for Thresholds {
@@ -260,6 +262,7 @@ impl Default for Thresholds {
             definitions_age_days: Band::new(3.0, 7.0),
             password_expiry_days: Band::new(14.0, 3.0),
             startup_seconds: Band::new(60.0, 120.0),
+            logon_seconds: Band::new(60.0, 120.0),
         }
     }
 }
@@ -754,6 +757,16 @@ mod tests {
         assert_eq!(strict.security.require_encryption, Some(false));
         let ints = Profile::from_toml("[thresholds]\nuptime_days = { warn = 3, crit = 5 }").unwrap();
         assert_eq!(ints.thresholds.uptime_days, Band::new(3.0, 5.0), "whole numbers work in bands");
+    }
+
+    #[test]
+    fn a_profile_from_before_the_new_keys_still_parses() {
+        // 0.9.0's thresholds, with nothing newer: every new key takes its default.
+        let old = Profile::from_toml("[thresholds]\nstartup_seconds = { warn = 45, crit = 90 }\n[security]\nuser_may_be_admin = false\n").unwrap();
+        assert_eq!(old.thresholds.startup_seconds, Band::new(45.0, 90.0));
+        assert_eq!(old.thresholds.logon_seconds, Band::new(60.0, 120.0));
+        let tuned = Profile::from_toml("[thresholds]\nlogon_seconds = { warn = 30, crit = 60 }").unwrap();
+        assert_eq!(tuned.thresholds.logon_seconds.high(45.0), Severity::Warning);
     }
 
     #[test]

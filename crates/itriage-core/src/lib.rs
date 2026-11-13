@@ -55,6 +55,7 @@ pub(crate) mod win;
 pub mod triage {
     pub mod disk;
     pub mod eventlog;
+    pub mod hardware;
     pub mod memory;
     pub mod network;
     pub mod processes;

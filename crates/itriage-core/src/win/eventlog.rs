@@ -108,6 +108,26 @@ pub fn query_xml(channel: &str, query: &'static str, max: usize) -> Result<Vec<S
     Ok(query_events(channel, query, max, false)?.into_iter().map(|e| e.xml).collect())
 }
 
+/// Every event of one operation (a Group Policy cycle) from `channel`, by
+/// its ActivityID. The ID must be a bare GUID: it's the only value that
+/// ever goes into a query string, so anything else is refused.
+pub fn query_activity(channel: &str, activity: &str, max: usize) -> Result<Vec<String>, String> {
+    let id = activity.trim().trim_matches(['{', '}']);
+    if !crate::actions::valid_update_id(id) {
+        return Err(format!("`{activity}` isn't an activity ID."));
+    }
+    // Windows writes the ActivityID braced, in upper case; try lower case
+    // too, in case a provider doesn't.
+    for id in [id.to_ascii_uppercase(), id.to_ascii_lowercase()] {
+        let query = format!("*[System[Correlation[@ActivityID='{{{id}}}']]]");
+        let found: Vec<String> = query_owned(channel, &query, max, false)?.into_iter().map(|e| e.xml).collect();
+        if !found.is_empty() {
+            return Ok(found);
+        }
+    }
+    Ok(Vec::new())
+}
+
 /// One event as XML, and as Windows words it for a person ("The start type
 /// of the Print Spooler service was changed from auto start to disabled.").
 pub struct Rendered {
@@ -123,6 +143,12 @@ pub fn query_rendered(channel: &str, query: &'static str, max: usize) -> Result<
 }
 
 fn query_events(channel: &str, query: &'static str, max: usize, messages: bool) -> Result<Vec<Rendered>, String> {
+    query_owned(channel, query, max, messages)
+}
+
+/// The query runner. Callers pass one of ITriage's own constants, or a
+/// query built only from a value they've validated (see [`query_activity`]).
+fn query_owned(channel: &str, query: &str, max: usize, messages: bool) -> Result<Vec<Rendered>, String> {
     let path = HSTRING::from(channel);
     let query = HSTRING::from(query);
     let flags = EvtQueryChannelPath.0 | EvtQueryReverseDirection.0;

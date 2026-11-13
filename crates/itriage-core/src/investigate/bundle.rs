@@ -285,7 +285,11 @@ impl Redactor {
         let ipv6 = compile(r"(?:[0-9A-Fa-f]{0,4}:){2,}[0-9A-Fa-f:]{0,39}")?;
         let mac = compile(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b")?;
         let windows_account = compile(r"(?i)[A-Z0-9_.\-]{2,}\\[A-Z0-9_.$\-]+")?;
-        let home = compile(r#"(?i)(?:[A-Z]:\\Users\\|/home/)([^\\/\s:"']+)"#)?;
+        // C:\Users\name, and the forms policy events write it in:
+        // %OSDRIVE%\USERS\NAME (AppLocker), \Device\HarddiskVolume3\Users\name (App Control).
+        let home = compile(r#"(?i)(?:(?:[A-Z]:|%OSDRIVE%|\\Device\\HarddiskVolume[0-9]+)\\Users\\|/home/)([^\\/\s:"']+)"#)?;
+        // An account's SID (AppLocker names the user that way).
+        let sid = compile(r"\bS-1-5-21-[0-9]+-[0-9]+-[0-9]+-[0-9]+\b")?;
         for (module, text) in texts {
             for found in email.find_iter(text) {
                 values.insert(found.as_str().into(), "account");
@@ -328,6 +332,9 @@ impl Redactor {
                 if domain.chars().count() >= 3 {
                     values.entry(domain.into()).or_insert("domain");
                 }
+            }
+            for found in sid.find_iter(text) {
+                values.insert(found.as_str().into(), "account");
             }
             for captures in home.captures_iter(text) {
                 if let Some(name) = captures.get(1).map(|m| m.as_str()) {
@@ -636,6 +643,25 @@ mod tests {
 
     fn exported(report: &Report) -> String {
         prepare(report, &Options::default()).unwrap().preview.contents["report.txt"].clone()
+    }
+
+    #[test]
+    fn policy_block_paths_and_sids_are_pseudonymized() {
+        use crate::Finding;
+        let r = report_with(
+            "sec.blocks",
+            vec![
+                Finding::warn("AppLocker: EXE rules: no rule allows it · TOOL.EXE", "blocked once · last 1h ago")
+                    .with_detail("Blocked: %OSDRIVE%\\USERS\\DSMITH\\DOWNLOADS\\TOOL.EXE · Account: S-1-5-21-1004336348-1177238915-682003330-1104"),
+                Finding::warn("App Control: policy Ward PCs · plugin.dll", "blocked once · last 2h ago")
+                    .with_detail("Blocked: \\Device\\HarddiskVolume3\\Users\\mjones\\AppData\\plugin.dll"),
+            ],
+        );
+        let text = exported(&r);
+        for private in ["DSMITH", "dsmith", "mjones", "1004336348"] {
+            assert!(!text.contains(private), "{private} is still in:\n{text}");
+        }
+        assert!(text.contains("Ward PCs") && text.contains("plugin.dll"), "policy and file names stay readable");
     }
 
     #[test]

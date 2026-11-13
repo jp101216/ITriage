@@ -100,12 +100,12 @@ fn next_for(id: &str, results: &[ModuleResult], has_target: bool) -> Result<Deci
         "printing" if bad("desk.printers") || bad("proc.services") => (&["site.checks", "net.connectivity", "site.apps"], "Printing or service evidence needs attention. Check the site's print service and network dependencies before choosing a fix."),
         "vpn" => (&["site.checks", "net.applications", "net.wifi-auth", "desk.time"], "A running VPN client does not establish that the application path works. Test configured endpoints, authentication history and clock state."),
         "sign-in" if initial.iter().any(|id| bad(id)) => if cfg!(windows) {
-            (&["desk.domain", "net.connectivity", "net.proxy", "site.checks"], "Account, SSO or clock evidence needs attention. Check domain and connection dependencies, preserving unavailable checks as gaps.")
+            (&["desk.domain", "desk.logon", "net.connectivity", "net.proxy", "site.checks"], "Account, SSO or clock evidence needs attention. Check domain and connection dependencies and how the last sign-in's policy processing went, preserving unavailable checks as gaps.")
         } else { (&["net.proxy", "site.checks"], "Check the site's connectivity dependencies before escalating the account problem.") },
-        "slow-app" => (&["site.apps", "site.checks", "system.reliability", "system.changes"], "Compare the application's required version and service path with resource pressure, failures and recent change evidence."),
+        "slow-app" => (&["site.apps", "site.checks", "sec.blocks", "system.reliability", "system.changes"], "Compare the application's required version and service path with resource pressure, security-policy blocks, failures and recent change evidence."),
         // Adding up folders takes a while: only when the disk is the problem.
-        "slow-pc" if bad("system.disk") => (&["system.storage", "system.reliability", "system.changes"], "The disk needs attention: see what is using the space, whether the drive is healthy, and what changed recently."),
-        "slow-pc" => (&["system.reliability", "system.changes"], "Free space isn't the problem. Check the drive's health and crash history, and what changed recently."),
+        "slow-pc" if bad("system.disk") => (&["system.storage", "system.reliability", "system.hardware", "system.changes"], "The disk needs attention: see what is using the space, whether the drive is healthy, whether the processor is being held back, and what changed recently."),
+        "slow-pc" => (&["system.reliability", "system.hardware", "system.changes"], "Free space isn't the problem. Check the drive's health and crash history, whether the processor is being held back, and what changed recently."),
         _ => (&[], "The initial checks did not establish a fault. Capture the intermittent issue or export the evidence."),
     };
     Ok(Decision {
@@ -209,7 +209,7 @@ mod tests {
         };
         let ids = |results: &[ModuleResult]| results.iter().map(|r| r.module_id.clone()).collect::<Vec<_>>();
         let (full, trace) = run_with(true);
-        assert_eq!(ids(&full), ["proc.top", "system.memory", "system.disk", "system.startup", "system.storage", "system.reliability", "system.changes"]);
+        assert_eq!(ids(&full), ["proc.top", "system.memory", "system.disk", "system.startup", "system.storage", "system.reliability", "system.hardware", "system.changes"]);
         assert!(trace.finished && trace.steps[1].reason.contains("what is using the space"));
         let (fine, trace) = run_with(false);
         assert!(!ids(&fine).contains(&"system.storage".to_string()));
