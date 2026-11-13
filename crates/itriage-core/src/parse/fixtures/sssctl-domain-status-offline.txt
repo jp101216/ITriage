@@ -1,0 +1,12 @@
+Online status: Offline
+
+Active servers:
+AD Global Catalog: not connected
+AD Domain Controller: 192.0.2.10
+
+Discovered AD Global Catalog servers:
+- 192.0.2.10
+
+Discovered AD Domain Controller servers:
+- 192.0.2.10
+

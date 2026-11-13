@@ -101,7 +101,7 @@ fn next_for(id: &str, results: &[ModuleResult], has_target: bool) -> Result<Deci
         "vpn" => (&["site.checks", "net.applications", "net.wifi-auth", "desk.time"], "A running VPN client does not establish that the application path works. Test configured endpoints, authentication history and clock state."),
         "sign-in" if initial.iter().any(|id| bad(id)) => if cfg!(windows) {
             (&["desk.domain", "desk.logon", "net.connectivity", "net.proxy", "site.checks"], "Account, SSO or clock evidence needs attention. Check domain and connection dependencies and how the last sign-in's policy processing went, preserving unavailable checks as gaps.")
-        } else { (&["net.proxy", "site.checks"], "Check the site's connectivity dependencies before escalating the account problem.") },
+        } else { (&["desk.domain", "net.proxy", "site.checks"], "Check the domain join (SSSD online, the machine account) and the site's connectivity dependencies before escalating the account problem.") },
         "slow-app" if cfg!(windows) => (&["site.apps", "site.checks", "sec.blocks", "desk.browser", "system.reliability", "system.changes"], "Compare the application's required version and service path with resource pressure, security-policy blocks, whether a web app opens in the right Edge mode, failures and recent change evidence."),
         "slow-app" => (&["site.apps", "site.checks", "sec.blocks", "system.reliability", "system.changes"], "Compare the application's required version and service path with resource pressure, security-policy blocks, failures and recent change evidence."),
         // Adding up folders takes a while: only when the disk is the problem.

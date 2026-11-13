@@ -222,6 +222,45 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         ));
     }
 
+    // --- Wired 802.1X and NAC.
+    if let Some(h) = v.problem("net.wired-auth", "NAC quarantine") {
+        out.push(insight(
+            92,
+            Severity::Critical,
+            "NAC put this PC in its remediation VLAN: the network works, but the systems it needs can't be reached from there.",
+            vec![cite(h)],
+            "Look up this PC in ISE or ClearPass to see which posture check failed (agent, antivirus, patches), fix that, then reconnect the cable.",
+        ));
+    }
+    if revocation.is_empty() {
+        if let Some(h) = v.find("net.wired-auth", |f| f.label == "Wired 802.1X" && f.severity == Severity::Critical) {
+            let cert = h.1.value.to_ascii_lowercase().contains("certificate") || h.1.value.contains("revocation");
+            out.push(insight(
+                86,
+                Severity::Critical,
+                "Wired 802.1X is failing, so the switch port won't let this PC on (or puts it in a guest VLAN).",
+                vec![cite(h)],
+                if cert {
+                    "The failure names a certificate: check Machine certificates on this PC, then the RADIUS server's log for why it rejected it."
+                } else {
+                    "Check the RADIUS (NPS, ISE, ClearPass) log for this PC's identity at that time; it says why it refused."
+                },
+            ));
+        }
+    }
+    if let Some(h) = v.problem("net.wired-auth", "Wired AutoConfig service") {
+        out.push(insight(61, Severity::Warning, "Wired AutoConfig is stopped although this PC uses wired 802.1X, so it can't authenticate on the port.", vec![cite(h)], "Start the Wired AutoConfig service and check the policy that should set it to Automatic."));
+    }
+
+    // --- Linux domain join.
+    if let Some(h) = v.problem("desk.domain", "SSSD configuration") {
+        out.push(insight(83, Severity::Critical, "SSSD won't start because sssd.conf has the wrong owner or permissions, so domain sign-in fails.", vec![cite(h)], "chmod 600 /etc/sssd/sssd.conf, chown root:root, then systemctl restart sssd."));
+    } else if let Some(h) = v.find("desk.domain", |f| f.label == "Machine account" && f.severity == Severity::Critical) {
+        out.push(insight(82, Severity::Critical, "This PC's domain machine account no longer works, so domain sign-in and Kerberos fail.", vec![cite(h)], "Rejoin the domain: realm leave, then realm join (with an account allowed to join computers)."));
+    } else if let Some(h) = v.find("desk.domain", |f| f.label.starts_with("Domain ") && f.value.starts_with("offline")) {
+        out.push(insight(64, Severity::Warning, "SSSD can't reach the domain, so only people with cached credentials can sign in.", vec![cite(h)], "Check DNS for the domain's SRV records and that a domain controller answers from this network; then sssctl domain-status again."));
+    }
+
     // --- A server rejecting tickets, or tickets that are about to stop working.
     let rejected = v.problems("desk.identity", |f| f.label.starts_with("Kerberos ticket rejected by "));
     if !rejected.is_empty() {
@@ -893,6 +932,29 @@ mod tests {
         assert_eq!(found[0].evidence.len(), 2);
         assert!(causes.contains(&"Edge's IE mode site list can't be fetched: intranet.example.org answered HTTP 404, so older web apps may open in the wrong mode."));
         assert!(causes.iter().any(|c| c.starts_with("Adding a printer from PRN09 asks for an administrator")));
+    }
+
+    #[test]
+    fn nac_quarantine_and_wired_failures_are_named() {
+        let r = vec![result("net.wired-auth", "Wired 802.1X & NAC", vec![
+            Finding::crit("NAC quarantine", "Ethernet has 10.250.4.17, in the quarantine subnet 10.250.0.0/16"),
+            Finding::crit("Wired 802.1X", "failing: The authenticator is no longer present · 3 times in a row, last 5m ago"),
+        ])];
+        let found = likely_causes(&r);
+        assert!(found[0].cause.starts_with("NAC put this PC in its remediation VLAN"));
+        assert!(found[1].cause.starts_with("Wired 802.1X is failing"));
+        let with_crl = vec![r[0].clone(), result("desk.certs", "Machine certificates", vec![Finding::crit("Revocation: WS-07", "CRL EXPIRED 3h ago · chain check: passed")])];
+        let found = likely_causes(&with_crl);
+        assert!(found.iter().any(|i| i.cause.starts_with("Network sign-in with this PC's certificate is failing")));
+        assert!(!found.iter().any(|i| i.cause.starts_with("Wired 802.1X is failing")), "the revocation rule already covers it");
+    }
+
+    #[test]
+    fn linux_domain_problems_are_named() {
+        let conf = vec![result("desk.domain", "Domain & Group Policy", vec![Finding::crit("SSSD configuration", "/etc/sssd/sssd.conf is 0644, owned by uid 0")])];
+        assert!(likely_causes(&conf)[0].cause.starts_with("SSSD won't start"));
+        let offline = vec![result("desk.domain", "Domain & Group Policy", vec![Finding::warn("Domain corp.example.org", "offline: sign-ins use cached credentials")])];
+        assert!(likely_causes(&offline)[0].cause.starts_with("SSSD can't reach the domain"));
     }
 
     #[test]

@@ -135,6 +135,9 @@ pub struct NetworkSettings {
     pub ping_count: u32,
     /// Timeout for each echo.
     pub ping_timeout_ms: u64,
+    /// Subnets a NAC system uses for its remediation VLAN
+    /// (`["10.250.0.0/16"]`). A wired address inside one is critical.
+    pub quarantine_subnets: Vec<String>,
 }
 
 impl Default for NetworkSettings {
@@ -148,6 +151,7 @@ impl Default for NetworkSettings {
             tcp_timeout_ms: 1500,
             ping_count: 4,
             ping_timeout_ms: 1000,
+            quarantine_subnets: Vec::new(),
         }
     }
 }

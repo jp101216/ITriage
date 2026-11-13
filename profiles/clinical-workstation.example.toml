@@ -75,6 +75,9 @@ tcp_probe = "ehr-gateway.example.org:443"
 # tcp_timeout_ms = 1500                 # per TCP check, across all its addresses
 # ping_count = 4
 # ping_timeout_ms = 1000
+# The subnets NAC (ISE, ClearPass) uses for its remediation VLAN. A wired
+# address inside one is critical: the PC failed a posture check.
+# quarantine_subnets = ["10.250.0.0/16"]
 
 # Alert levels, as { warn, crit }. These are Invoke-NetTriage's defaults;
 # uncomment a line to change it. Disk free and Wi-Fi signal: lower is worse.

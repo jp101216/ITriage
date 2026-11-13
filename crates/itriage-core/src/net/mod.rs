@@ -32,6 +32,8 @@ pub struct Interface {
     pub description: String,
     pub up: bool,
     pub loopback: bool,
+    /// A physical Ethernet port (not Wi-Fi, a VPN or a virtual switch).
+    pub ethernet: bool,
     pub addresses: Vec<IfAddr>,
     pub gateways: Vec<IpAddr>,
     pub dns_servers: Vec<IpAddr>,
@@ -420,6 +422,7 @@ mod imp {
                 description: String::new(),
                 up: l.up,
                 loopback: l.loopback,
+                ethernet: !l.loopback && is_ethernet(&l.name),
                 addresses: l
                     .addrs
                     .iter()
@@ -460,6 +463,7 @@ mod imp {
                 description: String::new(),
                 up: !data.ip_networks().is_empty(),
                 loopback: name == "lo",
+                ethernet: name != "lo" && is_ethernet(name),
                 addresses: data
                     .ip_networks()
                     .iter()
@@ -469,6 +473,12 @@ mod imp {
                 dns_servers: dns_for(name, &global, &per_link),
             })
             .collect())
+    }
+
+    /// An Ethernet device with hardware behind it, and no wireless extension.
+    fn is_ethernet(dev: &str) -> bool {
+        let base = std::path::Path::new("/sys/class/net").join(dev);
+        std::fs::read_to_string(base.join("type")).is_ok_and(|t| t.trim() == "1") && base.join("device").exists() && !base.join("wireless").exists()
     }
 
     fn ifindex(dev: &str) -> Option<u32> {
