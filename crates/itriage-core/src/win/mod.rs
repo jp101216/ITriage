@@ -13,6 +13,7 @@ pub mod devices;
 pub mod dirs;
 pub mod domain;
 pub mod eventlog;
+pub mod kerberos;
 pub mod net;
 pub mod pdh;
 pub mod printing;
@@ -25,6 +26,7 @@ pub mod shell;
 pub mod smbios;
 pub mod token;
 pub mod trust;
+pub mod usbpower;
 pub mod wlan;
 pub mod wua;
 

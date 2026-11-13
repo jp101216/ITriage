@@ -994,7 +994,7 @@
             ? clone(previous)
             : {
                 schema: 1,
-                tool_version: "0.9.0",
+                tool_version: "0.10.0",
                 generated: new Date().toISOString(),
                 host: clone(host()),
                 ticket: ticket || null,

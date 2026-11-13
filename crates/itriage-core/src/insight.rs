@@ -198,6 +198,82 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         }
     }
 
+    // --- Certificates that can't be checked for revocation. Whatever checks
+    // them (the 802.1X RADIUS server, a VPN gateway) then refuses them.
+    let revocation = v.problems("desk.certs", |f| f.label.starts_with("Revocation: "));
+    if !revocation.is_empty() {
+        let auth = v
+            .find("net.wifi-auth", |f| f.label.starts_with("Wireless session history") && bad(f))
+            .or_else(|| v.find("net.wired-auth", |f| f.label == "Wired 802.1X" && bad(f)));
+        let mut evidence: Vec<String> = revocation.iter().map(|h| cite(*h)).collect();
+        evidence.extend(auth.map(cite));
+        let expired = revocation.iter().any(|(_, f)| f.value.contains("EXPIRED") || f.value.contains("REVOKED"));
+        let (rank, cause) = match (auth.is_some(), expired) {
+            (true, _) => (89, "Network sign-in with this PC's certificate is failing, and the certificate can't be checked for revocation: the RADIUS server refuses a certificate it can't check."),
+            (false, true) => (81, "The certificate authority's revocation list has expired or the certificate is revoked: 802.1X, VPN and smart-card sign-in fail for every PC with a certificate from it."),
+            (false, false) => (49, "This PC's certificate can't be checked for revocation right now. If the list stays out of reach, network sign-in with it will start failing."),
+        };
+        out.push(insight(
+            rank,
+            if auth.is_some() || expired { Severity::Critical } else { worst(&revocation) },
+            cause,
+            evidence,
+            "Have the PKI team publish a fresh CRL (certutil -CRL on the CA) and check the distribution point answers from the RADIUS server's network.",
+        ));
+    }
+
+    // --- Wired 802.1X and NAC.
+    if let Some(h) = v.problem("net.wired-auth", "NAC quarantine") {
+        out.push(insight(
+            92,
+            Severity::Critical,
+            "NAC put this PC in its remediation VLAN: the network works, but the systems it needs can't be reached from there.",
+            vec![cite(h)],
+            "Look up this PC in ISE or ClearPass to see which posture check failed (agent, antivirus, patches), fix that, then reconnect the cable.",
+        ));
+    }
+    if revocation.is_empty() {
+        if let Some(h) = v.find("net.wired-auth", |f| f.label == "Wired 802.1X" && f.severity == Severity::Critical) {
+            let cert = h.1.value.to_ascii_lowercase().contains("certificate") || h.1.value.contains("revocation");
+            out.push(insight(
+                86,
+                Severity::Critical,
+                "Wired 802.1X is failing, so the switch port won't let this PC on (or puts it in a guest VLAN).",
+                vec![cite(h)],
+                if cert {
+                    "The failure names a certificate: check Machine certificates on this PC, then the RADIUS server's log for why it rejected it."
+                } else {
+                    "Check the RADIUS (NPS, ISE, ClearPass) log for this PC's identity at that time; it says why it refused."
+                },
+            ));
+        }
+    }
+    if let Some(h) = v.problem("net.wired-auth", "Wired AutoConfig service") {
+        out.push(insight(61, Severity::Warning, "Wired AutoConfig is stopped although this PC uses wired 802.1X, so it can't authenticate on the port.", vec![cite(h)], "Start the Wired AutoConfig service and check the policy that should set it to Automatic."));
+    }
+
+    // --- Linux domain join.
+    if let Some(h) = v.problem("desk.domain", "SSSD configuration") {
+        out.push(insight(83, Severity::Critical, "SSSD won't start because sssd.conf has the wrong owner or permissions, so domain sign-in fails.", vec![cite(h)], "chmod 600 /etc/sssd/sssd.conf, chown root:root, then systemctl restart sssd."));
+    } else if let Some(h) = v.find("desk.domain", |f| f.label == "Machine account" && f.severity == Severity::Critical) {
+        out.push(insight(82, Severity::Critical, "This PC's domain machine account no longer works, so domain sign-in and Kerberos fail.", vec![cite(h)], "Rejoin the domain: realm leave, then realm join (with an account allowed to join computers)."));
+    } else if let Some(h) = v.find("desk.domain", |f| f.label.starts_with("Domain ") && f.value.starts_with("offline")) {
+        out.push(insight(64, Severity::Warning, "SSSD can't reach the domain, so only people with cached credentials can sign in.", vec![cite(h)], "Check DNS for the domain's SRV records and that a domain controller answers from this network; then sssctl domain-status again."));
+    }
+
+    // --- A server rejecting tickets, or tickets that are about to stop working.
+    let rejected = v.problems("desk.identity", |f| f.label.starts_with("Kerberos ticket rejected by "));
+    if !rejected.is_empty() {
+        let names: Vec<&str> = rejected.iter().map(|(_, f)| f.label.trim_start_matches("Kerberos ticket rejected by ")).collect();
+        out.push(insight(
+            83,
+            Severity::Critical,
+            format!("{} can't read this PC's Kerberos tickets (KRB_AP_ERR_MODIFIED), so its shares and sites keep asking for a password.", names.join(" and ")),
+            rejected.iter().map(|h| cite(*h)).collect(),
+            "Find the duplicate SPN (setspn -X) or reset the server's computer account password, then clear the cached tickets here.",
+        ));
+    }
+
     // --- The clock.
     if let Some(h) = v.find("desk.time", |f| f.label.starts_with("Offset vs") && bad(f)) {
         out.push(insight(
@@ -444,6 +520,89 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
     // --- Printing.
     if let Some(h) = v.find("desk.printers", |f| (f.label == "Print Spooler" || f.label == "CUPS scheduler") && f.severity == Severity::Critical) {
         out.push(insight(84, Severity::Critical, "Nothing can print because the print service isn't running.", vec![cite(h)], "Restart the Print Spooler."));
+    }
+
+    // --- Point and Print: a print server users can't take drivers from.
+    if let Some(h) = v.find("desk.printers", |f| f.label.starts_with("Print server ") && bad(f)) {
+        let server = h.1.label.trim_start_matches("Print server ");
+        out.push(insight(
+            58,
+            Severity::Warning,
+            format!("Adding a printer from {server} asks for an administrator: that server isn't on the approved Point and Print list."),
+            vec![cite(h)],
+            "Add the server to the approved list in Group Policy, or install its drivers for users ahead of time. Don't open driver installs to everyone.",
+        ));
+    } else if let Some(h) = v.find("desk.printers", |f| f.label.ends_with(": driver") && bad(f)) {
+        out.push(insight(52, Severity::Warning, format!("{}: {}.", h.1.label.trim_end_matches(": driver"), h.1.value), vec![cite(h)], "Switch that printer to a package-aware (v4) driver or Microsoft's IPP class driver."));
+    }
+
+    // --- Microsoft 365.
+    if let Some(h) = v.find("desk.m365", |f| f.label.starts_with("Outlook data file: ") && bad(f)) {
+        let file = h.1.label.trim_start_matches("Outlook data file: ");
+        let full = h.1.severity == Severity::Critical;
+        out.push(insight(
+            if full { 80 } else { 50 },
+            h.1.severity,
+            if full { format!("Outlook's data file {file} is full, so new mail stops arriving in it.") } else { format!("Outlook's data file {file} is nearly full.") },
+            vec![cite(h)],
+            "Archive or delete old mail, or for a mailbox cache (.ost) set a shorter \"mail to keep offline\" window. A policy can raise the limit, but a file this size makes Outlook slow.",
+        ));
+    }
+    if let Some(h) = v.problem("desk.m365", "Entra sign-in broker") {
+        out.push(insight(78, Severity::Critical, "Microsoft 365 apps can't sign in with the Windows account: the Entra sign-in broker is missing.", vec![cite(h)], "Follow Microsoft's primary refresh token troubleshooting article; the broker comes back with Windows repair, not a script."));
+    } else if let Some(h) = v.problem("desk.m365", "Entra sign-in errors (24 h)") {
+        out.push(insight(
+            55,
+            Severity::Warning,
+            "Entra sign-in keeps failing on this PC, the usual cause of Outlook and Teams asking for the password again and again.",
+            vec![cite(h)],
+            "Run dsregcmd /status as the user and check AzureAdPrt, then follow the linked Microsoft article.",
+        ));
+    }
+    if let Some(h) = v.problem("desk.m365", "OneDrive folder backup") {
+        out.push(insight(
+            62,
+            Severity::Warning,
+            format!("{} OneDrive isn't running, so files saved there aren't syncing or backed up.", head(&h.1.value).replace(", but OneDrive isn't running", ", but")),
+            vec![cite(h)],
+            "Start OneDrive from the Start menu and sign in. If it won't stay running, reset it (onedrive.exe /reset) and sign in again.",
+        ));
+    }
+    if let Some(h) = v.problem("desk.m365", "Microsoft 365 Apps") {
+        out.push(insight(45, Severity::Warning, "Microsoft 365 Apps are older than the site requires.", vec![cite(h)], "Check its update channel and whether Office updates are reaching this PC; Update Now in any Office app's Account page starts one."));
+    }
+
+    // --- Edge IE mode.
+    if let Some(h) = v.problem("desk.browser", "Enterprise site list") {
+        out.push(insight(
+            60,
+            Severity::Warning,
+            format!("Edge's IE mode site list {}, so older web apps may open in the wrong mode.", h.1.value),
+            vec![cite(h)],
+            "Open the list's address from this PC; if it fails, check the server or share hosting it and the proxy. edge://compat/enterprise shows what Edge last downloaded.",
+        ));
+    } else if let Some(h) = v.problem("desk.browser", "IE integration") {
+        out.push(insight(40, Severity::Warning, format!("Edge's IE integration is set to {}.", h.1.value), vec![cite(h)], "Set InternetExplorerIntegrationLevel to IE mode (1)."));
+    }
+
+    // --- A required device that drops out.
+    let drops = v.problems("capture.recording", |f| f.label.starts_with("Peripheral dropped: "));
+    if let Some(first) = drops.first() {
+        let device = first.1.label.trim_start_matches("Peripheral dropped: ");
+        let suspend = v.find("desk.devices", |f| f.label == "USB selective suspend" && f.value.contains("on "));
+        let mut evidence: Vec<String> = drops.iter().take(3).map(|h| cite(*h)).collect();
+        evidence.extend(suspend.map(cite));
+        out.push(insight(
+            70,
+            Severity::Warning,
+            format!("The {} {} during the recording.", device.to_lowercase(), head(&first.1.value)),
+            evidence,
+            if suspend.is_some() {
+                "USB selective suspend is on. If the drops follow idle time, keep USB devices awake (a site opt-in fix); if they happen mid-use, try another port, cable or dock."
+            } else {
+                "Try another USB port, cable or the dock's port; check Device Manager for the device's own power setting."
+            },
+        ));
     }
 
     // --- One app that keeps failing.
@@ -733,6 +892,75 @@ mod tests {
         let mut lost = results.clone();
         lost[0].findings.push(Finding::crit("Domain controller during policy processing", "no domain controller reachable once in 7 days · last 1h ago"));
         assert!(likely_causes(&lost)[0].cause.contains("no domain controller answered"));
+    }
+
+    #[test]
+    fn an_expired_crl_with_failing_8021x_is_the_cause() {
+        let certs = result("desk.certs", "Machine certificates", vec![Finding::crit("Revocation: WS-07.corp.example.org", "CRL EXPIRED 3h ago (next update was due 2026-11-12T12:00 UTC) · chain check: passed")]);
+        let wifi = result("net.wifi-auth", "Wi-Fi roaming & network authentication", vec![Finding::warn("Wireless session history (collected events)", "0 successful association(s), 2 disconnect(s), 3 failure(s)")]);
+        let both = likely_causes(&[certs.clone(), wifi]);
+        assert!(both[0].cause.starts_with("Network sign-in with this PC's certificate is failing"), "{both:#?}");
+        assert_eq!(both[0].evidence.len(), 2);
+        assert!(likely_causes(&[certs])[0].cause.starts_with("The certificate authority's revocation list has expired"));
+    }
+
+    #[test]
+    fn microsoft_365_problems_are_named() {
+        let r = vec![result("desk.m365", "Outlook, Teams & OneDrive", vec![
+            Finding::crit("Outlook data file: jparker@corp.example.org.ost", "50.0 GB · 100% of the 50.0 GB limit: full, Outlook stops adding mail to it"),
+            Finding::warn("OneDrive folder backup", "Desktop, Documents are in OneDrive, but OneDrive isn't running"),
+            Finding::warn("Entra sign-in errors (24 h)", "12 errors · last 1m ago"),
+        ])];
+        let found = likely_causes(&r);
+        assert_eq!(found[0].cause, "Outlook's data file jparker@corp.example.org.ost is full, so new mail stops arriving in it.");
+        assert!(found.iter().any(|i| i.cause == "Desktop, Documents are in OneDrive, but OneDrive isn't running, so files saved there aren't syncing or backed up."), "{found:#?}");
+        assert!(found.iter().any(|i| i.cause.starts_with("Entra sign-in keeps failing")));
+    }
+
+    #[test]
+    fn edge_print_servers_and_device_drops_are_named() {
+        let r = vec![
+            result("desk.browser", "Edge IE mode site list", vec![Finding::warn("Enterprise site list", "can't be fetched: intranet.example.org answered HTTP 404")]),
+            result("desk.printers", "Printers & print queues", vec![Finding::warn("Print server PRN09", "not on the approved list")]),
+            result("capture.recording", "Intermittent problem recording", vec![Finding::warn("Peripheral dropped: Scanner", "dropped 2 times · came back")]),
+            result("desk.devices", "Devices & peripherals", vec![Finding::info("USB selective suspend", "on plugged in · on on battery")]),
+        ];
+        let found = likely_causes(&r);
+        let causes: Vec<&str> = found.iter().map(|i| i.cause.as_str()).collect();
+        assert_eq!(causes[0], "The scanner dropped 2 times during the recording.");
+        assert!(found[0].next.starts_with("USB selective suspend is on"));
+        assert_eq!(found[0].evidence.len(), 2);
+        assert!(causes.contains(&"Edge's IE mode site list can't be fetched: intranet.example.org answered HTTP 404, so older web apps may open in the wrong mode."));
+        assert!(causes.iter().any(|c| c.starts_with("Adding a printer from PRN09 asks for an administrator")));
+    }
+
+    #[test]
+    fn nac_quarantine_and_wired_failures_are_named() {
+        let r = vec![result("net.wired-auth", "Wired 802.1X & NAC", vec![
+            Finding::crit("NAC quarantine", "Ethernet has 10.250.4.17, in the quarantine subnet 10.250.0.0/16"),
+            Finding::crit("Wired 802.1X", "failing: The authenticator is no longer present · 3 times in a row, last 5m ago"),
+        ])];
+        let found = likely_causes(&r);
+        assert!(found[0].cause.starts_with("NAC put this PC in its remediation VLAN"));
+        assert!(found[1].cause.starts_with("Wired 802.1X is failing"));
+        let with_crl = vec![r[0].clone(), result("desk.certs", "Machine certificates", vec![Finding::crit("Revocation: WS-07", "CRL EXPIRED 3h ago · chain check: passed")])];
+        let found = likely_causes(&with_crl);
+        assert!(found.iter().any(|i| i.cause.starts_with("Network sign-in with this PC's certificate is failing")));
+        assert!(!found.iter().any(|i| i.cause.starts_with("Wired 802.1X is failing")), "the revocation rule already covers it");
+    }
+
+    #[test]
+    fn linux_domain_problems_are_named() {
+        let conf = vec![result("desk.domain", "Domain & Group Policy", vec![Finding::crit("SSSD configuration", "/etc/sssd/sssd.conf is 0644, owned by uid 0")])];
+        assert!(likely_causes(&conf)[0].cause.starts_with("SSSD won't start"));
+        let offline = vec![result("desk.domain", "Domain & Group Policy", vec![Finding::warn("Domain corp.example.org", "offline: sign-ins use cached credentials")])];
+        assert!(likely_causes(&offline)[0].cause.starts_with("SSSD can't reach the domain"));
+    }
+
+    #[test]
+    fn a_server_rejecting_tickets_is_named() {
+        let r = vec![result("desk.identity", "Entra, Kerberos & SSO sign-in", vec![Finding::crit("Kerberos ticket rejected by fs01$", "KRB_AP_ERR_MODIFIED twice in 7 days · last 20m ago")])];
+        assert!(likely_causes(&r)[0].cause.starts_with("fs01$ can't read this PC's Kerberos tickets"));
     }
 
     #[test]

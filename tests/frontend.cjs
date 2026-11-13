@@ -125,8 +125,10 @@ async function pageFor(t, options = {}) {
             if(options.failCaseRefresh && args.baseReport)throw "Controlled case refresh failure";
             const r=args.baseReport ? Object.assign({},args.baseReport,{results:args.baseReport.results.filter((old)=>!results.some((n)=>n.module_id===old.module_id)).concat(results),evidence_updated:"2026-11-10T17:01:00Z"}) : report(results);
             if(args.runbook)r.runbook={id:args.runbook,steps:[{modules:args.selected,reason:"Inspect printing and storage first."}],finished:true,conclusion:"Review findings; completing checks does not mean the issue is repaired."};
+            if(options.incident)r.known_incidents=[{id:"INC0012345",title:"Print server outage <b>now</b>",url:"https://status.example.org/INC0012345",because:"Printers & print queue: Print Spooler: stopped"}];
             return { report:r, diff: diff(false), save_error: options.saveError || null };
           }
+          case "preview_fix": return "Preview: would restart the Print Spooler; 1 job is waiting. Nothing was changed.";
           case "run_fix": await new Promise((done) => { state.fixDone = done; }); return "Print Spooler restarted.";
           case "refresh_report": {
             if (options.failRefresh) throw "Controlled refresh failure";
@@ -148,6 +150,12 @@ async function runAndFix(page, self = false) {
   const button = page.locator(self ? ".ss-fix" : ".fix-btn").first();
   await button.waitFor();
   await button.click();
+  if (!self) {
+    // The confirmation says what the fix would do here, from its preview.
+    const preview = page.locator(".modal .fix-preview");
+    await preview.waitFor();
+    assert.match(await preview.textContent(), /1 job is waiting/);
+  }
   await page.getByRole("button", { name: self ? "Go ahead" : "Run fix", exact: true }).click();
   await page.waitForFunction(() => typeof testState.fixDone === "function");
 }
@@ -208,6 +216,17 @@ test("self-service keeps its controls locked until the fix has been checked", as
   await page.evaluate(() => testState.recheckDone());
   await page.waitForFunction(() => !document.getElementById("ssGo").disabled);
   assert.match(await page.locator("#ssResults").innerText(), /Everything looks good/);
+});
+
+test("a known incident goes above everything, escaped, and into the ticket text", async (t) => {
+  const page = await pageFor(t, { incident: true });
+  await page.locator("#run").click();
+  const banner = page.locator("#results > .banner.incident");
+  await banner.waitFor();
+  assert.equal(await page.locator("#results > .banner").first().getAttribute("class"), "banner incident");
+  assert.match(await banner.textContent(), /INC0012345 Print server outage <b>now<\/b>/);
+  assert.equal(await banner.locator("b", { hasText: "now" }).count(), 0, "feed text is escaped");
+  assert.equal(await banner.locator("a.kb-link").getAttribute("href"), "https://status.example.org/INC0012345");
 });
 
 test("self-service reports a history save failure", async (t) => {

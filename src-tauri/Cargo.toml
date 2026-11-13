@@ -1,6 +1,6 @@
 [package]
 name = "itriage"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 description = "IT triage & update tool — Tauri desktop shell"
 license = "MIT"

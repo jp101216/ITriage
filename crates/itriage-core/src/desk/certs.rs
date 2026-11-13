@@ -4,6 +4,10 @@
 //! 802.1X Wi-Fi/wired authentication and VPN machine tunnels; when one
 //! expires the device drops off the secure network, often without any
 //! message a user would understand.
+//!
+//! For each one in use (it has a private key), whether it can still be
+//! checked for revocation: the CRL fetched live from each distribution
+//! point, and the chain check's own verdict (see `parse::revocation`).
 
 use crate::model::{Category, ModuleInfo, Output};
 use crate::module::{RunContext, TriageModule};
@@ -16,14 +20,14 @@ impl TriageModule for MachineCerts {
             "desk.certs",
             "Machine certificates",
             Category::Workstation,
-            "Computer certificates (used for 802.1X Wi-Fi and VPN) and when they expire. Warns 14 days out.",
+            "Computer certificates (used for 802.1X Wi-Fi and VPN), when they expire (warns 14 days out), and whether their revocation lists are reachable and current.",
         )
         .only("windows")
     }
 
     #[cfg(windows)]
-    fn execute(&self, _ctx: &RunContext) -> Result<Output, String> {
-        imp::check()
+    fn execute(&self, ctx: &RunContext) -> Result<Output, String> {
+        imp::check(ctx.profile().security.crl_warn_hours)
     }
 
     #[cfg(not(windows))]
@@ -53,7 +57,7 @@ mod imp {
     use crate::util::{now_epoch, plural};
     use crate::win::certs::machine_certs;
 
-    pub fn check() -> Result<Output, String> {
+    pub fn check(crl_warn_hours: u32) -> Result<Output, String> {
         let mut certs = machine_certs()?;
         if certs.is_empty() {
             return Ok(Output::new(
@@ -84,11 +88,25 @@ mod imp {
             );
             findings.push(Finding::new(subject, text, severity).with_detail(detail));
         }
-        let summary = if soon == 0 {
+        let mut summary = if soon == 0 {
             format!("{} machine certificate{}, none expiring soon", certs.len(), plural(certs.len()))
         } else {
             format!("{soon} machine certificate{} expired or expiring within 14 days", plural(soon))
         };
+        match crate::win::certs::revocation(8, std::time::Duration::from_secs(5)) {
+            Ok(checks) => {
+                let rows: Vec<Finding> = checks
+                    .iter()
+                    .map(|r| crate::parse::revocation::finding(if r.subject.is_empty() { "(no subject)" } else { &r.subject }, &r.urls, r.chain, now as u64, crl_warn_hours))
+                    .collect();
+                let bad = rows.iter().filter(|f| f.severity.rank() >= Severity::Warning.rank()).count();
+                if bad > 0 {
+                    summary.push_str(&format!(" · revocation can't be checked for {bad}"));
+                }
+                findings.extend(rows);
+            }
+            Err(e) => findings.push(Finding::info("Revocation", format!("not checked: {e}"))),
+        }
         Ok(Output::new(summary, findings))
     }
 }

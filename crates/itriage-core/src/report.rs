@@ -60,6 +60,15 @@ pub struct Report {
     pub baseline: Option<crate::investigate::baseline::Comparison>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence_updated: Option<String>,
+    /// Open incidents from the site's feed that this run matches.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_incidents: Vec<crate::site::status::KnownIncident>,
+    /// Why the feed couldn't be checked, when the profile names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incident_feed: Option<String>,
+    /// For a capture watch mode saved by itself: what set it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
 }
 
 fn schema_default() -> u32 {
@@ -84,7 +93,15 @@ impl Report {
             runbook: None,
             baseline: None,
             evidence_updated: None,
+            known_incidents: Vec::new(),
+            incident_feed: None,
+            watch: None,
         }
+    }
+
+    /// Check the site's incident feed against this run's findings.
+    pub fn check_incidents(&mut self, profile: &crate::profile::Profile, profile_source: &str) {
+        (self.known_incidents, self.incident_feed) = crate::site::status::check(profile, profile_source, &self.results);
     }
 
     /// Attach the ticket number, cleaned up (see [`clean_ticket`]).
@@ -146,6 +163,9 @@ pub struct ReportMeta {
     pub worst: Severity,
     pub cancelled: bool,
     pub ticket: Option<String>,
+    /// What set off a watch capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watch: Option<String>,
 }
 
 pub fn history_dir() -> Option<PathBuf> {
@@ -167,11 +187,22 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
     let stamp = file_part(&report.evidence_updated.as_deref().unwrap_or(&report.generated).replace([':', '-'], ""), "", "run");
     let host = file_part(&report.host.hostname, "-", "host");
     // The ticket goes on the end, so sorting by name is still by time.
-    let ticket = report.ticket.as_deref().map(|t| format!("_{}", file_part(t, "-", "ticket"))).unwrap_or_default();
+    let mut ticket = report.ticket.as_deref().map(|t| format!("_{}", file_part(t, "-", "ticket"))).unwrap_or_default();
+    // Watch captures are marked in the name, so their quota never touches
+    // an ordinary run (see `investigate::watch::prune`).
+    if report.watch.is_some() {
+        ticket.push_str("_watch");
+    }
+    let mut stem = format!("{stamp}_{host}{ticket}");
+    // That ending is how watch mode's clean-up knows its own files. A PC or
+    // a ticket called "watch" mustn't make an ordinary run look like one.
+    if report.watch.is_none() && stem.ends_with("_watch") {
+        stem.push_str("_run");
+    }
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
     // Two runs in the same second must not overwrite each other, but saving
     // the same report again (re-importing it) shouldn't duplicate it.
-    let mut path = dir.join(format!("{stamp}_{host}{ticket}.json"));
+    let mut path = dir.join(format!("{stem}.json"));
     let mut n = 1;
     loop {
         // Claim the name atomically: an import, another app instance or a
@@ -190,7 +221,7 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
                     return Ok(path);
                 }
                 n += 1;
-                path = dir.join(format!("{stamp}_{host}{ticket}~{n}.json"));
+                path = dir.join(format!("{stem}~{n}.json"));
             }
             Err(e) => return Err(format!("Can't write {}: {e}", path.display())),
         }
@@ -219,8 +250,13 @@ fn file_part(text: &str, also: &str, fallback: &str) -> String {
     }
 }
 
+/// Remove the oldest ordinary runs past `keep`. Watch captures aren't
+/// counted and aren't removed here: they have their own limits (see
+/// `investigate::watch::prune`), and a morning of captures mustn't push the
+/// technician's own runs out of the history.
 fn prune(dir: &Path, keep: usize) {
     let mut files = json_files(dir);
+    files.retain(|p| !p.file_name().is_some_and(|n| crate::investigate::watch::is_capture_file(&n.to_string_lossy())));
     if files.len() <= keep {
         return;
     }
@@ -270,6 +306,8 @@ struct IndexEntry {
     checks: Vec<String>,
     #[serde(default)]
     ticket: Option<String>,
+    #[serde(default)]
+    watch: Option<String>,
     /// Every measurement the run took, for the trend charts.
     #[serde(default)]
     metrics: Vec<IndexMetric>,
@@ -305,13 +343,16 @@ impl IndexEntry {
             modules: report.results.len(),
             worst: report.worst(),
             cancelled: report.cancelled,
-            checks: report.results.iter().filter(|r| !r.preview && report.evidence_updated.is_none()).map(|r| r.module_id.clone()).collect(),
+            // A watch capture is taken because something was wrong: it's
+            // neither the run a later one compares with nor a trend point.
+            checks: report.results.iter().filter(|r| !r.preview && report.evidence_updated.is_none() && report.watch.is_none()).map(|r| r.module_id.clone()).collect(),
             ticket: report.ticket.clone(),
+            watch: report.watch.clone(),
             metrics: report
                 .results
                 .iter()
                 // A recording's peaks depend on how long it ran: not a trend.
-                .filter(|r| !r.preview && r.error.is_none() && report.evidence_updated.is_none() && r.module_id != "capture.recording")
+                .filter(|r| !r.preview && r.error.is_none() && report.evidence_updated.is_none() && report.watch.is_none() && r.module_id != "capture.recording")
                 .flat_map(|r| {
                     r.findings.iter().filter_map(|f| {
                         f.metric.as_ref().map(|m| IndexMetric {
@@ -390,6 +431,7 @@ fn list_in(dir: &Path) -> Vec<ReportMeta> {
             worst: e.worst,
             cancelled: e.cancelled,
             ticket: e.ticket,
+            watch: e.watch,
         })
         .collect();
     metas.sort_by(|a, b| b.evidence_updated.as_deref().unwrap_or(&b.generated).cmp(a.evidence_updated.as_deref().unwrap_or(&a.generated)));
@@ -841,6 +883,13 @@ pub fn render_text(report: &Report, diff: Option<&ReportDiff>, logs: bool) -> St
     if let Some(t) = &report.ticket {
         out.push(format!("Ticket: {t}"));
     }
+    for k in &report.known_incidents {
+        let url = k.url.as_deref().map(|u| format!(" <{u}>")).unwrap_or_default();
+        out.push(format!("MATCHES KNOWN INCIDENT {}: {}{url}. Attach this report to it.", k.id, k.title));
+        out.push(format!("  because {}", k.because));
+    }
+    if let Some(note) = &report.incident_feed { out.push(note.clone()); }
+    if let Some(w) = &report.watch { out.push(format!("Saved by watch mode: {w}")); }
     if let Some(role) = &report.role { out.push(format!("Workstation role: {role}")); }
     if let Some(updated) = &report.evidence_updated { out.push(format!("Latest evidence update: {updated}")); }
     if let Some(trace) = &report.runbook {
@@ -1104,12 +1153,31 @@ mod tests {
     #[test]
     fn refreshing_case_logs_keeps_the_recording_markers_and_original_creation_time() {
         let mut r=report(vec![result("system.info",vec![Finding::info("OS","Windows")],None),result("system.changes",vec![Finding::info("Old event","before capture")],None)]);
-        r.recording=Some(crate::investigate::recording::Recording{started:r.generated.clone(),config:Default::default(),target:None,samples:vec![],markers:vec![crate::investigate::recording::Marker{at_ms:1,label:"Problem happened".into()}],stopped_early:false,gaps:vec![]});
+        r.recording=Some(crate::investigate::recording::Recording{started:r.generated.clone(),config:Default::default(),target:None,samples:vec![],markers:vec![crate::investigate::recording::Marker{at_ms:1,label:"Problem happened".into(),device:None}],stopped_early:false,gaps:vec![]});
         let original=r.generated.clone();
         r.append_evidence(vec![result("system.changes",vec![Finding::info("New event","after capture")],None)],false);
         assert_eq!(r.generated,original);assert!(r.evidence_updated.is_some());assert_eq!(r.results.len(),2);
         assert_eq!(r.results[1].findings[0].value,"after capture");assert_eq!(r.recording.unwrap().markers[0].label,"Problem happened");
         assert_eq!(r.exit_code,Some(0));
+    }
+
+    #[test]
+    fn known_incidents_lead_the_text_and_watch_captures_stay_out_of_comparisons() {
+        let mut r = report(vec![result("system.disk", vec![Finding::ok("Free", "50%").with_metric(50.0, "%", true)], None)]);
+        r.known_incidents = vec![crate::site::status::KnownIncident { id: "INC0012345".into(), title: "VPN gateway outage".into(), url: Some("https://status.example.org/INC0012345".into()), because: "site-wide".into() }];
+        r.watch = Some("processor above 75% for 60 s".into());
+        let text = render_text(&r, None, true);
+        assert!(text.contains("MATCHES KNOWN INCIDENT INC0012345: VPN gateway outage <https://status.example.org/INC0012345>. Attach this report to it.\n  because site-wide"), "{text}");
+        assert!(text.contains("Saved by watch mode: processor above 75% for 60 s"));
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-watch-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let saved = save_in(&dir, &r, 0).unwrap();
+        assert!(saved.file_name().unwrap().to_string_lossy().ends_with("_watch.json"));
+        let listed = list_in(&dir);
+        assert_eq!(listed[0].watch.as_deref(), Some("processor above 75% for 60 s"));
+        let entry = IndexEntry::of(&r, 1, 1);
+        assert!(entry.checks.is_empty() && entry.metrics.is_empty(), "never the run a later one compares with, never a trend point");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1314,6 +1382,35 @@ mod tests {
         names.sort();
         assert!(pa.with_extension("txt").exists(), "a transcript is saved beside it");
         assert_eq!(names, vec![pa, pb], "and sorts after the first, oldest first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_captures_never_push_ordinary_runs_out_of_the_history() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-history-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let at = |minute: u32| format!("2026-11-10T12:{minute:02}:00Z");
+        let run = |minute: u32, watch: bool| {
+            let mut r = report(vec![result("system.disk", vec![Finding::ok("C:\\", "50% used")], None)]);
+            r.generated = at(minute);
+            r.watch = watch.then(|| "processor above 75% for 60 s".to_string());
+            r
+        };
+        // Two ordinary runs, then a string of captures, with room for two.
+        let first = save_in(&dir, &run(1, false), 2).unwrap();
+        let second = save_in(&dir, &run(2, false), 2).unwrap();
+        let captures: Vec<PathBuf> = (3..9).map(|m| save_in(&dir, &run(m, true), 2).unwrap()).collect();
+        assert!(first.exists() && second.exists(), "the technician's runs are still there");
+        assert!(captures.iter().all(|c| c.exists()), "captures are left to watch mode's own limits");
+        // A third ordinary run removes the oldest ordinary one, and no capture.
+        let third = save_in(&dir, &run(9, false), 2).unwrap();
+        assert!(!first.exists() && !first.with_extension("txt").exists(), "the oldest ordinary run and its transcript go");
+        assert!(second.exists() && third.exists() && captures.iter().all(|c| c.exists()));
+        // An ordinary run for a ticket called "watch" isn't taken for a capture.
+        let ticketed = save_in(&dir, &run(10, false).with_ticket(Some("watch")), 0).unwrap();
+        let name = ticketed.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.ends_with("_watch_run.json") && !crate::investigate::watch::is_capture_file(&name), "{name}");
+        assert!(captures.iter().all(|c| crate::investigate::watch::is_capture_file(&c.file_name().unwrap().to_string_lossy())));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

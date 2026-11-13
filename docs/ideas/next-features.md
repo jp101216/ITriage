@@ -1,6 +1,7 @@
 # ITriage: Next Feature Ideas (round 3) and how to build them
 
-> **Status, November 2026.** Built on `main` (0.9.0) *without* the
+> **Status, November 2026.** All 14 ideas ship in 0.10.0 (one release, not
+> the 0.10/0.11 split suggested below). Built on `main` (0.9.0) *without* the
 > advanced-features package, which never reached the repository. So `print.path`,
 > `app.paths`, the flight recorder, `advanced/hypotheses.rs` and
 > `advanced/cases.rs` don't exist, and the ideas were adapted: #9 extends
@@ -8,7 +9,16 @@
 > (`investigate/recording.rs`), and the hypothesis hooks are rules in
 > `insight.rs`. Where an idea names a verified-repair mapping, the fix is
 > audited and re-checks its module instead. Each phase's pull request says
-> what was adapted.
+> what was adapted. In Phase 3, #10's device drops are markers in a
+> recording (there's no flight recorder to tag), and `keep-usb-awake` is
+> opt-in: it runs only when the profile's `fixes` list names it. In Phase 4,
+> `net.wired-auth` is always in the triage preset (presets are fixed lists);
+> on a PC with no wired connection it says so in one row. In Phase 5, watch
+> mode keeps its own ten-minute ring of samples (there's no flight recorder);
+> a capture is an ordinary report with a recording, marked by a `watch` field
+> and `_watch` in its file name (`Report.role` is already the workstation
+> role); the Application log is polled every 15 s rather than subscribed to;
+> and `app_paths` checks the `[[require.application]]` servers.
 
 Target baseline: ITriage 0.9.0 **with the advanced-features package applied**
 (`ITriage-Claude-Package.zip`). Every idea below was checked against that package

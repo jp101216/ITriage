@@ -170,11 +170,11 @@ impl Place {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct Size {
-    bytes: u64,
-    files: u64,
-    unread: u64,
-    partial: bool,
+pub(crate) struct Size {
+    pub(crate) bytes: u64,
+    pub(crate) files: u64,
+    pub(crate) unread: u64,
+    pub(crate) partial: bool,
 }
 
 /// Where to look on this system.
@@ -301,7 +301,7 @@ fn volume(_: &std::fs::Metadata) -> u64 {
 /// Everything under `dir`, or `None` when it isn't a folder. Links aren't
 /// followed and other volumes aren't entered. Stops at `deadline` (or when
 /// `cancelled` says so) with what it has, marked partial.
-fn measure(dir: &Path, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Option<Size> {
+pub(crate) fn measure(dir: &Path, deadline: Instant, cancelled: &dyn Fn() -> bool) -> Option<Size> {
     let top = std::fs::symlink_metadata(dir).ok()?;
     if !top.is_dir() || top.file_type().is_symlink() {
         return None;

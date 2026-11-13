@@ -14,7 +14,8 @@
 //!   destination), streaming progress as events; cancelling stops at the next
 //!   safe point. A finished run is audited, saved to the history folder with
 //!   its transcript, and compared with the last comparable run of this machine.
-//! * `run_fix`: one policy-checked, audited one-click fix.
+//! * `run_fix`: one policy-checked, audited one-click fix; `preview_fix`:
+//!   what it would do, changing nothing.
 //! * `list_history`, `load_report`, `import_report`, `compare_with_previous`,
 //!   `compare_reports`, `report_text`: the report viewer and comparisons.
 //! * `trends`: every measurement over this computer's saved runs.
@@ -245,6 +246,7 @@ async fn run_modules(
     let profile = app.profile.clone();
     let cancel = app.cancel.clone();
     let profile_name = (app.status.source != "built-in").then(|| app.status.name.clone());
+    let profile_source = app.status.source;
     let record = record.unwrap_or(true);
     let preview = preview.unwrap_or(false) || !record;
     let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
@@ -303,6 +305,7 @@ async fn run_modules(
             base.append_evidence(results,cancelled); base
         } else { Report::new(host_context(), profile_name, results, cancelled).with_ticket(ticket.as_deref()).with_role(&profile.role) };
         if let Some(trace) = trace { report.runbook = Some(trace); }
+        if !cancelled { report.check_incidents(&profile, profile_source); }
         let (mut saved, mut save_error, mut diff) = (None, None, None);
         if record && !report.results.is_empty() {
             if !cancelled {
@@ -351,6 +354,8 @@ async fn record_problem(
         .filter(|s| !s.is_empty())
         .map(|s| Target::parse(s, &app.profile.network.target_ports))
         .transpose()?;
+    // The same clean-up a run's ticket gets, before it reaches the audit log.
+    let ticket = ticket.as_deref().and_then(report::clean_ticket);
     let busy = claim(&app, Some(window.clone()))?;
     app.cancel.store(false, Ordering::SeqCst);
     app.markers.lock().map_err(|_| "Marker list unavailable")?.clear();
@@ -370,6 +375,8 @@ async fn record_problem(
             let rows = markers.lock().map_err(|_| "Marker list unavailable")?;
             _flag.0.store(false, Ordering::SeqCst);
             capture.markers = rows.clone();
+            // Device drops and typed markers arrive from different threads.
+            capture.markers.sort_by_key(|m| m.at_ms);
         }
         let result = recording::result(&capture);
         audit::run_finished(std::slice::from_ref(&result), false, ticket.as_deref());
@@ -482,6 +489,16 @@ async fn run_fix(
     })
     .await
     .map_err(|e| format!("The fix stopped unexpectedly: {e}"))?
+}
+
+/// What a fix would do here, changing nothing (its preview).
+#[tauri::command]
+async fn preview_fix(app: State<'_, App>, id: String, target: Option<String>, remote_safe: Option<bool>) -> Result<String, String> {
+    let profile = app.profile.clone();
+    let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
+    tauri::async_runtime::spawn_blocking(move || actions::preview(&id, target.as_deref(), &profile, remote_safe))
+        .await
+        .map_err(|e| format!("The preview stopped unexpectedly: {e}"))?
 }
 
 #[tauri::command]
@@ -600,6 +617,7 @@ fn main() {
     }
 
     let loaded = profile::load();
+    audit::set_system_log(audit::system_log_wanted(&loaded.profile, loaded.status.source));
     let app = App {
         profile: Arc::new(loaded.profile),
         status: loaded.status,
@@ -654,6 +672,7 @@ fn main() {
             close_when_done,
             keep_running,
             run_fix,
+            preview_fix,
             list_history,
             load_report,
             import_report,

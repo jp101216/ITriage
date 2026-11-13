@@ -1,0 +1,6 @@
+Keytab name: FILE:/tmp/test.keytab
+KVNO Timestamp         Principal
+---- ----------------- --------------------------------------------------------
+   3 11/13/26 01:40:28 WS-07$@CORP.EXAMPLE.ORG (aes256-cts-hmac-sha1-96) 
+   3 11/13/26 01:40:28 host/ws-07.corp.example.org@CORP.EXAMPLE.ORG (aes256-cts-hmac-sha1-96) 
+   2 11/13/26 01:40:28 host/WS-07@CORP.EXAMPLE.ORG (aes128-cts-hmac-sha1-96) 

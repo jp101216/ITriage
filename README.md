@@ -67,6 +67,7 @@ Two presets have no script behind them, and change nothing:
 | CPU, memory, disk free and disk latency, top processes by real-time CPU% | **Top processes** (overall CPU load first), **Memory usage**, **Disk space & latency** |
 | Adapters, IPv4/IPv6, gateway, DNS | **Network connectivity**: adapters, the route in use, its gateway and DNS servers, each server asked directly |
 | VPN indicators (Cisco Secure Client, Zscaler) | **Wi-Fi & VPN**, which tells a running client from an active tunnel |
+| (not in NetTriage) | **Wired 802.1X & NAC** on Windows: the wall jack's authentication and a NAC remediation VLAN |
 | Proxy (WinHTTP and per-user WinINet) | **Proxy settings**, read from the signed-in user's settings even when ITriage runs elevated |
 | RTT and packet loss to the gateway and DNS, DNS resolve time | **Latency & packet loss**; the timed lookup is in Network connectivity |
 | TCP reachability for `CoreInfrastructure.json` | **Site services & endpoints**, from the profile's `[[require.endpoint]]` entries |
@@ -178,13 +179,17 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Destination test | for a host you give: DNS, a TCP connect per port (every address it resolves to), the route and interface the PC picks (noting a VPN), ping. A port you typed that doesn't answer is critical; with none typed, the four defaults are tried and a closed one is only information | same |
 | Recent errors | **native Evt\* API**: System + Application, Critical/Error, last 24 h, grouped by provider + event ID | `journalctl -p err`, grouped by source + normalised message |
 | Clock & time sync | W32Time source, **SNTP offset** vs. the DC or configured server, time zone | `timedatectl`, SNTP vs. the timesyncd/chrony source |
-| Domain & Group Policy | domain join, **DC vs. cached-credential sign-in**, AD site, last computer policy refresh | n/a |
+| Domain & Group Policy | domain join, **DC vs. cached-credential sign-in**, AD site, last computer policy refresh | the realm from `realm list`; as root, each SSSD domain online or offline with its active servers (`sssctl domain-status`), the machine account (`adcli testjoin`, where no reachable DC is a warning and a failed test critical) and the keytab's principals, KVNO and RC4-only keys (`klist -k -t -e`), and `sssd.conf` not `0600` root (critical: SSSD won't start) |
 | Sign-in speed (Group Policy) | the last sign-in as a waterfall: profile load (User Profile Service 1 → 2) plus user policy (GroupPolicy 4001 → 8001), each client-side extension's time (5016) and failures (6016/7016), how many GPOs applied or were filtered out, and lost domain controllers (1129) or unreadable SYSVOL files (1058). Warns at 60 s, critical at 120 s | n/a |
 | Sign-in & account lockouts | the signed-in account on its domain controller (**NetAPI**): locked, disabled, wrong-password count, password expiry (warns 14 days out), the lockout policy (a Microsoft Entra ID account lives in the cloud, so for those it says so and checks the rest); mapped drives and whether their servers answer; and [what on this PC keeps locking it](#account-lockouts) | `passwd -S`, `chage`, `faillock`, Kerberos ticket, network mounts |
-| Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers | CUPS `lpstat` |
-| Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers | USB devices from sysfs |
+| Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers; Point and Print policy (computer, then the signed-in person's): who may install drivers, the approved and package-approved print servers, each connected printer's server against those lists, drivers that aren't package-aware when only package Point and Print is allowed, and drivers Windows protected print mode won't load | CUPS `lpstat` |
+| Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers; USB selective suspend in the active power plan and each required USB device's own power settings, with the opt-in **Keep USB devices awake** fix | USB devices from sysfs |
+| Outlook, Teams & OneDrive | for the person at the console: Outlook data files (.ost/.pst) against `MaxLargeFileSize`/`WarnLargeFileSize` or Outlook's 50 GB / 47.5 GB defaults; the Click-to-Run version, update channel (named from Microsoft's channel GUIDs) and a profile minimum; Desktop, Documents and Pictures moved into OneDrive while OneDrive isn't running; the new Teams cache size with **Clear Teams cache**; leftover classic Teams; the Entra sign-in broker and AAD/Operational errors in 24 h | n/a |
+| Edge IE mode site list | the `InternetExplorerIntegrationLevel` and `InternetExplorerIntegrationSiteList` policies (computer, then user); the site list fetched from its web address or file share and read (version 2, or version 1 reported as legacy); which of the profile's application URLs and the target open in IE mode; Edge's version | n/a |
 | Wi-Fi & VPN | **WLAN API**: SSID, signal (warns at 70%), security, radio, channel, link rates; Cisco Secure Client and Zscaler clients and tunnels | `nmcli`, VPN clients and tunnel interfaces |
-| Machine certificates | LocalMachine\My expiry; warns 14 days out | n/a |
+| Wired 802.1X & NAC | the Wired AutoConfig service (a warning when it's stopped on a PC that used 802.1X); the last day's Wired-AutoConfig events: the latest outcome (15505 succeeded, 15514 failed, with its reason text and certificate error codes named), failures before a success, and attempts suspended (15506); each port's state from `netsh lan show interfaces` (English only; the events are the source of truth); a wired address inside `[network] quarantine_subnets` (critical: NAC's remediation VLAN). In the Slowness triage preset | n/a |
+| Machine certificates | LocalMachine\My expiry; warns 14 days out. For each one in use (it has a private key): its CRL fetched live from each HTTP distribution point (expired is critical, expiring within `[security] crl_warn_hours` a warning, unreachable a warning; LDAP points are left to the chain check), its OCSP and issuer URLs, and the chain engine's own revocation verdict, so a check that passes on a cached CRL while the distribution point is down still shows | n/a |
+| Entra, Kerberos & SSO sign-in | device join and authentication, Windows Hello and the signed-in user's PRT/WAM status (`dsregcmd`, skipped with `public_probes = false`); the Kerberos ticket cache through LSA (TGT and when it expires, service tickets, RC4 or DES tickets, the KDC), only when ITriage runs as the signed-in user unelevated; and servers that rejected a ticket (System event 4, KRB_AP_ERR_MODIFIED: a duplicate SPN or a stale account password) | the Kerberos cache from MIT `klist -e` |
 | Battery health | design vs. full-charge capacity (`powercfg /batteryreport`), cycles | sysfs `power_supply` |
 | Policy blocks | which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules (named from Microsoft's GUID table), Controlled folder access, antivirus detections, AppLocker and App Control (WDAC), each folded by rule and file with how often and when. A block today on an app the profile requires is critical; audit-mode rules are information | AppArmor and SELinux denials from the kernel and audit journal (and `audit.log` as root) |
 | Security posture | BitLocker on the system drive, Defender real-time protection and definition age (warns at 3 days), other antivirus and EDR sensors, the firewall per profile (critical when it's off for the profile in use), Secure Boot, TPM, UAC, and who is an administrator of the PC | LUKS under the root file system, endpoint agents, firewalld / ufw / nftables, Secure Boot, TPM, sudo and wheel members |
@@ -336,7 +341,7 @@ They connect eight capabilities:
 |---|---|
 | Application connections | Select **Application connections** after configuring `[[require.application]]` URLs; see DNS, direct route/TCP, proxy context, TLS validation and expected HTTP statuses. |
 | Intermittent recordings | **Record issue** captures bounded resource/connection samples and the Wi-Fi signal and access point; **Problem happened now** (or Enter in the marker box) adds a marker. Stop safely and use **Replay recording**: a chart with the markers, moves between access points and failed connections on it, and the samples near a marker or the failures alone. |
-| Entra / Microsoft 365 identity | **Entra & Microsoft 365 sign-in** inspects device join/authentication and diagnostic PRT/WAM/Hello state on Windows, without reading tokens. Run as the affected user without elevation for user SSO. |
+| Entra / Microsoft 365 identity | **Entra, Kerberos & SSO sign-in** inspects device join/authentication and diagnostic PRT/WAM/Hello state on Windows, and the Kerberos ticket cache, without reading tokens or tickets. Run as the affected user without elevation for user SSO and tickets. |
 | Wi-Fi / wired authentication history | **Wi-Fi & wired authentication history** summarizes existing connection, 802.1X and certificate-related logs, preserving timestamps and reason fields. |
 | Change timeline | Collect **Recent changes timeline**, then **Timeline** to inspect changes near the reported onset, or everything collected: each row in local time, placed against the onset ("12 min before"), with its kind and what happened in a sentence. A burst of one kind is one row. Nearby activity is a possible link, not proof of causation. |
 | Working-PC baseline | Open the affected PC's report, then **Working PC** to choose a known-working report of the same platform and role (only other PCs' reports are offered). Import another PC's JSON through **Open** first. Proxy, clock and domain settings are compared along with apps, services and posture. |
@@ -420,7 +425,7 @@ Every setting, with its default:
 |---|---|---|
 | `[policy] allow_changes` | `true` | anything that changes the machine |
 | `[policy] allow_installs` | `true` | the two install modules and the install buttons |
-| `[policy] fixes` | every fix | one-click fixes that may run; `start-service:<name>` allows one service |
+| `[policy] fixes` | every fix except opt-in ones | one-click fixes that may run; `start-service:<name>` allows one service. `keep-usb-awake` runs only when listed here |
 | `[policy] start_in` | `"technician"` | or `"self-service"` |
 | `[policy] technician_view` | `true` | `false` keeps the app in self-service mode |
 | `[policy] remote_safe` | `false` | start in remote-safe mode (technicians can switch it off) |
@@ -432,15 +437,22 @@ Every setting, with its default:
 | `[network] target_ports` | `[443, 80, 445, 3389]` | the destination test's ports when none are given |
 | `[network] tcp_timeout_ms` | `1500` | per TCP check, shared by every address a name resolves to |
 | `[network] ping_count`, `ping_timeout_ms` | `4`, `1000` | ICMP echoes per probe and the wait for each |
+| `[network] quarantine_subnets` | `[]` | NAC remediation VLANs (`["10.250.0.0/16"]`); a wired address in one is critical |
 | `[thresholds]` | NetTriage's | `uptime_days` 7/14, `cpu_pct` 75/90, `memory_pct` 80/90, `disk_free_pct` 15/10, `disk_latency_ms` 15/30, `wifi_signal_pct` 70/50, `gateway_rtt_ms` 20/50, `network_rtt_ms` 80/150, `dns_ms` 100/300, `packet_loss_pct` 1/10, `definitions_age_days` 3/7 (antivirus), `password_expiry_days` 14/3 (days left), `startup_seconds` 60/120 (time to the desktop), `logon_seconds` 60/120 (profile load plus sign-in policy), each as `{ warn, crit }` |
 | `[security] require_encryption` | unset | unset: an unencrypted laptop is a warning and a desktop is only noted. `true`: critical on every PC. `false`: only noted |
 | `[security] user_may_be_admin` | `true` | `false` flags a signed-in user who is an administrator of the PC |
+| `[security] crl_warn_hours` | `24` | warn when a machine certificate's revocation list expires within this many hours |
+| `[audit] event_log` | `true` | copy each audit line to the Windows event log or syslog. Only a managed profile can turn it off |
 | `[privacy] redact_serial` | `false` | show REDACTED for the serial number (also `--redact-serial`) |
 | `[updates] windows_update_drivers` | `"auto"` | `"always"` installs Windows Update drivers after the OEM tool too |
 | `[updates] suspend_bitlocker` | `true` | before the manufacturer's tool runs, BitLocker is suspended for one restart, so a BIOS update doesn't leave the PC asking for its recovery key; if protection is on and can't be suspended, nothing is installed. `false` leaves BitLocker to the tool |
 | `[updates] notify` | `true` | a tag in the header when a newer ITriage is out: one request a day to GitHub, nothing downloaded. Also off whenever `public_probes` is off |
 | `[cleanup] temp_min_age_hours` | `24` | temp files changed more recently are kept |
-| `[history] keep` | `100` | saved runs kept; `0` keeps them all |
+| `[history] keep` | `100` | saved runs kept; `0` keeps them all. Watch captures aren't counted: they have their own limits below |
+| `[status] url`, `timeout_ms` | none, `2000` | the site's [incident feed](#known-incidents), `https://` only. Only a managed profile's counts |
+| `[advanced] watch` | `false` | [watch mode](#watch-mode): save a capture by itself when something goes wrong |
+| `[advanced] watch_max_mb`, `watch_keep_days` | `200`, `7` | how much disk watch captures may use, and how long they're kept |
+| `[advanced] watch_triggers` | `["cpu", "gateway_loss", "app_paths", "app_hang"]` | what makes watch mode save a capture |
 | `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
 | `[[require.service]]`, `[[require.app]]`, `[[require.endpoint]]`, `[[require.device]]` | none | what this machine must have |
 | `[[kb]]` | none | knowledge-base links for matching findings |
@@ -457,7 +469,14 @@ profile can switch fixes off but never define new commands. Before running,
 the policy (and remote-safe mode) is checked again in the engine, whatever the
 UI showed. Every attempt, allowed, refused or failed, is written to the audit
 log (`audit.jsonl` in the app's state folder) **and** to the Windows
-Application event log (source `itriage`) or syslog. After a fix runs, the
+Application event log (source `itriage`, registered by the installers) or
+syslog: event 1100 when a fix succeeds, 1101 when it fails, and 1102 when the
+policy or remote-safe mode refused it (1000 is a run, 1001 a module that
+changed the machine). Each event's last line carries the ticket, the account
+and whether it ran elevated. Each line of `audit.jsonl` holds the SHA-256 of
+the line before it, so `itriage --verify-audit` finds a line that was edited,
+removed or slipped in. `--fix ID --what-if` (and the confirmation dialog) says
+what a fix would do on this PC before it runs. After a fix runs, the
 module re-checks itself so you see whether it worked. A fix never repeats a
 change, though: on a module that changes the machine, a preview is refreshed
 as a preview and the results of a real run stay as they were, and the engine
@@ -478,6 +497,10 @@ turns any re-check of such a module into a preview whatever the UI asks for.
 | Remove saved credentials | credentials are saved under the signed-in account's name | removes those entries from Credential Manager; other accounts' are left alone | n/a | |
 | Sign out the session | the same person has a disconnected session on the PC | signs that session out, and only if it's still disconnected | n/a | ✔ |
 | Unlock the account | the account is locked out | clears the lockout on the domain controller (or the PC, for a local account) | resets the `faillock` count | ✔ |
+| Clear Kerberos tickets | the TGT is missing or expired, or a server rejected a ticket | `klist purge` through LSA, for the session ITriage runs in; refused when elevated or another user's | `kdestroy`; refused as root | |
+| Clear Teams cache | beside the new Teams cache size | empties `AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams` for the person at the console, as Microsoft's article describes; refused while Teams runs in their session | n/a | |
+| Keep USB devices awake | USB selective suspend is on, and the profile's `fixes` list names `keep-usb-awake` (it's opt-in: with no list it isn't offered) | turns selective suspend off in the active power plan, plugged in and on battery, after saving what it was; refused when a policy sets it | n/a | ✔ |
+| Restore USB power | Keep USB devices awake changed the plan | puts the saved selective suspend values back in that plan | n/a | ✔ |
 | Revert tune-up | TCP autotuning & NIC power changed something | puts TCP autotuning and the adapters' sleep settings back as they were (locked by remote-safe) | n/a | ✔ |
 
 Targets are validated before use (a service name, a Windows Update ID, one of
@@ -485,6 +508,57 @@ the known OEM tool IDs, a session number, an account name), and on Linux every
 privileged command is an argument array passed to `pkexec`, never a shell
 string. Fixes that install something, or act on someone's sign-in, are for
 technicians: the self-service view never offers them.
+
+## Known incidents
+
+During an outage every technician troubleshoots their own caller from
+scratch. With `[status] url` in a **managed** profile (a user's own profile
+can't add a banner in front of a technician), each run fetches the site's
+incident feed once, over HTTPS, with a short timeout:
+
+```json
+{ "updated": "2026-11-12T13:05:00Z",
+  "incidents": [ { "id": "INC0012345", "title": "VPN gateway outage",
+    "module": "net.target", "match": "vpn\\.example\\.org",
+    "subnets": ["10.20.0.0/16"], "url": "https://status.example.org/INC0012345" } ] }
+```
+
+An incident matches when everything it names holds. That means a finding in
+`module` (any module, if it's left out) whose label, value or detail matches
+`match`, a case-insensitive regular expression. It also means an address of
+this PC inside one of `subnets`. One that names neither is site-wide. A match
+puts **Matches a known incident** above everything else in the technician
+view, and a line at the top of the text report and ticket text: attach the
+report to the incident and stop troubleshooting this PC on its own. A feed
+that can't be read is a quiet note in the report, never an error.
+
+## Watch mode
+
+For "it froze around 2 yesterday". With `[advanced] watch = true` in the
+profile and `itriage --install-watch` run once as administrator (audited),
+`itriage --watch` starts at every sign-in as that user. On Windows that's a
+scheduled task for the Users group, below normal priority; on Linux, a systemd
+user unit enabled for everyone. It keeps the last ten minutes of processor,
+memory, disk and network samples in memory and saves a capture to that
+user's run history when:
+
+* `cpu`: the processor stays above the profile's CPU warning band for a minute;
+* `gateway_loss`: the default gateway misses three pings in a row, ten seconds
+  apart (only once it has answered at all, so a gateway that blocks ping isn't
+  "lost");
+* `app_paths`: a `[[require.application]]` server refuses two TCP checks in a
+  row, a minute apart;
+* `app_hang`: Windows logs Application Hang 1002 or Application Error 1000.
+
+A capture is a report like any other: the samples as a recording with a
+marker at the moment it fired, Top processes, Memory usage and Network
+connectivity, and a row saying it was saved automatically and what watch mode
+does and doesn't collect (no screen, keystrokes, files or browsing). It's
+named `…_watch.json`, so the timeline, `--problem-at` and History find it, but
+it's never the run a later one is compared with, and it isn't a trend point.
+There's at most one capture per 15 minutes, and captures past
+`watch_keep_days` or over `watch_max_mb` are removed oldest first; ordinary
+runs are never touched. `itriage --uninstall-watch` removes the task or unit.
 
 ## Run history and compare
 
@@ -583,6 +657,11 @@ itriage [OPTIONS] [MODULE...]
   --compare OLD NEW      Compare two saved reports from the same computer
   --trends               How each measurement has moved over this computer's
                          saved runs (with --json, every point)
+  --verify-audit [PATH]  Check the audit log's hash chain
+  --watch                Watch unattended and save a capture when something
+                         goes wrong (needs [advanced] watch = true)
+  --install-watch        Start --watch at every sign-in (administrator/root)
+  --uninstall-watch      Remove that again
 ```
 
 Progress goes to stderr and the report to stdout, so `> report.txt` captures
@@ -776,7 +855,7 @@ ITriage/
 │   │   │                       #   wifi, certs, battery
 │   │   ├── security/           # posture: encryption, antivirus, firewall, Secure Boot, admins
 │   │   ├── site/               # required apps, required services + endpoints
-│   │   ├── fixes/              # dns, netrepair, temp, maintenance (the Tune-up modules), undo
+│   │   ├── fixes/              # dns, netrepair, temp, maintenance (the Tune-up modules), undo, usbpower
 │   │   └── update/             # scan, apply, firmware, winget, oem (table-driven), pkgmgr, notice
 │   └── examples/triage.rs      # the command line, for `cargo run --example`
 ├── profiles/                   # example site profiles
@@ -1004,10 +1083,10 @@ Digital Signatures**, or with
 
 ## Verification status
 
-v0.9.0 passed 252 Linux core tests, 249 Windows core tests and 19 browser
+v0.10.0 passed 342 Linux core tests, 339 Windows core tests and 20 browser
 regression tests, along with workspace Clippy, smoke checks and installer
 builds on both platforms. The browser tests use simulated checks and repairs.
-The rows marked 0.9.0 below are what was run for this release; the earlier
+The rows marked 0.10.0 below are what was run for this release; the earlier
 manual checks were performed through v0.7.0, and hardware and domain
 validation remain as noted.
 
@@ -1028,6 +1107,10 @@ validation remain as noted.
 | New in 0.9.0, Linux | the same from the command line, and the desktop app clicked through under a virtual display against the real engine: the filter, the two new checks and the timeline run from it, the Timeline dialog, a recording with a marker typed and entered, and its Replay | working |
 | New in 0.9.0, interface | 19 browser tests against simulated checks; the checks filter measured in all nine themes at five window sizes (one line, no sideways scroll, no console errors); the dialogs screenshotted at laptop and narrow sizes | working |
 | New in 0.9.0, not yet run | **start times on a desktop edition of Windows**: a server keeps no Diagnostics-Performance log, so reading events 100 to 110 has only been tested against sample events written from Microsoft's layout. The same goes for **Windows Installer, servicing and restart rows** in the timeline (none occurred on the runner), **Wi-Fi and 802.1X events, signal and access-point moves** in a recording (no Wi-Fi in CI), a profile with **OneDrive Files On-Demand** (cloud-only files should count as nothing), and the startup-apps list for a **standard user** | ⚠ next step |
+| New in 0.10.0, Windows CI | `windows-latest` (Windows Server 2025), elevated, workgroup. Run for real in the smoke tests: Policy blocks, Sign-in speed (one sign-in's events found by ActivityID), Throttling & hardware errors (the processor clock through PDH), Outlook, Teams & OneDrive (the AAD log, named from its message), Edge IE mode (Edge's version from its file), Point and Print (Windows' defaults), USB selective suspend (from the power plan), and Wired 802.1X & NAC (service stopped, no 802.1X). Separate runs on the same image registered, read back and removed the watch-mode logon task, and saved watch captures for a real Application Error 1000 and a busy processor; a gateway that never answers ping saved none. Field names for the new event checks come from each provider's manifest, read there | passing |
+| New in 0.10.0, Linux | watch mode run end to end (a busy processor saved a capture); `desk.domain` run as root against SSSD pointed at an unreachable domain controller, with `sssd.conf` at 0644 (critical, the domain read from the file, the keytab read, `adcli`'s "no DC" a warning) and at 0600 (SSSD running; the missing system bus reported as a gap). The `sssctl`, `klist -k` and `adcli` parsers use real output captured on Ubuntu 24.04 | working |
+| New in 0.10.0, interface | 20 browser tests against simulated checks, including a known incident's banner (first, escaped, linking its status page) and fix previews in the confirmation dialog | working |
+| New in 0.10.0, not yet run | on a **desktop edition of Windows with a real user**: Outlook, OneDrive and Teams, Click-to-Run; an **IE mode site list and Point and Print set by GPO**; **changing the power plan** (Keep USB devices awake); **device notifications with a real scanner** unplugged mid-recording; a real **802.1X success or failure** and a **NAC quarantine**; **Kerberos tickets and certificate revocation on a domain**; the **ASR, AppLocker, App Control and WHEA** events (tested against events written from their manifests); **watch mode starting at an actual sign-in**; `realm list` on a **joined Linux machine** | ⚠ next step |
 | Account checks on a domain; the new fixes | **not yet run**: no test machine was joined to a domain, and Remove saved credentials, Sign out the session, Unlock and Revert tune-up's restore step were never run against real state. Nor was anything run as a standard user on Windows (CI is elevated) or under Constrained Language mode | ⚠ next step |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 

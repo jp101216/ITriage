@@ -255,6 +255,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::net::target::DestinationTest),
         Box::new(crate::investigate::applications::ApplicationConnections),
         Box::new(crate::investigate::wireless::WirelessAuthentication),
+        Box::new(crate::triage::wired::WiredAuthentication),
         // --- Event log ---
         Box::new(crate::triage::eventlog::RecentErrors),
         // --- Workstation (service desk) ---
@@ -264,6 +265,8 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::desk::account::SignInAccount),
         Box::new(crate::investigate::identity::IdentityHealth),
         Box::new(crate::desk::printers::Printers),
+        Box::new(crate::desk::m365::Microsoft365),
+        Box::new(crate::desk::browser::EdgeSiteList),
         Box::new(crate::desk::devices::Devices),
         Box::new(crate::desk::wifi::WifiVpn),
         Box::new(crate::desk::certs::MachineCerts),
@@ -329,10 +332,10 @@ pub const PRESETS: &[Preset] = &[
         id: "triage",
         title: "Slowness triage",
         script: "Invoke-NetTriage",
-        description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, the site's servers, and a destination if you give one. Changes nothing.",
+        description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, wired 802.1X and NAC, the site's servers, and a destination if you give one. Changes nothing.",
         modules: &[
             "system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency",
-            "net.proxy", "net.target", "desk.wifi", "site.checks",
+            "net.proxy", "net.target", "desk.wifi", "net.wired-auth", "site.checks",
         ],
     },
     Preset {
@@ -377,7 +380,7 @@ pub fn preset(id: &str) -> Option<&'static Preset> {
 /// and anything else that wants a blocking run without event streaming.
 pub fn run_selected(ids: &[String], ctx: &RunContext) -> Vec<ModuleResult> {
     let mut results = Vec::new();
-    for m in registry().iter().filter(|m| ids.iter().any(|id| *id == m.info().id)) {
+    for m in registry().iter().filter(|m| ids.contains(&m.info().id)) {
         if ctx.cancelled() {
             break;
         }

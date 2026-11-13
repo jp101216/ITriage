@@ -40,6 +40,12 @@ fixes = [
   "logoff-session",
   "unlock-account",
   "revert-tuneup",
+  "clear-teams-cache",
+  # Opt-in: turns USB selective suspend off so idle scanners and badge
+  # readers stay connected, at some cost in battery. It's only offered when
+  # it's listed here, even in a profile with no fixes list at all.
+  # "keep-usb-awake",
+  "restore-usb-power",
 ]
 # Open in the simple self-service view. Set technician_view = false to keep
 # the app in self-service mode (a kiosk for end users).
@@ -69,6 +75,9 @@ tcp_probe = "ehr-gateway.example.org:443"
 # tcp_timeout_ms = 1500                 # per TCP check, across all its addresses
 # ping_count = 4
 # ping_timeout_ms = 1000
+# The subnets NAC (ISE, ClearPass) uses for its remediation VLAN. A wired
+# address inside one is critical: the PC failed a posture check.
+# quarantine_subnets = ["10.250.0.0/16"]
 
 # Alert levels, as { warn, crit }. These are Invoke-NetTriage's defaults;
 # uncomment a line to change it. Disk free and Wi-Fi signal: lower is worse.
@@ -112,6 +121,21 @@ temp_min_age_hours = 24
 [history]
 # Saved runs kept on this PC (0 keeps every run).
 keep = 100
+
+# The site's incident feed: runs that match an open incident say so first.
+# Only honoured from the managed profile, over HTTPS.
+# [status]
+# url = "https://itstatus.example.org/itriage.json"
+# timeout_ms = 2000
+
+# Watch mode: save a capture by itself when the PC misbehaves. Off unless
+# turned on here; "itriage --install-watch" (as administrator) starts it at
+# each sign-in.
+# [advanced]
+# watch = true
+# watch_max_mb = 200
+# watch_keep_days = 7
+# watch_triggers = ["cpu", "gateway_loss", "app_paths", "app_hang"]
 
 [ui]
 # The technician console's default theme: red (the default), amber, phosphor,

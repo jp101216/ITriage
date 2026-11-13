@@ -39,7 +39,12 @@ pub struct Profile {
     pub security: SecuritySettings,
     pub cleanup: CleanupSettings,
     pub history: HistorySettings,
+    pub audit: AuditSettings,
     pub ui: UiSettings,
+    /// The site's incident feed (honoured from a managed profile only).
+    pub status: StatusSettings,
+    /// Watch mode (off unless the profile turns it on).
+    pub advanced: AdvancedSettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
 }
@@ -134,6 +139,9 @@ pub struct NetworkSettings {
     pub ping_count: u32,
     /// Timeout for each echo.
     pub ping_timeout_ms: u64,
+    /// Subnets a NAC system uses for its remediation VLAN
+    /// (`["10.250.0.0/16"]`). A wired address inside one is critical.
+    pub quarantine_subnets: Vec<String>,
 }
 
 impl Default for NetworkSettings {
@@ -147,6 +155,7 @@ impl Default for NetworkSettings {
             tcp_timeout_ms: 1500,
             ping_count: 4,
             ping_timeout_ms: 1000,
+            quarantine_subnets: Vec::new(),
         }
     }
 }
@@ -305,11 +314,14 @@ pub struct SecuritySettings {
     pub require_encryption: Option<bool>,
     /// `false` flags a signed-in user who is an administrator of the PC.
     pub user_may_be_admin: bool,
+    /// Warn when a machine certificate's revocation list expires within
+    /// this many hours (unless the CA publishes a new one first).
+    pub crl_warn_hours: u32,
 }
 
 impl Default for SecuritySettings {
     fn default() -> Self {
-        Self { require_encryption: None, user_may_be_admin: true }
+        Self { require_encryption: None, user_may_be_admin: true, crl_warn_hours: 24 }
     }
 }
 
@@ -334,6 +346,21 @@ pub struct CleanupSettings {
 impl Default for CleanupSettings {
     fn default() -> Self {
         Self { temp_min_age_hours: 24 }
+    }
+}
+
+/// The audit trail. The local file is always written.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AuditSettings {
+    /// Copy each audit line to the Windows Application event log or syslog,
+    /// for WEF and SIEM collection. Only a managed profile can turn it off.
+    pub event_log: bool,
+}
+
+impl Default for AuditSettings {
+    fn default() -> Self {
+        Self { event_log: true }
     }
 }
 
@@ -407,6 +434,45 @@ pub struct KbRule {
     pub url: String,
 }
 
+/// `[status]`: where the site publishes its open incidents.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatusSettings {
+    /// An `https://` URL of the JSON feed. Only a managed profile's counts.
+    pub url: Option<String>,
+    pub timeout_ms: u64,
+}
+
+impl Default for StatusSettings {
+    fn default() -> Self {
+        Self { url: None, timeout_ms: 2000 }
+    }
+}
+
+/// `[advanced]`: unattended watch mode.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvancedSettings {
+    pub watch: bool,
+    /// Disk the saved captures may use, in MB.
+    pub watch_max_mb: u64,
+    /// Captures older than this are removed.
+    pub watch_keep_days: u64,
+    /// "cpu", "gateway_loss", "app_paths", "app_hang".
+    pub watch_triggers: Vec<String>,
+}
+
+impl Default for AdvancedSettings {
+    fn default() -> Self {
+        Self {
+            watch: false,
+            watch_max_mb: 200,
+            watch_keep_days: 7,
+            watch_triggers: ["cpu", "gateway_loss", "app_paths", "app_hang"].map(String::from).to_vec(),
+        }
+    }
+}
+
 /// What the UI needs to know about the active profile.
 #[derive(Debug, Clone, Serialize)]
 pub struct ProfileStatus {
@@ -461,9 +527,10 @@ fn load_from(managed: Option<PathBuf>, trusted: impl Fn(&Path) -> Result<(), Str
         }
     }
     let mut found = load_unmanaged();
-    if found.status.error.is_none() {
-        found.status.error = ignored;
-    }
+    found.status.error = match (found.status.error.take(), ignored) {
+        (Some(own), Some(ignored)) => Some(format!("{own} {ignored}")),
+        (own, ignored) => own.or(ignored),
+    };
     found
 }
 
@@ -556,7 +623,7 @@ impl Profile {
             return false;
         }
         let Some(list) = &self.policy.fixes else {
-            return true;
+            return !crate::actions::OPT_IN.iter().any(|o| o.eq_ignore_ascii_case(id));
         };
         list.iter().map(|e| e.trim()).any(|entry| match entry.split_once(':') {
             None => entry.eq_ignore_ascii_case(id),
@@ -681,6 +748,16 @@ mod tests {
     }
 
     #[test]
+    fn opt_in_fixes_need_naming() {
+        let open = Profile::default();
+        assert!(open.fix_allowed("restart-spooler", None), "no list: everything ordinary is allowed");
+        assert!(!open.fix_allowed("keep-usb-awake", None), "but not an opt-in fix");
+        assert!(open.fix_allowed("restore-usb-power", None), "putting things back isn't opt-in");
+        let listed = Profile::from_toml("[policy]\nfixes = [\"Keep-USB-Awake\"]\n").unwrap();
+        assert!(listed.fix_allowed("keep-usb-awake", None));
+    }
+
+    #[test]
     fn policy_blocks_modules() {
         let p = Profile::from_toml(EXAMPLE).unwrap();
         assert!(p.block_reason(&info("update.apply", true)).is_some());
@@ -765,7 +842,11 @@ mod tests {
         let old = Profile::from_toml("[thresholds]\nstartup_seconds = { warn = 45, crit = 90 }\n[security]\nuser_may_be_admin = false\n").unwrap();
         assert_eq!(old.thresholds.startup_seconds, Band::new(45.0, 90.0));
         assert_eq!(old.thresholds.logon_seconds, Band::new(60.0, 120.0));
-        let tuned = Profile::from_toml("[thresholds]\nlogon_seconds = { warn = 30, crit = 60 }").unwrap();
+        assert_eq!(old.security.crl_warn_hours, 24);
+        assert!(old.audit.event_log, "the system-log copy is on unless a profile says otherwise");
+        assert!(!old.security.user_may_be_admin, "the keys it had are kept");
+        let tuned = Profile::from_toml("[thresholds]\nlogon_seconds = { warn = 30, crit = 60 }\n[security]\ncrl_warn_hours = 48").unwrap();
+        assert_eq!(tuned.security.crl_warn_hours, 48);
         assert_eq!(tuned.thresholds.logon_seconds.high(45.0), Severity::Warning);
     }
 

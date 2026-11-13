@@ -192,6 +192,12 @@ pub fn interfaces() -> Result<Vec<Interface>, String> {
                 description: a.Description.to_string().unwrap_or_default(),
                 up: a.OperStatus == IfOperStatusUp,
                 loopback: a.IfType == IF_TYPE_SOFTWARE_LOOPBACK,
+                ethernet: {
+                    // IF_TYPE_ETHERNET_CSMACD, but not a VPN or a Hyper-V
+                    // virtual switch port on the host.
+                    let description = a.Description.to_string().unwrap_or_default();
+                    a.IfType == 6 && !crate::parse::net::is_vpn_adapter(&description) && !description.contains("Virtual Ethernet")
+                },
                 addresses,
                 gateways,
                 dns_servers,
@@ -311,16 +317,38 @@ impl Drop for Handle {
 }
 
 /// GET an https:// URL through the system proxy configuration (automatic
-/// proxy on Windows 8.1+, falling back to the WinHTTP default).
+/// proxy on Windows 8.1+, falling back to the WinHTTP default). Text, up to
+/// 64 KiB.
 pub fn http_get(url: &str, timeout: Duration) -> Result<String, String> {
-    let rest = url.strip_prefix("https://").ok_or("only https:// URLs are fetched")?;
+    if !url.starts_with("https://") {
+        return Err("only https:// URLs are fetched".into());
+    }
+    // As before: anything past 64 KiB is left unread, not an error.
+    get(url, timeout, 64 * 1024, true).map(|body| String::from_utf8_lossy(&body).into_owned())
+}
+
+/// GET an http:// or https:// URL the same way, as bytes, reading at most
+/// `max` of them (a certificate revocation list is binary and usually
+/// published over plain HTTP).
+pub fn http_get_bytes(url: &str, timeout: Duration, max: usize) -> Result<Vec<u8>, String> {
+    get(url, timeout, max, false)
+}
+
+fn get(url: &str, timeout: Duration, max: usize, truncate: bool) -> Result<Vec<u8>, String> {
+    let (secure, rest, default_port) = if let Some(r) = url.strip_prefix("https://") {
+        (true, r, 443u16)
+    } else if let Some(r) = url.strip_prefix("http://") {
+        (false, r, 80u16)
+    } else {
+        return Err("only http:// and https:// URLs are fetched".into());
+    };
     let (host, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
     };
     let (host, port) = match host.rsplit_once(':') {
-        Some((h, p)) if p.parse::<u16>().is_ok() => (h, p.parse().unwrap_or(443)),
-        _ => (host, 443),
+        Some((h, p)) if p.parse::<u16>().is_ok() => (h, p.parse().unwrap_or(default_port)),
+        _ => (host, default_port),
     };
     let ms = timeout.as_millis().clamp(500, 60_000) as i32;
     let fail = |what: &str, e: windows::core::Error| crate::win::err(&format!("{host}: {what}"), &e);
@@ -358,7 +386,7 @@ pub fn http_get(url: &str, timeout: Duration) -> Result<String, String> {
             PCWSTR::null(),
             PCWSTR::null(),
             std::ptr::null(),
-            WINHTTP_FLAG_SECURE,
+            if secure { WINHTTP_FLAG_SECURE } else { Default::default() },
         ));
         if request.0.is_null() {
             return Err(format!("{host}: couldn't open the request"));
@@ -381,16 +409,22 @@ pub fn http_get(url: &str, timeout: Duration) -> Result<String, String> {
             return Err(format!("{host} answered HTTP {status}"));
         }
         let mut body = Vec::new();
-        let mut chunk = [0u8; 4096];
+        let mut chunk = [0u8; 8192];
         loop {
             let mut read = 0u32;
             WinHttpReadData(request.0, chunk.as_mut_ptr() as *mut _, chunk.len() as u32, &mut read)
                 .map_err(|e| fail("reading the response", e))?;
-            if read == 0 || body.len() > 64 * 1024 {
+            if read == 0 {
                 break;
             }
             body.extend_from_slice(&chunk[..read as usize]);
+            if body.len() > max {
+                if truncate {
+                    break;
+                }
+                return Err(format!("{host}: the response is larger than {} KiB", max / 1024));
+            }
         }
-        Ok(String::from_utf8_lossy(&body).into_owned())
+        Ok(body)
     }
 }

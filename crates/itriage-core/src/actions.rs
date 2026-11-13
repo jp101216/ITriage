@@ -145,6 +145,42 @@ pub const FIXES: &[FixSpec] = &[
         technician_only: true,
     },
     FixSpec {
+        id: "purge-kerberos-tickets",
+        label: "Clear Kerberos tickets",
+        description: "Removes the Kerberos tickets cached for this sign-in (klist purge). Windows gets new ones the next time each file share, intranet site or app is opened; nothing else changes. It acts on the account ITriage runs as, so run ITriage as the signed-in user, not elevated.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: false,
+    },
+    FixSpec {
+        id: "clear-teams-cache",
+        label: "Clear Teams cache",
+        description: "Empties new Teams' cache folder for the signed-in person, as Microsoft's article on Teams that won't start or sign in describes. Teams has to be quit first; it rebuilds the cache when it next starts. It also deletes Teams' diagnostic logs, so don't use it for missing messages.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: false,
+    },
+    FixSpec {
+        id: "keep-usb-awake",
+        label: "Keep USB devices awake",
+        description: "Turns USB selective suspend off in the active power plan, plugged in and on battery, so Windows stops powering down idle USB devices such as scanners and badge readers. It costs some battery. The old settings are saved first; Restore USB power puts them back. Only offered when the site profile's fixes list names it.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: true,
+    },
+    FixSpec {
+        id: "restore-usb-power",
+        label: "Restore USB power",
+        description: "Puts USB selective suspend back the way it was in the power plan before Keep USB devices awake changed it.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: true,
+    },
+    FixSpec {
         id: "revert-tuneup",
         label: "Revert tune-up",
         description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts.",
@@ -155,6 +191,10 @@ pub const FIXES: &[FixSpec] = &[
     },
 ];
 
+/// Fixes a site has to ask for by name: with no `fixes` list in the
+/// profile they aren't offered or run, though everything else is.
+pub const OPT_IN: &[&str] = &["keep-usb-awake"];
+
 pub fn spec(id: &str) -> Option<&'static FixSpec> {
     FIXES.iter().find(|f| f.id == id)
 }
@@ -162,9 +202,9 @@ pub fn spec(id: &str) -> Option<&'static FixSpec> {
 /// Does this fix need administrator/root rights on this OS?
 pub fn requires_admin(id: &str) -> bool {
     if cfg!(windows) {
-        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart" | "clear-saved-credentials")
+        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart" | "clear-saved-credentials" | "purge-kerberos-tickets" | "clear-teams-cache")
     } else {
-        !matches!(id, "gpupdate" | "flush-dns" | "clear-saved-credentials")
+        !matches!(id, "gpupdate" | "flush-dns" | "clear-saved-credentials" | "purge-kerberos-tickets" | "clear-teams-cache")
     }
 }
 
@@ -228,6 +268,32 @@ pub fn valid_service_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || "_.-@:$".contains(c))
 }
 
+/// What a fix would do here, changing nothing: the preview (what-if) for
+/// one-click fixes. Fixes that act on something countable say how much;
+/// the rest repeat what the confirmation says. The policy is checked the
+/// same way a real run checks it.
+pub fn preview(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool) -> Result<String, String> {
+    let spec = spec(id).ok_or_else(|| format!("Unknown fix `{id}`."))?;
+    if spec.targeted && target.is_none() {
+        return Err(format!("The {} fix needs a target.", spec.label));
+    }
+    let target = if spec.targeted { target } else { None };
+    if let Some(t) = target {
+        validate_target(id, t)?;
+    }
+    if !profile.fix_allowed(id, target) {
+        return Err("Blocked by site policy: this fix isn't allowed on this machine.".into());
+    }
+    if spec.install && !profile.policy.allow_installs {
+        return Err("Blocked by site policy: software is deployed centrally here.".into());
+    }
+    if spec.disruptive && remote_safe {
+        return Err("Remote-safe mode is on: this could drop the remote session or restart the PC.".into());
+    }
+    let specific = imp::preview(id, target);
+    Ok(format!("Preview: {}", specific.unwrap_or_else(|| format!("{}. Nothing was changed.", spec.description.trim_end_matches('.')))))
+}
+
 /// Run a fix: check it exists, validate the target, re-check the site
 /// policy and remote-safe mode, run it, and audit the outcome. Blocking; an
 /// update install can take many minutes.
@@ -257,9 +323,8 @@ pub fn run_for(id: &str, target: Option<&str>, profile: &Profile, remote_safe: b
         None
     };
     if let Some(why) = blocked {
-        let outcome = Err(why.to_string());
-        crate::audit::fix_ran(id, target, &outcome, ticket);
-        return outcome;
+        crate::audit::fix_refused(id, target, why, ticket);
+        return Err(why.to_string());
     }
     let outcome = imp::run(id, target);
     crate::audit::fix_ran(id, target, &outcome, ticket);
@@ -383,7 +448,44 @@ mod imp {
             // No local elevation check: what it needs is the right to unlock
             // users in the directory, which the call itself reports on.
             "unlock-account" => crate::desk::account::unlock_account(target.ok_or("No account named.")?),
+            "purge-kerberos-tickets" => {
+                crate::investigate::identity::require_user_context()?;
+                let before = crate::win::kerberos::tickets().map(|t| t.len()).unwrap_or(0);
+                crate::win::kerberos::purge()?;
+                Ok(format!(
+                    "Cleared {before} Kerberos ticket{} for this sign-in. New ones are fetched as each server is used.",
+                    crate::util::plural(before)
+                ))
+            }
+            "clear-teams-cache" => crate::desk::m365::clear_teams_cache(),
+            "keep-usb-awake" => crate::fixes::usbpower::keep_awake(),
+            "restore-usb-power" => crate::fixes::usbpower::restore(),
             other => Err(format!("Fix `{other}` isn't available on Windows.")),
+        }
+    }
+
+    /// Specifics for a preview, where there's something to count.
+    pub fn preview(id: &str, _target: Option<&str>) -> Option<String> {
+        match id {
+            "purge-kerberos-tickets" => Some(match crate::investigate::identity::require_user_context() {
+                Err(why) => format!("it would refuse: {why} Nothing was changed."),
+                Ok(()) => match crate::win::kerberos::tickets() {
+                    Ok(t) => format!(
+                        "would clear {} Kerberos ticket{} cached for {}. Nothing was changed.",
+                        t.len(),
+                        crate::util::plural(t.len()),
+                        crate::win::session::current_account().unwrap_or_else(|| "this sign-in".into())
+                    ),
+                    Err(e) => format!("couldn't list the tickets to clear ({e}). Nothing was changed."),
+                },
+            }),
+            "clear-teams-cache" => Some(crate::desk::m365::teams_cache_preview()),
+            "keep-usb-awake" => Some(crate::fixes::usbpower::preview()),
+            "restore-usb-power" => Some(match crate::fixes::usbpower::load() {
+                Some(saved) => format!("would put back {}. Nothing was changed.", saved.describe()),
+                None => "nothing is saved to put back. Nothing was changed.".into(),
+            }),
+            _ => None,
         }
     }
 
@@ -438,7 +540,32 @@ mod imp {
             "clear-saved-credentials" => crate::desk::account::clear_saved_credentials(),
             "logoff-session" => crate::desk::account::logoff_session(target.ok_or("No session named.")?),
             "unlock-account" => crate::desk::account::unlock_account(target.ok_or("No account named.")?),
+            "purge-kerberos-tickets" => {
+                crate::investigate::identity::require_user_context()?;
+                if !command_exists("kdestroy") {
+                    return Err("kdestroy isn't installed, so there are no Kerberos tickets to clear.".into());
+                }
+                let out = crate::util::capture(crate::util::cmd("kdestroy"))?;
+                if out.success() {
+                    Ok("Cleared this sign-in's Kerberos tickets (kdestroy). Run kinit, or sign in again, for new ones.".into())
+                } else {
+                    Err(format!("kdestroy failed ({}): {}", exit_label(out.code), first_line(&out.combined())))
+                }
+            }
+            "clear-teams-cache" => Err("New Teams' cache is a Windows thing; on Linux, Teams runs in the browser.".into()),
+            "keep-usb-awake" => crate::fixes::usbpower::keep_awake(),
+            "restore-usb-power" => crate::fixes::usbpower::restore(),
             other => Err(format!("Fix `{other}` isn't available on Linux.")),
+        }
+    }
+
+    pub fn preview(id: &str, _target: Option<&str>) -> Option<String> {
+        match id {
+            "purge-kerberos-tickets" => Some(match crate::investigate::identity::require_user_context() {
+                Err(why) => format!("it would refuse: {why} Nothing was changed."),
+                Ok(()) => "would run kdestroy, which clears this account's Kerberos ticket cache. Nothing was changed.".into(),
+            }),
+            _ => None,
         }
     }
 
@@ -530,6 +657,19 @@ mod tests {
         assert!(run("logoff-session", Some("x"), &open, false).unwrap_err().contains("session number"));
         let locked = Profile::fail_closed();
         assert!(run("unlock-account", Some("jparker"), &locked, false).unwrap_err().contains("policy"));
+    }
+
+    #[test]
+    fn previews_check_the_policy_and_change_nothing() {
+        let open = Profile::default();
+        let said = preview("flush-dns", None, &open, false).unwrap();
+        assert!(said.starts_with("Preview: Clears cached DNS lookups") && said.ends_with("Nothing was changed."), "{said}");
+        assert!(preview("restart-computer", None, &open, true).unwrap_err().contains("Remote-safe"));
+        assert!(preview("flush-dns", None, &Profile::fail_closed(), false).unwrap_err().contains("policy"));
+        assert!(preview("unlock-account", Some("a;b"), &open, false).is_err());
+        assert!(preview("start-service", None, &open, false).unwrap_err().contains("target"), "as a real run would refuse");
+        assert!(preview("purge-kerberos-tickets", None, &open, false).unwrap().contains("Nothing was changed."));
+        assert!(!requires_admin("purge-kerberos-tickets"), "it acts on the user's own tickets");
     }
 
     #[test]

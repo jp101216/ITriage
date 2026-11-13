@@ -2,8 +2,8 @@
 
 use windows::core::PCWSTR;
 use windows::Win32::Devices::DeviceAndDriverInstallation::{
-    CM_Get_DevNode_Status, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo, SetupDiGetClassDevsW,
-    SetupDiGetDeviceRegistryPropertyW, CM_DEVNODE_STATUS_FLAGS, CM_PROB, CR_SUCCESS, DIGCF_ALLCLASSES,
+    CM_Get_DevNode_Status, CM_Get_Device_IDW, CM_Get_Parent, SetupDiDestroyDeviceInfoList, SetupDiEnumDeviceInfo,
+    SetupDiGetClassDevsW, SetupDiGetDeviceInstanceIdW, SetupDiGetDeviceRegistryPropertyW, CM_DEVNODE_STATUS_FLAGS, CM_PROB, CR_SUCCESS, DIGCF_ALLCLASSES,
     DIGCF_PRESENT, DN_HAS_PROBLEM, HDEVINFO, SETUP_DI_REGISTRY_PROPERTY, SPDRP_CLASS, SPDRP_DEVICEDESC,
     SPDRP_FRIENDLYNAME, SPDRP_HARDWAREID, SP_DEVINFO_DATA,
 };
@@ -14,6 +14,11 @@ pub struct Device {
     pub class: String,
     /// Device Manager problem code (the "Code 43" number), if it has one.
     pub problem: Option<u32>,
+    /// `USB\VID_0C2E&PID_0B61\…`, upper case.
+    pub instance_id: String,
+    /// The USB device this one is, or hangs off (a HID scanner's USB
+    /// parent), for its power settings. `None` when it isn't on USB.
+    pub usb: Option<String>,
 }
 
 /// Every device currently present.
@@ -45,15 +50,51 @@ pub fn present() -> Result<Vec<Device>, String> {
             let mut problem = CM_PROB::default();
             let has_problem = CM_Get_DevNode_Status(&mut status, &mut problem, data.DevInst, 0) == CR_SUCCESS
                 && (status.0 & DN_HAS_PROBLEM.0) != 0;
+            let instance_id = instance(set, &data).unwrap_or_default();
             out.push(Device {
                 name,
                 class,
                 problem: has_problem.then_some(problem.0),
+                usb: usb_ancestor(data.DevInst, &instance_id),
+                instance_id,
             });
         }
         let _ = SetupDiDestroyDeviceInfoList(set);
         Ok(out)
     }
+}
+
+unsafe fn instance(set: HDEVINFO, data: &SP_DEVINFO_DATA) -> Option<String> {
+    let mut buf = [0u16; 512];
+    SetupDiGetDeviceInstanceIdW(set, data, Some(&mut buf), None).ok()?;
+    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..end]).to_ascii_uppercase())
+}
+
+/// The nearest device at or above this one whose instance starts `USB\`,
+/// four levels up at most (USB device → composite interface → HID → …).
+unsafe fn usb_ancestor(devinst: u32, own_id: &str) -> Option<String> {
+    if own_id.starts_with("USB\\") {
+        return Some(own_id.to_string());
+    }
+    let mut node = devinst;
+    for _ in 0..4 {
+        let mut parent = 0u32;
+        if CM_Get_Parent(&mut parent, node, 0) != CR_SUCCESS {
+            return None;
+        }
+        let mut buf = [0u16; 512];
+        if CM_Get_Device_IDW(parent, &mut buf, 0) != CR_SUCCESS {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let id = String::from_utf16_lossy(&buf[..end]).to_ascii_uppercase();
+        if id.starts_with("USB\\") {
+            return Some(id);
+        }
+        node = parent;
+    }
+    None
 }
 
 unsafe fn property(set: HDEVINFO, data: &SP_DEVINFO_DATA, prop: SETUP_DI_REGISTRY_PROPERTY) -> Option<String> {

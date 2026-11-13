@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.9.0.
+/* ITriage frontend logic — v0.10.0.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.9.0";
+  const VERSION = "v0.10.0";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -118,16 +118,19 @@
     mod("net.target", "Destination test", "network", "DNS, a TCP connect on each port, the route the PC picks, and ping, for one host you type in (ports default to 443, 80, 445, 3389).", { takes_target: true }),
     mod("net.applications", "Application connections", "network", "Profile-defined application URLs: DNS, direct route, TCP, proxy context, validated TLS and expected HTTP status."),
     mod("net.wifi-auth", "Wi-Fi roaming & network authentication", "network", "Recent Wi-Fi associations, disconnects, 802.1X and certificate-validation events, including wired authentication."),
+    mod("net.wired-auth", "Wired 802.1X & NAC", "network", "The wired 802.1X service, the last day's authentications and failures with their reasons, each wired port's state, and an address in one of the site's NAC quarantine subnets.", WIN),
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
-    mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
+    mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied. On Linux: the realm, SSSD online or offline, the machine account and keytab, and sssd.conf's permissions."),
     mod("desk.logon", "Sign-in speed (Group Policy)", "workstation", "How long the last sign-in spent loading the profile and applying Group Policy, which policy step took the time or failed, and lost contact with the domain controller during policy processing.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
-    mod("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device join and authentication, Windows Hello and affected-user PRT/WAM diagnostic status. Reads no tokens.", WIN),
-    mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
-    mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, plus devices the site profile requires."),
+    mod("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."),
+    mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, label printers, and Point and Print: who may install drivers, the approved print servers, and drivers protected print mode won't load."),
+    mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, devices the site profile requires, and USB power saving (selective suspend) that makes idle scanners drop out."),
+    mod("desk.m365", "Outlook, Teams & OneDrive", "workstation", "Outlook data files against their size limit, the Microsoft 365 Apps version and update channel, Desktop and Documents in OneDrive without OneDrive running, the Teams cache, and Entra sign-in broker errors.", WIN),
+    mod("desk.browser", "Edge IE mode site list", "workstation", "Whether Edge's Internet Explorer mode is set up, whether its Enterprise Mode Site List can be fetched and read, and which of the site's application URLs (and the target) open in IE mode.", WIN),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
-    mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN) and when they expire. Warns 14 days out.", WIN),
+    mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN), when they expire (warns 14 days out), and whether their revocation lists are reachable and current.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),
     mod("sec.posture", "Security posture", "security", "Disk encryption, antivirus and how old its definitions are, the firewall, Secure Boot, the TPM, and who is an administrator of this PC."),
     mod("sec.blocks", "Policy blocks", "security", "Which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules, Controlled folder access, antivirus detections, AppLocker and App Control (WDAC)."),
@@ -167,8 +170,8 @@
   /** Ready-made selections (mirrors itriage-core::module::PRESETS). */
   const PRESET_CATALOGUE = [
     { id: "triage", title: "Slowness triage", script: "Invoke-NetTriage",
-      description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, the site's servers, and a destination if you give one. Changes nothing.",
-      modules: ["system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency", "net.proxy", "net.target", "desk.wifi", "site.checks"] },
+      description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, wired 802.1X and NAC, the site's servers, and a destination if you give one. Changes nothing.",
+      modules: ["system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency", "net.proxy", "net.target", "desk.wifi", "net.wired-auth", "site.checks"] },
     { id: "tuneup", title: "Tune-up", script: "Invoke-EndpointTuneUp",
       description: "DNS, address caches, TCP and adapter power, network stack and adapters, temp files, drive optimisation, Group Policy and Configuration Manager. Recycle Bin, system file repair and restart stay opt-in.",
       modules: ["fix.dns", "fix.netcache", "fix.tcp", "fix.netstack", "fix.adapters", "fix.temp", "fix.optimize", "fix.gpupdate", "fix.sccm"] },
@@ -212,6 +215,7 @@
     "system.changes": "CHG-LOG", "net.applications": "APP-CON", "net.wifi-auth": "NET-AUT", "desk.identity": "ID-SSO",
     "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
     "sec.blocks": "SEC-BLK", "desk.logon": "LOG-GPO", "system.hardware": "HW-THR",
+    "desk.m365": "M365-APP", "desk.browser": "EDGE-IEM", "net.wired-auth": "NAC-8021X",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -229,6 +233,7 @@
     "system.changes": I.trend, "net.applications": I.globe, "net.wifi-auth": I.wifi, "desk.identity": I.key,
     "system.storage": I.layers, "system.startup": I.power,
     "sec.blocks": I.shield, "desk.logon": I.domain, "system.hardware": I.chip,
+    "desk.m365": I.apps, "desk.browser": I.globe, "net.wired-auth": I.nic,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -257,6 +262,14 @@
       description: "Signs out this person's disconnected session on this PC. Programs still open in it are closed, and unsaved work in it is lost." },
     { id: "unlock-account", label: "Unlock the account", requires_admin: true, disruptive: false, technician_only: true,
       description: "Clears the account's lockout. It needs an account that's allowed to unlock users. If something is still using the old password, the account locks again." },
+    { id: "purge-kerberos-tickets", label: "Clear Kerberos tickets", requires_admin: false, disruptive: false,
+      description: "Removes the Kerberos tickets cached for this sign-in (klist purge). Windows gets new ones the next time each file share, intranet site or app is opened; nothing else changes. It acts on the account ITriage runs as, so run ITriage as the signed-in user, not elevated." },
+    { id: "clear-teams-cache", label: "Clear Teams cache", requires_admin: false, disruptive: false,
+      description: "Empties new Teams' cache folder for the signed-in person, as Microsoft's article on Teams that won't start or sign in describes. Teams has to be quit first; it rebuilds the cache when it next starts. It also deletes Teams' diagnostic logs, so don't use it for missing messages." },
+    { id: "keep-usb-awake", label: "Keep USB devices awake", requires_admin: true, disruptive: false, technician_only: true,
+      description: "Turns USB selective suspend off in the active power plan, plugged in and on battery, so Windows stops powering down idle USB devices such as scanners and badge readers. It costs some battery. The old settings are saved first; Restore USB power puts them back. Only offered when the site profile's fixes list names it." },
+    { id: "restore-usb-power", label: "Restore USB power", requires_admin: true, disruptive: false, technician_only: true,
+      description: "Puts USB selective suspend back the way it was in the power plan before Keep USB devices awake changed it." },
     { id: "revert-tuneup", label: "Revert tune-up", requires_admin: true, disruptive: true, technician_only: true,
       description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts." },
   ];
@@ -292,7 +305,7 @@
   };
   const MOCK_FIXES = ["restart-spooler", "clear-print-queue", "resync-time", "gpupdate", "flush-dns", "start-service:Spooler", "start-service:W32Time",
     "restart-computer", "cancel-restart", "install-oem-tool", "install-update",
-    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup"];
+    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup", "clear-teams-cache", "keep-usb-awake"];
   const MOCK_PROFILE = {
     source: "managed",
     path: "C:\\ProgramData\\itriage\\profile.toml",
@@ -341,6 +354,12 @@
       F("Interpretation", "A nearby change is a possible temporal link. Confirm the failure's onset and the affected component before deciding it caused the problem."),
     ]),
     "net.applications": R("net.applications", "Application connections", "network", "1 application (sample)", 15, [F("Clinical portal · DNS", "1 address", "ok"),F("Clinical portal · HTTP", "HTTP 401 · first response 142 ms", "ok", "Expected [200, 401]. Authentication response is expected for an unauthenticated health probe."),F("Clinical portal · TLS", "Certificate chain and host name accepted", "ok")]),
+    "net.wired-auth": R("net.wired-auth", "Wired 802.1X & NAC", "network", "Wired 802.1X: authenticated as host/WS-07.corp.example.org 12m ago, after 2 failures in 24 h", 180, [
+      F("Wired AutoConfig service", "running", "ok"),
+      F("Wired 802.1X", "authenticated as host/WS-07.corp.example.org 12m ago, after 2 failures in 24 h", "warning",
+        "Last failure: 2026-11-10T13:58:02Z UTC, The authenticator is no longer present.", { metric: M(2, "failures") }),
+      F("Ethernet: 802.1X", "Authenticated"),
+    ]),
     "net.wifi-auth": R("net.wifi-auth", "Wi-Fi roaming & network authentication", "network", "5 recent network-authentication event(s)", 240, [
       F("Wireless session history (collected events)", "2 successful association(s), 1 disconnect(s), 1 failure(s)", "warning", "An association or a disconnect alone does not prove a roam or a fault. Compare access-point identifiers and the problem's time."),
       F("2026-11-10T16:57:09Z · Wi-Fi 8001", "WLAN AutoConfig service has successfully connected to a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ConnectionMode: Automatic connection with a profile · ProfileName: CORP · SSID: CORP"),
@@ -349,7 +368,15 @@
       F("2026-11-10T14:02:41Z · Wi-Fi 8001", "WLAN AutoConfig service has successfully connected to a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ProfileName: CORP · SSID: CORP"),
       F("Collection scope", "Up to 40 recent events per channel from the last 24 hours (certificate events: failures only); only 80 event rows are summarized. Existing logs only. A disabled or inaccessible channel is a gap, not a successful authentication check."),
     ]),
-    "desk.identity": R("desk.identity", "Entra & Microsoft 365 sign-in", "workstation", "Device identity (sample)", 10, [F("Device join", "Microsoft Entra hybrid joined"),F("Entra device authentication", "device is present and enabled", "ok"),F("User SSO checks", "not graded in an elevated or different-user context", "info", "Run without elevation as the affected user for PRT/WAM status.")]),
+    "desk.identity": R("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device identity and SSO diagnostic status · Kerberos TGT valid until 22:20 UTC", 10, [
+      F("Device join", "Microsoft Entra hybrid joined"),
+      F("Entra device authentication", "device is present and enabled", "ok"),
+      F("User SSO checks", "not graded in an elevated or different-user context", "info", "Run without elevation as the affected user for PRT/WAM status."),
+      F("Kerberos TGT", "valid until 22:20 UTC (another 7h)", "ok", "krbtgt/CORP.EXAMPLE.ORG for jparker@CORP.EXAMPLE.ORG · renewable until 2026-11-19T08:01:11Z UTC"),
+      F("Kerberos service tickets", "9 cached", "info", "cifs/fs01.corp.example.org, HTTP/intranet.corp.example.org, LDAP/DC01.corp.example.org, MSSQLSvc/oldsql.corp.example.org:1433"),
+      F("Kerberos RC4 tickets", "1 ticket: MSSQLSvc/oldsql.corp.example.org:1433", "warning", "Microsoft is removing RC4 from Kerberos on domain controllers; these services (or their accounts) still only offer it, and will stop working when it goes. Their owners need AES enabled on the service account (msDS-SupportedEncryptionTypes)."),
+      F("Kerberos KDC", "DC01.corp.example.org"),
+    ]),
     "system.storage": R("system.storage", "What's using the space", "system", "Biggest: C:\\Users\\jparker\\Downloads · 96.4 GB", 14180, [
       F("C:\\ in use", "469.7 GB of 476.9 GB (98%)"),
       F("C:\\Users\\jparker (whole profile)", "241.8 GB · 51% of what's in use"),
@@ -483,6 +510,9 @@
       F("Specimen labels (label printer)", "ready", "ok", "ZDesigner ZD421-203dpi ZPL · port USB001"),
       F("Default printer", "Ward 4 LaserJet"),
       F("Software printers (PDF, XPS, OneNote, fax)", "3"),
+      F("Printer driver installs", "administrators only (Windows' default since 2021)", "info", "Standard users can connect to a shared printer only if its driver is already installed or comes from an approved package server."),
+      F("Approved package print servers", "prn01.corp.example.org"),
+      F("Print server PRN09.corp.example.org", "not on the approved list", "warning", "Ward 4 LaserJet comes from PRN09.corp.example.org. A standard user connecting to it needs an administrator to install its driver."),
     ]),
     "desk.devices": R("desk.devices", "Devices & peripherals", "workstation", "214 devices · 1 with driver problem", 310, [
       F("USB Composite Device (USB)", "Code 43: stopped after reporting problems (Code 43)", "warning"),
@@ -491,6 +521,9 @@
       F("Microphones", "Microphone (Nuance PowerMic III), Microphone (Realtek(R) Audio)"),
       F("Cameras", "Integrated Webcam"),
       F("Smart card readers", "Microsoft Usbccid Smartcard Reader (WUDF)"),
+      F("USB selective suspend", "on plugged in · on on battery", "info", "Windows powers down an idle USB device to save energy. When a scanner or badge reader stops responding after sitting idle and works again once replugged, this is the usual cause; a Record capture marks each drop.",
+        { action: A("keep-usb-awake") }),
+      F("Badge reader: USB power", "selective suspend on · idle power-down (D3) on", "info", "RFIDeas pcProx USB's own settings, from its driver (Device Parameters)."),
     ]),
     "desk.wifi": R("desk.wifi", "Wi-Fi & VPN", "workstation", "Wi-Fi Clinical-Secure, signal weak · VPN: Client running - tunnel unverified - Zscaler", 35, [
       F("Network", "Clinical-Secure", "ok", "Intel(R) Wi-Fi 6E AX211 160MHz"),
@@ -506,6 +539,8 @@
     "desk.certs": R("desk.certs", "Machine certificates", "workstation", "1 machine certificate expired or expiring within 14 days", 12, [
       F("WS-FLINT-07.corp.example.org", "expires in 9 days · 2026-11-15", "warning", "Issued by Example Issuing CA 2 · has a private key"),
       F("WS-FLINT-07", "valid for 301 more days · 2027-09-03", "ok", "Issued by Example Device CA · has a private key"),
+      F("Revocation: WS-FLINT-07.corp.example.org", "CRL current until 2026-11-13 09:00 UTC · chain check: passed", "ok",
+        "CRL http://pki.corp.example.org/CertEnroll/Example%20Issuing%20CA%202.crl: fetched; issued 2026-11-10 09:00 UTC, next update 2026-11-13 09:00 UTC · CRL ldap:///CN=Example%20Issuing%20CA%202,CN=PKI01,CN=CDP: LDAP, checked by the chain build only · OCSP http://ocsp.corp.example.org/ocsp: listed, not queried"),
     ]),
     "desk.battery": R("desk.battery", "Battery health", "workstation", "Battery wearing: 76% of design capacity left", 1840, [
       F("Charge", "86% · on AC power", "ok"),
@@ -530,6 +565,24 @@
       F("Policy step failed: Group Policy Drive Maps", "error 2 · 2.0 s", "critical", "Event 7016 (failed) or 6016 (warning) in the Group Policy log. Run gpresult /h on this PC for that extension's details."),
       F("Group Policy objects", "12 applied · 3 filtered out"),
       F("Computer policy at startup", "12.0 s · 2d ago", "info", null, { metric: M(12, "s") }),
+    ]),
+    "desk.m365": R("desk.m365", "Outlook, Teams & OneDrive", "workstation", "2 Microsoft 365 findings need attention", 2140, [
+      F("Outlook data file: jparker@corp.example.org.ost", "48.6 GB · 97% of the 50.0 GB limit: past Outlook's warning size", "warning",
+        "C:\\Users\\jparker\\AppData\\Local\\Microsoft\\Outlook\\jparker@corp.example.org.ost · limit 51200 MB, warning at 48640 MB (Outlook's defaults)", { metric: M(48.6, "GB") }),
+      F("Microsoft 365 Apps", "16.0.19127.20264 · Monthly Enterprise Channel · x64"),
+      F("OneDrive folder backup", "Desktop, Documents are in OneDrive, but OneDrive isn't running", "warning",
+        "Nothing in them is syncing, so it isn't backed up and other devices don't see it. Start OneDrive from the Start menu and sign in. OneDrive folder: C:\\Users\\jparker\\OneDrive - Contoso Health"),
+      F("Teams cache", "612 MB", "info", "Clearing it is Microsoft's fix when Teams won't start, sign in or update. It's not for missing messages or chats: it deletes the logs needed to find out why.",
+        { action: A("clear-teams-cache"), metric: M(612, "MB") }),
+      F("Entra sign-in errors (24 h)", "3 errors · last 2h ago", "info",
+        "Most common: 0xCAA2000C The request requires user interaction.. Microsoft-Windows-AAD/Operational, last at 2026-11-10T14:12:40Z UTC. A few a day is normal; many in a row, with Outlook or Teams asking for the password again and again, is the broken sign-in token Microsoft's article covers.",
+        { kb: K("Troubleshoot primary refresh token issues (Microsoft)", "https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-primary-refresh-token") }),
+    ]),
+    "desk.browser": R("desk.browser", "Edge IE mode site list", "workstation", "1 IE mode finding needs attention", 640, [
+      F("IE integration", "Internet Explorer mode (computer policy)", "ok"),
+      F("Enterprise site list", "can't be fetched: intranet.example.org answered HTTP 404", "warning",
+        "https://intranet.example.org/edge/sites.xml (computer policy). Edge keeps using the copy it downloaded last, so sites that already worked still do, but changes to the list won't arrive. edge://compat/enterprise shows what Edge itself has."),
+      F("Microsoft Edge", "142.0.3595.53"),
     ]),
     "sec.posture": R("sec.posture", "Security posture", "security", "1 to look at: antivirus definitions", 4180, [
       F("Disk encryption", "C: BitLocker is on (XtsAes256)", "ok"),
@@ -723,6 +776,10 @@
     "clear-saved-credentials": () => "Removed 2 saved credentials: fs01, TERMSRV/rds-clin01. Windows asks for the password the next time each is used.",
     "logoff-session": (t) => `Asked Windows to sign out CORP\\jparker's disconnected session ${t}.`,
     "unlock-account": (t) => `${t} is unlocked. If something is still using the old password, it will lock again: clear the sources the report lists.`,
+    "purge-kerberos-tickets": () => "Cleared 14 Kerberos tickets for this sign-in. New ones are fetched as each server is used.",
+    "clear-teams-cache": () => "Cleared 612 MB of CORP\\jparker's Teams cache. Teams rebuilds it the next time it starts, which takes a little longer than usual.",
+    "keep-usb-awake": () => "Turned USB selective suspend off in the active power plan (it was selective suspend on plugged in, on on battery). USB devices stay powered while idle; Restore USB power puts the old settings back.",
+    "restore-usb-power": () => "Put back selective suspend on plugged in, on on battery in the power plan.",
     "revert-tuneup": () => "Put back the settings from before the tune-up. Wi-Fi: DeviceSleepOnDisconnect, SelectiveSuspend turned back on (applies at the next adapter restart).",
   };
   const MOCK_DIFF = {
@@ -1768,7 +1825,7 @@
       syncRows();
       setDiff(live.diff);
       const first = resultsEl.querySelector(".card");
-      const banners = topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely);
+      const banners = topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely, live.report && live.report.known_incidents);
       banners.forEach((b) => resultsEl.insertBefore(b, first));
       cases.decorate(live.report,resultsEl);
       if (live.diff) applyBadges();
@@ -2006,7 +2063,7 @@
       showEmpty();
       return;
     }
-    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely).forEach((b) => resultsEl.appendChild(b));
+    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely, live.report && live.report.known_incidents).forEach((b) => resultsEl.appendChild(b));
     live.results.forEach((r) => {
       resultsEl.appendChild(buildCard(r, { live: true }));
       lastSev.set(r.module_id, statusOf(r));
@@ -2130,7 +2187,13 @@
     return res;
   }
 
-  function confirmFix(action, f) {
+  async function confirmFix(action, f) {
+    // What it would do on this PC, when the engine can say (a preview
+    // changes nothing). A shell without previews just shows the description.
+    let would = "";
+    if (api.previewFix) {
+      try { would = String(await api.previewFix(action.id, action.target || null, remoteSafe) || ""); } catch (_) { would = ""; }
+    }
     let notice = "";
     if (action.requires_admin && host && !host.elevated) {
       notice = host.platform === "windows"
@@ -2149,6 +2212,7 @@
       title: `${I.bolt} ${esc(action.label)}`,
       body: `
         <p>${esc(fixDescription(action))}</p>
+        ${would && would !== "Preview: " + fixDescription(action).replace(/\.$/, "") + ". Nothing was changed." ? `<p class="fix-preview">${esc(would)}</p>` : ""}
         <ul><li><b>${esc(f.label)}</b>: ${esc(f.value)}</li></ul>
         ${notice}
         <p>It's recorded in the audit log and in ${log}.</p>`,
@@ -2214,8 +2278,29 @@
   const KIND_WORD = { new: "new", resolved: "resolved", changed: "changed", ongoing: "still failing" };
 
   /** The banners above the cards: restart needed, preview, and what changed. */
-  function topBanners(results, diff, label, liveRun, likely) {
-    return [liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), likelyBanner(likely), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  function topBanners(results, diff, label, liveRun, likely, incidents) {
+    return [incidentBanner(incidents), liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), likelyBanner(likely), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  }
+
+  /** "Matches a known incident": the site's incident feed names an outage
+   *  this run's findings (or this PC's subnet) fit. It goes first. */
+  function incidentBanner(incidents) {
+    if (!incidents || !incidents.length) return null;
+    const box = document.createElement("div");
+    box.className = "banner incident";
+    box.innerHTML = `
+      <div class="banner-row">
+        <span class="ttl">${I.alert}Matches a known incident</span>
+        <span class="sub">Attach this report to it and stop troubleshooting this PC on its own.</span>
+      </div>
+      <ol class="likely-list">${incidents
+        .map((k) => `
+          <li>
+            <p class="cause"><b>${esc(k.id)}</b> ${esc(k.title)}${k.url ? ` <a class="kb-link" data-kb href="${esc(k.url)}" target="_blank" rel="noopener noreferrer">${I.book}Status page</a>` : ""}</p>
+            <p class="why"><b>Because</b>${esc(k.because)}</p>
+          </li>`)
+        .join("")}</ol>`;
+    return box;
   }
 
   /** "Likely cause": what the engine's rules make of the findings, each
@@ -2245,7 +2330,7 @@
     if (mode !== "tech" || viewing) return;
     resultsEl.querySelectorAll(":scope > .banner").forEach((b) => b.remove());
     const first = resultsEl.querySelector(".card");
-    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely)
+    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely, live.report && live.report.known_incidents)
       .forEach((b) => resultsEl.insertBefore(b, first));
   }
 
@@ -2416,13 +2501,13 @@
     box.innerHTML = `
       <div class="banner-row">
         <span class="ttl">${source === "file" ? "Opened report" : source === "compare" ? "Comparison" : "Saved run"}</span>
-        <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.ticket ? " · ticket " + esc(report.ticket) : ""}${report.cancelled ? " · cancelled" : ""}</span>
+        <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.ticket ? " · ticket " + esc(report.ticket) : ""}${report.watch ? " · saved by watch mode: " + esc(report.watch) : ""}${report.cancelled ? " · cancelled" : ""}</span>
         <span class="grow"></span>
         <button class="bk-btn xs" type="button" data-x="back">${live.results.length ? "Back to this run" : "Close"}</button>
       </div>`;
     box.querySelector('[data-x="back"]').onclick = renderLive;
     resultsEl.appendChild(box);
-    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false, report.likely).forEach((b) => resultsEl.appendChild(b));
+    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false, report.likely, report.known_incidents).forEach((b) => resultsEl.appendChild(b));
     report.results.forEach((r) => resultsEl.appendChild(buildCard(r, { live: false })));
     cases.decorate(report,resultsEl);
     if (diff) applyBadges();
@@ -2477,7 +2562,7 @@
           <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
             <span class="when">${esc(fmtLocal(m.evidence_updated || m.generated))}${m.evidence_updated ? " · case updated" : ""}</span>
             <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
-            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.cancelled ? " · cancelled" : ""}</span>
+            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.watch ? " · watch: " + esc(m.watch) : ""}${m.cancelled ? " · cancelled" : ""}</span>
           </button>
         </div>`)
       .join("");
@@ -2856,11 +2941,16 @@
   function plainText(report, diff, withLogs) {
     const lines = [`ITriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
     if (report.ticket) lines.push(`Ticket: ${report.ticket}`);
+    if (report.watch) lines.push(`Saved by watch mode: ${report.watch}`);
     lines.push(...caseLines(report));
     if (report.cancelled) lines.push("Run was cancelled before every module finished.");
     if (report.results.some((r) => r.preview)) lines.push("PREVIEW: modules that change the machine only said what they would do.");
     if (report.results.some((r) => r.restart_required && !r.preview)) lines.push("A restart is needed to finish the changes.");
     if (diff) lines.push(diffLine(diff));
+    (report.known_incidents || []).forEach((k) => {
+      lines.push(`MATCHES KNOWN INCIDENT ${k.id}: ${k.title}${k.url ? ` <${k.url}>` : ""}. Attach this report to it.`);
+      lines.push(`  because ${k.because}`);
+    });
     lines.push("=".repeat(52));
     if ((report.likely || []).length) {
       lines.push("LIKELY CAUSE");
@@ -3526,6 +3616,7 @@
         return (outcome && outcome.report.results[0]) || null;
       },
       runFix: (id, target, remoteSafe, ticket) => invoke("run_fix", { id, target, remoteSafe: !!remoteSafe, ticket: ticket || null }),
+      previewFix: (id, target, remoteSafe) => invoke("preview_fix", { id, target, remoteSafe: !!remoteSafe }),
       trends: () => invoke("trends", { hostname: null }),
       likelyCauses: (results) => invoke("likely_causes", { results }),
       checkUpdate: () => invoke("check_update"),
@@ -3867,6 +3958,10 @@
         if (ref) report.ticket = ref;
         const likely = mockLikely(results);
         if (likely.length) report.likely = likely;
+        // A sample incident feed: the ward's weak Wi-Fi is a known outage.
+        const weak = results.find((r) => r.module_id === "desk.wifi" && r.findings.some((f) => f.label === "Signal" && f.severity === "critical"));
+        if (weak) report.known_incidents = [{ id: "INC0048213", title: "Ward 4 wireless access points being replaced", url: "https://status.example.org/INC0048213",
+          because: "Wi-Fi & VPN: Signal: 34% · weak" }];
         const stamp = report.generated.replace(/[-:]/g, "");
         const path = `${HIST_DIR}${stamp}_${host.hostname}${ref ? "_" + ref.replace(/[^A-Za-z0-9-]/g, "_") : ""}.json`;
         saved.set(path, clone(report));
@@ -3891,6 +3986,14 @@
         if (spec.requires_admin && !host.elevated) throw ADMIN_REQUIRED;
         if (!["restart-computer", "cancel-restart"].includes(id)) fixed.add(id + ":" + (target || ""));
         return FIX_MESSAGES[id](target);
+      },
+      previewFix: async (id) => {
+        const counts = {
+          "purge-kerberos-tickets": "Preview: would clear 14 Kerberos tickets cached for CORP\\jparker. Nothing was changed.",
+          "clear-teams-cache": "Preview: would empty C:\\Users\\jparker\\AppData\\Local\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams (612 MB) for CORP\\jparker. Nothing was changed.",
+          "keep-usb-awake": "Preview: would turn USB selective suspend off in the active power plan (now on plugged in, on on battery) and save those values for Restore USB power. Nothing was changed.",
+        };
+        return counts[id] || "";
       },
       listHistory: async () => { await sleep(120); return MOCK_HISTORY.slice(); },
       loadReport: async (path) => {
@@ -3940,7 +4043,7 @@
       }),
       // The preview has no release to compare with; ?update=1 shows the tag.
       checkUpdate: async () => (/[?&]update=1\b/.test(location.search)
-        ? { current: VERSION.slice(1), latest: "0.9.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.9.1", newer: true }
+        ? { current: VERSION.slice(1), latest: "0.10.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.10.1", newer: true }
         : null),
       openLink: async (url) => toast("Preview: this opens " + url),
       openHistoryFolder: async () => toast("Preview: this opens " + HIST_DIR.replace(/\\$/, "")),
