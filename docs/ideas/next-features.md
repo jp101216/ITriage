@@ -12,7 +12,12 @@
 > recording (there's no flight recorder to tag), and `keep-usb-awake` is
 > opt-in: it runs only when the profile's `fixes` list names it. In Phase 4,
 > `net.wired-auth` is always in the triage preset (presets are fixed lists);
-> on a PC with no wired connection it says so in one row.
+> on a PC with no wired connection it says so in one row. In Phase 5, watch
+> mode keeps its own ten-minute ring of samples (there's no flight recorder);
+> a capture is an ordinary report with a recording, marked by a `watch` field
+> and `_watch` in its file name (`Report.role` is already the workstation
+> role); the Application log is polled every 15 s rather than subscribed to;
+> and `app_paths` checks the `[[require.application]]` servers.
 
 Target baseline: ITriage 0.9.0 **with the advanced-features package applied**
 (`ITriage-Claude-Package.zip`). Every idea below was checked against that package

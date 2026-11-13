@@ -449,6 +449,10 @@ Every setting, with its default:
 | `[updates] notify` | `true` | a tag in the header when a newer ITriage is out: one request a day to GitHub, nothing downloaded. Also off whenever `public_probes` is off |
 | `[cleanup] temp_min_age_hours` | `24` | temp files changed more recently are kept |
 | `[history] keep` | `100` | saved runs kept; `0` keeps them all |
+| `[status] url`, `timeout_ms` | none, `2000` | the site's [incident feed](#known-incidents), `https://` only. Only a managed profile's counts |
+| `[advanced] watch` | `false` | [watch mode](#watch-mode): save a capture by itself when something goes wrong |
+| `[advanced] watch_max_mb`, `watch_keep_days` | `200`, `7` | how much disk watch captures may use, and how long they're kept |
+| `[advanced] watch_triggers` | `["cpu", "gateway_loss", "app_paths", "app_hang"]` | what makes watch mode save a capture |
 | `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
 | `[[require.service]]`, `[[require.app]]`, `[[require.endpoint]]`, `[[require.device]]` | none | what this machine must have |
 | `[[kb]]` | none | knowledge-base links for matching findings |
@@ -504,6 +508,57 @@ the known OEM tool IDs, a session number, an account name), and on Linux every
 privileged command is an argument array passed to `pkexec`, never a shell
 string. Fixes that install something, or act on someone's sign-in, are for
 technicians: the self-service view never offers them.
+
+## Known incidents
+
+During an outage every technician troubleshoots their own caller from
+scratch. With `[status] url` in a **managed** profile (a user's own profile
+can't add a banner in front of a technician), each run fetches the site's
+incident feed once, over HTTPS, with a short timeout:
+
+```json
+{ "updated": "2026-11-12T13:05:00Z",
+  "incidents": [ { "id": "INC0012345", "title": "VPN gateway outage",
+    "module": "net.target", "match": "vpn\\.example\\.org",
+    "subnets": ["10.20.0.0/16"], "url": "https://status.example.org/INC0012345" } ] }
+```
+
+An incident matches when everything it names holds. That means a finding in
+`module` (any module, if it's left out) whose label, value or detail matches
+`match`, a case-insensitive regular expression. It also means an address of
+this PC inside one of `subnets`. One that names neither is site-wide. A match
+puts **Matches a known incident** above everything else in the technician
+view, and a line at the top of the text report and ticket text: attach the
+report to the incident and stop troubleshooting this PC on its own. A feed
+that can't be read is a quiet note in the report, never an error.
+
+## Watch mode
+
+For "it froze around 2 yesterday". With `[advanced] watch = true` in the
+profile and `itriage --install-watch` run once as administrator (audited),
+`itriage --watch` starts at every sign-in as that user. On Windows that's a
+scheduled task for the Users group, below normal priority; on Linux, a systemd
+user unit enabled for everyone. It keeps the last ten minutes of processor,
+memory, disk and network samples in memory and saves a capture to that
+user's run history when:
+
+* `cpu`: the processor stays above the profile's CPU warning band for a minute;
+* `gateway_loss`: the default gateway misses three pings in a row, ten seconds
+  apart (only once it has answered at all, so a gateway that blocks ping isn't
+  "lost");
+* `app_paths`: a `[[require.application]]` server refuses two TCP checks in a
+  row, a minute apart;
+* `app_hang`: Windows logs Application Hang 1002 or Application Error 1000.
+
+A capture is a report like any other: the samples as a recording with a
+marker at the moment it fired, Top processes, Memory usage and Network
+connectivity, and a row saying it was saved automatically and what watch mode
+does and doesn't collect (no screen, keystrokes, files or browsing). It's
+named `…_watch.json`, so the timeline, `--problem-at` and History find it, but
+it's never the run a later one is compared with, and it isn't a trend point.
+There's at most one capture per 15 minutes, and captures past
+`watch_keep_days` or over `watch_max_mb` are removed oldest first; ordinary
+runs are never touched. `itriage --uninstall-watch` removes the task or unit.
 
 ## Run history and compare
 
@@ -602,6 +657,11 @@ itriage [OPTIONS] [MODULE...]
   --compare OLD NEW      Compare two saved reports from the same computer
   --trends               How each measurement has moved over this computer's
                          saved runs (with --json, every point)
+  --verify-audit [PATH]  Check the audit log's hash chain
+  --watch                Watch unattended and save a capture when something
+                         goes wrong (needs [advanced] watch = true)
+  --install-watch        Start --watch at every sign-in (administrator/root)
+  --uninstall-watch      Remove that again
 ```
 
 Progress goes to stderr and the report to stdout, so `> report.txt` captures

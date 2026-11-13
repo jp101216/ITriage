@@ -73,6 +73,11 @@ OTHER COMMANDS
                          saved runs (with --json, every point)
   --verify-audit [PATH]  Check the audit log's hash chain (default: this
                          account's audit.jsonl); exit 1 if a line was changed
+  --watch                Watch unattended and save a capture when something
+                         goes wrong (needs [advanced] watch = true)
+  --install-watch        Start --watch at every sign-in, as that user
+                         (administrator/root; audited)
+  --uninstall-watch      Remove that again
   -h, --help             Show this help
 
 EXIT CODES
@@ -100,6 +105,9 @@ struct Args {
     ticket: Option<String>,
     trends: bool,
     verify_audit: Option<Option<PathBuf>>,
+    watch: bool,
+    install_watch: bool,
+    uninstall_watch: bool,
     fix: Option<(String, Option<String>)>,
     compare: Option<(PathBuf, PathBuf)>,
     baseline: Option<(PathBuf, PathBuf)>,
@@ -151,6 +159,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--out" => a.out = Some(PathBuf::from(take("--out")?)),
             "--ticket" => a.ticket = Some(take("--ticket")?),
             "--trends" => a.trends = true,
+            "--watch" => a.watch = true,
+            "--install-watch" => a.install_watch = true,
+            "--uninstall-watch" => a.uninstall_watch = true,
             "--verify-audit" => {
                 let path = match &inline {
                     Some(v) => Some(v.clone()),
@@ -185,7 +196,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             _ => a.modules.push(arg.clone()),
         }
     }
-    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends,a.verify_audit.is_some()];
+    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends,a.verify_audit.is_some(),a.watch,a.install_watch,a.uninstall_watch];
     if modes.iter().filter(|v|**v).count() > 1 { return Err("Choose one command mode at a time.".into()); }
     if modes.iter().any(|v|*v) && (!a.modules.is_empty() || !a.presets.is_empty()) { return Err("A command mode cannot be combined with module or preset selections.".into()); }
     if a.record.is_some_and(|v|!(5..=1800).contains(&v)) || a.interval_ms.is_some_and(|v|!(1000..=10000).contains(&v)) { return Err("Recording needs 5–1800 seconds and an interval of 1000–10000 ms.".into()); }
@@ -231,6 +242,31 @@ pub fn main(argv: Vec<String>) -> i32 {
     }
     if let Some(path) = &args.verify_audit {
         return verify_audit(path.clone());
+    }
+    if args.watch {
+        let name = (loaded.status.source != "built-in").then(|| loaded.status.name.clone());
+        return crate::investigate::watch::run(&profile, loaded.status.source, name);
+    }
+    if args.install_watch || args.uninstall_watch {
+        let (id, outcome) = if args.install_watch {
+            ("install-watch", crate::investigate::watch::install())
+        } else {
+            ("uninstall-watch", crate::investigate::watch::uninstall())
+        };
+        crate::audit::fix_ran(id, None, &outcome, args.ticket.as_deref());
+        return match outcome {
+            Ok(msg) => {
+                println!("{msg}");
+                if args.install_watch && !profile.advanced.watch {
+                    println!("Note: the active profile has watch mode off ([advanced] watch = false), so it won't watch yet.");
+                }
+                0
+            }
+            Err(e) => {
+                eprintln!("itriage: {e}");
+                1
+            }
+        };
     }
     if let Some((id, target)) = &args.fix {
         if args.what_if {
@@ -376,6 +412,7 @@ pub fn main(argv: Vec<String>) -> i32 {
     let profile_name = (status.source != "built-in").then(|| status.name.clone());
     let mut report = Report::new(host, profile_name, results, false).with_ticket(ticket.as_deref()).with_role(&profile.role);
     report.runbook = trace; report.recording = capture;
+    report.check_incidents(&profile, status.source);
     let ids: Vec<String> = report.results.iter().map(|r| r.module_id.clone()).collect();
     let diff = report::previous(&report.host.hostname, &report.generated, &ids).map(|old| report::diff(&old, &report));
     let mut code = report.exit_code.unwrap_or(1);
@@ -619,6 +656,8 @@ mod tests {
         assert_eq!(args(&["--verify-audit"]).verify_audit, Some(None));
         assert_eq!(args(&["--verify-audit", "copy.jsonl"]).verify_audit, Some(Some(PathBuf::from("copy.jsonl"))));
         assert!(parse(&["--verify-audit".to_string(), "--trends".to_string()]).is_err());
+        assert!(args(&["--watch"]).watch && args(&["--install-watch"]).install_watch && args(&["--uninstall-watch"]).uninstall_watch);
+        assert!(parse(&["--watch".to_string(), "system.info".to_string()]).is_err(), "watch is a mode of its own");
     }
 
     #[test]

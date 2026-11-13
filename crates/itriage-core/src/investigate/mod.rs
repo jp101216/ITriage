@@ -8,4 +8,5 @@ pub mod identity;
 pub mod peripherals;
 pub mod recording;
 pub mod timeline;
+pub mod watch;
 pub mod wireless;
