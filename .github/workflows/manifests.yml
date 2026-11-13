@@ -50,7 +50,7 @@ jobs:
           cpu_pct = { warn = 1, crit = 99 }
           [advanced]
           watch = true
-          watch_triggers = ["cpu", "gateway_loss"]
+          watch_triggers = ["cpu", "gateway_loss", "app_hang"]
           "@ | Set-Content "$env:RUNNER_TEMP\cpu.toml"
           $env:ITRIAGE_PROFILE = "$env:RUNNER_TEMP\cpu.toml"
           $busy = Start-Process pwsh -ArgumentList '-NoProfile','-Command','$e=(Get-Date).AddSeconds(100); while((Get-Date) -lt $e){}' -PassThru
