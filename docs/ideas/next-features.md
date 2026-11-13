@@ -1,6 +1,7 @@
 # ITriage: Next Feature Ideas (round 3) and how to build them
 
-> **Status, November 2026.** Built on `main` (0.9.0) *without* the
+> **Status, November 2026.** All 14 ideas ship in 0.10.0 (one release, not
+> the 0.10/0.11 split suggested below). Built on `main` (0.9.0) *without* the
 > advanced-features package, which never reached the repository. So `print.path`,
 > `app.paths`, the flight recorder, `advanced/hypotheses.rs` and
 > `advanced/cases.rs` don't exist, and the ideas were adapted: #9 extends

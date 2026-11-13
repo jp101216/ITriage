@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.9.0.
+/* ITriage frontend logic — v0.10.0.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.9.0";
+  const VERSION = "v0.10.0";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -4043,7 +4043,7 @@
       }),
       // The preview has no release to compare with; ?update=1 shows the tag.
       checkUpdate: async () => (/[?&]update=1\b/.test(location.search)
-        ? { current: VERSION.slice(1), latest: "0.9.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.9.1", newer: true }
+        ? { current: VERSION.slice(1), latest: "0.10.1", url: "https://github.com/jp101216/ITriage/releases/tag/v0.10.1", newer: true }
         : null),
       openLink: async (url) => toast("Preview: this opens " + url),
       openHistoryFolder: async () => toast("Preview: this opens " + HIST_DIR.replace(/\\$/, "")),

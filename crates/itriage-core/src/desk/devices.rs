@@ -299,7 +299,7 @@ mod tests {
         let off = usb_power_findings(&UsbPower { fix_allowed: true, ac: Some(0), dc: Some(0), ..p.clone() }, None);
         assert!(off[0].action.is_none(), "nothing to turn off");
 
-        let saved = crate::fixes::usbpower::Saved { saved: "2026-11-12T20:00:00Z".into(), tool_version: "0.11.0".into(), scheme: "381b4222-f694-41f0-9685-ff5bb260df2e".into(), ac: 1, dc: 1 };
+        let saved = crate::fixes::usbpower::Saved { saved: "2026-11-12T20:00:00Z".into(), tool_version: "0.10.0".into(), scheme: "381b4222-f694-41f0-9685-ff5bb260df2e".into(), ac: 1, dc: 1 };
         let undo = usb_power_findings(&UsbPower { fix_allowed: true, ac: Some(0), dc: Some(0), ..p }, Some(&saved));
         assert_eq!(undo.last().unwrap().action.as_ref().unwrap().id, "restore-usb-power");
     }

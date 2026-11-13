@@ -1083,10 +1083,10 @@ Digital Signatures**, or with
 
 ## Verification status
 
-v0.9.0 passed 252 Linux core tests, 249 Windows core tests and 19 browser
+v0.10.0 passed 340 Linux core tests, 337 Windows core tests and 20 browser
 regression tests, along with workspace Clippy, smoke checks and installer
 builds on both platforms. The browser tests use simulated checks and repairs.
-The rows marked 0.9.0 below are what was run for this release; the earlier
+The rows marked 0.10.0 below are what was run for this release; the earlier
 manual checks were performed through v0.7.0, and hardware and domain
 validation remain as noted.
 
@@ -1107,6 +1107,10 @@ validation remain as noted.
 | New in 0.9.0, Linux | the same from the command line, and the desktop app clicked through under a virtual display against the real engine: the filter, the two new checks and the timeline run from it, the Timeline dialog, a recording with a marker typed and entered, and its Replay | working |
 | New in 0.9.0, interface | 19 browser tests against simulated checks; the checks filter measured in all nine themes at five window sizes (one line, no sideways scroll, no console errors); the dialogs screenshotted at laptop and narrow sizes | working |
 | New in 0.9.0, not yet run | **start times on a desktop edition of Windows**: a server keeps no Diagnostics-Performance log, so reading events 100 to 110 has only been tested against sample events written from Microsoft's layout. The same goes for **Windows Installer, servicing and restart rows** in the timeline (none occurred on the runner), **Wi-Fi and 802.1X events, signal and access-point moves** in a recording (no Wi-Fi in CI), a profile with **OneDrive Files On-Demand** (cloud-only files should count as nothing), and the startup-apps list for a **standard user** | ⚠ next step |
+| New in 0.10.0, Windows CI | `windows-latest` (Windows Server 2025), elevated, workgroup. Run for real in the smoke tests: Policy blocks, Sign-in speed (one sign-in's events found by ActivityID), Throttling & hardware errors (the processor clock through PDH), Outlook, Teams & OneDrive (the AAD log, named from its message), Edge IE mode (Edge's version from its file), Point and Print (Windows' defaults), USB selective suspend (from the power plan), and Wired 802.1X & NAC (service stopped, no 802.1X). Separate runs on the same image registered, read back and removed the watch-mode logon task, and saved watch captures for a real Application Error 1000 and a busy processor; a gateway that never answers ping saved none. Field names for the new event checks come from each provider's manifest, read there | passing |
+| New in 0.10.0, Linux | watch mode run end to end (a busy processor saved a capture); `desk.domain` run as root against SSSD pointed at an unreachable domain controller, with `sssd.conf` at 0644 (critical, the domain read from the file, the keytab read, `adcli`'s "no DC" a warning) and at 0600 (SSSD running; the missing system bus reported as a gap). The `sssctl`, `klist -k` and `adcli` parsers use real output captured on Ubuntu 24.04 | working |
+| New in 0.10.0, interface | 20 browser tests against simulated checks, including a known incident's banner (first, escaped, linking its status page) and fix previews in the confirmation dialog | working |
+| New in 0.10.0, not yet run | on a **desktop edition of Windows with a real user**: Outlook, OneDrive and Teams, Click-to-Run; an **IE mode site list and Point and Print set by GPO**; **changing the power plan** (Keep USB devices awake); **device notifications with a real scanner** unplugged mid-recording; a real **802.1X success or failure** and a **NAC quarantine**; **Kerberos tickets and certificate revocation on a domain**; the **ASR, AppLocker, App Control and WHEA** events (tested against events written from their manifests); **watch mode starting at an actual sign-in**; `realm list` on a **joined Linux machine** | ⚠ next step |
 | Account checks on a domain; the new fixes | **not yet run**: no test machine was joined to a domain, and Remove saved credentials, Sign out the session, Unlock and Revert tune-up's restore step were never run against real state. Nor was anything run as a standard user on Windows (CI is elevated) or under Constrained Language mode | ⚠ next step |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
 
