@@ -3,40 +3,13 @@ on: push
 permissions:
   contents: read
 jobs:
-  wired:
-    runs-on: windows-latest
-    steps:
-      - name: Wired AutoConfig templates
-        shell: pwsh
-        run: |
-          foreach ($name in 'Microsoft-Windows-Wired-AutoConfig') {
-            $p = New-Object System.Diagnostics.Eventing.Reader.ProviderMetadata($name)
-            foreach ($e in @($p.Events)) {
-              $id = [int64]$e.Id -band 0xFFFF
-              "===== $name $id (raw $([int64]$e.Id)) v$($e.Version) level=$($e.Level.Name) channel=$($e.LogLink.LogName)"
-              "TEMPLATE: $($e.Template)"
-              "MESSAGE: $($e.Description)"
-            }
-          }
-          "===== dot3svc"
-          Get-Service dot3svc | Format-List Name, Status, StartType
-          sc.exe qc dot3svc
-          "===== netsh before start"
-          netsh lan show interfaces
-          Start-Service dot3svc -ErrorAction SilentlyContinue
-          Start-Sleep 5
-          "===== netsh after start"
-          netsh lan show interfaces
-          netsh lan show settings
-          netsh lan show profiles
-          "===== events after start"
-          Get-WinEvent -LogName 'Microsoft-Windows-Wired-AutoConfig/Operational' -MaxEvents 20 -ErrorAction SilentlyContinue | ForEach-Object { "---- $($_.Id) $($_.LevelDisplayName)"; $_.ToXml(); $_.Message }
   linux:
     runs-on: ubuntu-latest
     steps:
       - name: realm, sssd, adcli, klist
+        shell: bash {0}
         run: |
-          set -x
+          set +e
           sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq realmd sssd sssd-tools adcli krb5-user packagekit >/dev/null 2>&1 || true
           realm --version || true
