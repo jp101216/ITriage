@@ -202,6 +202,7 @@ pub fn findings(tickets: &[Ticket], now: u64, purge: Option<crate::model::FixRef
             continue;
         }
         let mut servers: Vec<&str> = hits.iter().map(|t| t.server.as_str()).collect();
+        servers.sort_unstable();
         servers.dedup();
         out.push(
             Finding::new(format!("Kerberos {what} tickets"), format!("{} ticket{}: {}", hits.len(), plural(hits.len()), servers.iter().take(4).copied().collect::<Vec<_>>().join(", ")), severity).with_detail(

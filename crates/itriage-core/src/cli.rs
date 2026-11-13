@@ -253,7 +253,8 @@ pub fn main(argv: Vec<String>) -> i32 {
         } else {
             ("uninstall-watch", crate::investigate::watch::uninstall())
         };
-        crate::audit::fix_ran(id, None, &outcome, args.ticket.as_deref());
+        let ticket = args.ticket.as_deref().and_then(report::clean_ticket);
+        crate::audit::fix_ran(id, None, &outcome, ticket.as_deref());
         return match outcome {
             Ok(msg) => {
                 println!("{msg}");

@@ -354,6 +354,8 @@ async fn record_problem(
         .filter(|s| !s.is_empty())
         .map(|s| Target::parse(s, &app.profile.network.target_ports))
         .transpose()?;
+    // The same clean-up a run's ticket gets, before it reaches the audit log.
+    let ticket = ticket.as_deref().and_then(report::clean_ticket);
     let busy = claim(&app, Some(window.clone()))?;
     app.cancel.store(false, Ordering::SeqCst);
     app.markers.lock().map_err(|_| "Marker list unavailable")?.clear();
@@ -373,6 +375,8 @@ async fn record_problem(
             let rows = markers.lock().map_err(|_| "Marker list unavailable")?;
             _flag.0.store(false, Ordering::SeqCst);
             capture.markers = rows.clone();
+            // Device drops and typed markers arrive from different threads.
+            capture.markers.sort_by_key(|m| m.at_ms);
         }
         let result = recording::result(&capture);
         audit::run_finished(std::slice::from_ref(&result), false, ticket.as_deref());

@@ -15,7 +15,9 @@
 //! edited, removed or slipped in breaks the chain: `itriage --verify-audit`
 //! says where. Lines written before 0.10 have no `prev` and aren't checked.
 //! The chain can't show that the newest lines were cut off the end; the
-//! copy in the system log can.
+//! copy in the system log can. Lines are written one at a time, across
+//! threads and across processes (`audit.jsonl.lock` beside the log), so
+//! the desktop app and a command-line run sharing the log keep one chain.
 //!
 //! The system-log copy is on unless a *managed* profile turns it off
 //! (`[audit] event_log = false`): a user's own profile can't hide what a
@@ -163,10 +165,23 @@ fn append(line: &Value) {
     append_to(&path, line);
 }
 
+/// One writer at a time in this process. Reading the last line and writing
+/// the next has to be one step: two writers that both read the same last
+/// line would both link to it, and `--verify-audit` would call that a
+/// changed log.
+static APPENDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn append_to(path: &Path, line: &Value) {
+    let _one = APPENDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
+    // And one process at a time: the desktop app and a command-line run can
+    // share this account's log. The lock is a file beside it, held until
+    // this function returns. Best effort, like the rest: without it the
+    // line is still written.
+    let lock = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(path.with_extension("jsonl.lock")).ok();
+    let _held = lock.as_ref().map(|file| file.lock());
     let rotated = path.with_extension("jsonl.1");
     if std::fs::metadata(path).is_ok_and(|m| m.len() > 5 * 1024 * 1024) {
         let _ = std::fs::rename(path, &rotated);
@@ -336,6 +351,25 @@ mod tests {
         let v = verify(&path).unwrap();
         assert!(v.starts_mid_chain && v.broken.is_none(), "{v:?}");
         assert!(verify(&d.join("missing.jsonl")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn writers_at_the_same_time_keep_one_chain() {
+        let d = dir("together");
+        let path = d.join("audit.jsonl");
+        std::thread::scope(|scope| {
+            for writer in 0..8 {
+                let path = &path;
+                scope.spawn(move || {
+                    for i in 0..25 {
+                        append_to(path, &json!({ "kind": "fix", "message": format!("writer {writer} line {i}") }));
+                    }
+                });
+            }
+        });
+        let v = verify(&path).unwrap();
+        assert_eq!((v.chained, v.broken), (200, None), "every line links to the one before it");
         let _ = std::fs::remove_dir_all(&d);
     }
 
