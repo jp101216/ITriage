@@ -124,8 +124,10 @@
     mod("desk.logon", "Sign-in speed (Group Policy)", "workstation", "How long the last sign-in spent loading the profile and applying Group Policy, which policy step took the time or failed, and lost contact with the domain controller during policy processing.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
     mod("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."),
-    mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, and label printers."),
-    mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, plus devices the site profile requires."),
+    mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, label printers, and Point and Print: who may install drivers, the approved print servers, and drivers protected print mode won't load."),
+    mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, devices the site profile requires, and USB power saving (selective suspend) that makes idle scanners drop out."),
+    mod("desk.m365", "Outlook, Teams & OneDrive", "workstation", "Outlook data files against their size limit, the Microsoft 365 Apps version and update channel, Desktop and Documents in OneDrive without OneDrive running, the Teams cache, and Entra sign-in broker errors.", WIN),
+    mod("desk.browser", "Edge IE mode site list", "workstation", "Whether Edge's Internet Explorer mode is set up, whether its Enterprise Mode Site List can be fetched and read, and which of the site's application URLs (and the target) open in IE mode.", WIN),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
     mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN), when they expire (warns 14 days out), and whether their revocation lists are reachable and current.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),
@@ -212,6 +214,7 @@
     "system.changes": "CHG-LOG", "net.applications": "APP-CON", "net.wifi-auth": "NET-AUT", "desk.identity": "ID-SSO",
     "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
     "sec.blocks": "SEC-BLK", "desk.logon": "LOG-GPO", "system.hardware": "HW-THR",
+    "desk.m365": "M365-APP", "desk.browser": "EDGE-IEM",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -229,6 +232,7 @@
     "system.changes": I.trend, "net.applications": I.globe, "net.wifi-auth": I.wifi, "desk.identity": I.key,
     "system.storage": I.layers, "system.startup": I.power,
     "sec.blocks": I.shield, "desk.logon": I.domain, "system.hardware": I.chip,
+    "desk.m365": I.apps, "desk.browser": I.globe,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -259,6 +263,12 @@
       description: "Clears the account's lockout. It needs an account that's allowed to unlock users. If something is still using the old password, the account locks again." },
     { id: "purge-kerberos-tickets", label: "Clear Kerberos tickets", requires_admin: false, disruptive: false,
       description: "Removes the Kerberos tickets cached for this sign-in (klist purge). Windows gets new ones the next time each file share, intranet site or app is opened; nothing else changes. It acts on the account ITriage runs as, so run ITriage as the signed-in user, not elevated." },
+    { id: "clear-teams-cache", label: "Clear Teams cache", requires_admin: false, disruptive: false,
+      description: "Empties new Teams' cache folder for the signed-in person, as Microsoft's article on Teams that won't start or sign in describes. Teams has to be quit first; it rebuilds the cache when it next starts. It also deletes Teams' diagnostic logs, so don't use it for missing messages." },
+    { id: "keep-usb-awake", label: "Keep USB devices awake", requires_admin: true, disruptive: false, technician_only: true,
+      description: "Turns USB selective suspend off in the active power plan, plugged in and on battery, so Windows stops powering down idle USB devices such as scanners and badge readers. It costs some battery. The old settings are saved first; Restore USB power puts them back. Only offered when the site profile's fixes list names it." },
+    { id: "restore-usb-power", label: "Restore USB power", requires_admin: true, disruptive: false, technician_only: true,
+      description: "Puts USB selective suspend back the way it was in the power plan before Keep USB devices awake changed it." },
     { id: "revert-tuneup", label: "Revert tune-up", requires_admin: true, disruptive: true, technician_only: true,
       description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts." },
   ];
@@ -294,7 +304,7 @@
   };
   const MOCK_FIXES = ["restart-spooler", "clear-print-queue", "resync-time", "gpupdate", "flush-dns", "start-service:Spooler", "start-service:W32Time",
     "restart-computer", "cancel-restart", "install-oem-tool", "install-update",
-    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup"];
+    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup", "clear-teams-cache", "keep-usb-awake"];
   const MOCK_PROFILE = {
     source: "managed",
     path: "C:\\ProgramData\\itriage\\profile.toml",
@@ -493,6 +503,9 @@
       F("Specimen labels (label printer)", "ready", "ok", "ZDesigner ZD421-203dpi ZPL · port USB001"),
       F("Default printer", "Ward 4 LaserJet"),
       F("Software printers (PDF, XPS, OneNote, fax)", "3"),
+      F("Printer driver installs", "administrators only (Windows' default since 2021)", "info", "Standard users can connect to a shared printer only if its driver is already installed or comes from an approved package server."),
+      F("Approved package print servers", "prn01.corp.example.org"),
+      F("Print server PRN09.corp.example.org", "not on the approved list", "warning", "Ward 4 LaserJet comes from PRN09.corp.example.org. A standard user connecting to it needs an administrator to install its driver."),
     ]),
     "desk.devices": R("desk.devices", "Devices & peripherals", "workstation", "214 devices · 1 with driver problem", 310, [
       F("USB Composite Device (USB)", "Code 43: stopped after reporting problems (Code 43)", "warning"),
@@ -501,6 +514,9 @@
       F("Microphones", "Microphone (Nuance PowerMic III), Microphone (Realtek(R) Audio)"),
       F("Cameras", "Integrated Webcam"),
       F("Smart card readers", "Microsoft Usbccid Smartcard Reader (WUDF)"),
+      F("USB selective suspend", "on plugged in · on on battery", "info", "Windows powers down an idle USB device to save energy. When a scanner or badge reader stops responding after sitting idle and works again once replugged, this is the usual cause; a Record capture marks each drop.",
+        { action: A("keep-usb-awake") }),
+      F("Badge reader: USB power", "selective suspend on · idle power-down (D3) on", "info", "RFIDeas pcProx USB's own settings, from its driver (Device Parameters)."),
     ]),
     "desk.wifi": R("desk.wifi", "Wi-Fi & VPN", "workstation", "Wi-Fi Clinical-Secure, signal weak · VPN: Client running - tunnel unverified - Zscaler", 35, [
       F("Network", "Clinical-Secure", "ok", "Intel(R) Wi-Fi 6E AX211 160MHz"),
@@ -542,6 +558,24 @@
       F("Policy step failed: Group Policy Drive Maps", "error 2 · 2.0 s", "critical", "Event 7016 (failed) or 6016 (warning) in the Group Policy log. Run gpresult /h on this PC for that extension's details."),
       F("Group Policy objects", "12 applied · 3 filtered out"),
       F("Computer policy at startup", "12.0 s · 2d ago", "info", null, { metric: M(12, "s") }),
+    ]),
+    "desk.m365": R("desk.m365", "Outlook, Teams & OneDrive", "workstation", "2 Microsoft 365 findings need attention", 2140, [
+      F("Outlook data file: jparker@corp.example.org.ost", "48.6 GB · 97% of the 50.0 GB limit: past Outlook's warning size", "warning",
+        "C:\\Users\\jparker\\AppData\\Local\\Microsoft\\Outlook\\jparker@corp.example.org.ost · limit 51200 MB, warning at 48640 MB (Outlook's defaults)", { metric: M(48.6, "GB") }),
+      F("Microsoft 365 Apps", "16.0.19127.20264 · Monthly Enterprise Channel · x64"),
+      F("OneDrive folder backup", "Desktop, Documents are in OneDrive, but OneDrive isn't running", "warning",
+        "Nothing in them is syncing, so it isn't backed up and other devices don't see it. Start OneDrive from the Start menu and sign in. OneDrive folder: C:\\Users\\jparker\\OneDrive - Contoso Health"),
+      F("Teams cache", "612 MB", "info", "Clearing it is Microsoft's fix when Teams won't start, sign in or update. It's not for missing messages or chats: it deletes the logs needed to find out why.",
+        { action: A("clear-teams-cache"), metric: M(612, "MB") }),
+      F("Entra sign-in errors (24 h)", "3 errors · last 2h ago", "info",
+        "Most common: 0xCAA2000C The request requires user interaction.. Microsoft-Windows-AAD/Operational, last at 2026-11-10T14:12:40Z UTC. A few a day is normal; many in a row, with Outlook or Teams asking for the password again and again, is the broken sign-in token Microsoft's article covers.",
+        { kb: K("Troubleshoot primary refresh token issues (Microsoft)", "https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-primary-refresh-token") }),
+    ]),
+    "desk.browser": R("desk.browser", "Edge IE mode site list", "workstation", "1 IE mode finding needs attention", 640, [
+      F("IE integration", "Internet Explorer mode (computer policy)", "ok"),
+      F("Enterprise site list", "can't be fetched: intranet.example.org answered HTTP 404", "warning",
+        "https://intranet.example.org/edge/sites.xml (computer policy). Edge keeps using the copy it downloaded last, so sites that already worked still do, but changes to the list won't arrive. edge://compat/enterprise shows what Edge itself has."),
+      F("Microsoft Edge", "142.0.3595.53"),
     ]),
     "sec.posture": R("sec.posture", "Security posture", "security", "1 to look at: antivirus definitions", 4180, [
       F("Disk encryption", "C: BitLocker is on (XtsAes256)", "ok"),
@@ -736,6 +770,9 @@
     "logoff-session": (t) => `Asked Windows to sign out CORP\\jparker's disconnected session ${t}.`,
     "unlock-account": (t) => `${t} is unlocked. If something is still using the old password, it will lock again: clear the sources the report lists.`,
     "purge-kerberos-tickets": () => "Cleared 14 Kerberos tickets for this sign-in. New ones are fetched as each server is used.",
+    "clear-teams-cache": () => "Cleared 612 MB of CORP\\jparker's Teams cache. Teams rebuilds it the next time it starts, which takes a little longer than usual.",
+    "keep-usb-awake": () => "Turned USB selective suspend off in the active power plan (it was selective suspend on plugged in, on on battery). USB devices stay powered while idle; Restore USB power puts the old settings back.",
+    "restore-usb-power": () => "Put back selective suspend on plugged in, on on battery in the power plan.",
     "revert-tuneup": () => "Put back the settings from before the tune-up. Wi-Fi: DeviceSleepOnDisconnect, SelectiveSuspend turned back on (applies at the next adapter restart).",
   };
   const MOCK_DIFF = {
@@ -3914,7 +3951,11 @@
         return FIX_MESSAGES[id](target);
       },
       previewFix: async (id) => {
-        const counts = { "purge-kerberos-tickets": "Preview: would clear 14 Kerberos tickets cached for CORP\\jparker. Nothing was changed." };
+        const counts = {
+          "purge-kerberos-tickets": "Preview: would clear 14 Kerberos tickets cached for CORP\\jparker. Nothing was changed.",
+          "clear-teams-cache": "Preview: would empty C:\\Users\\jparker\\AppData\\Local\\Packages\\MSTeams_8wekyb3d8bbwe\\LocalCache\\Microsoft\\MSTeams (612 MB) for CORP\\jparker. Nothing was changed.",
+          "keep-usb-awake": "Preview: would turn USB selective suspend off in the active power plan (now on plugged in, on on battery) and save those values for Restore USB power. Nothing was changed.",
+        };
         return counts[id] || "";
       },
       listHistory: async () => { await sleep(120); return MOCK_HISTORY.slice(); },

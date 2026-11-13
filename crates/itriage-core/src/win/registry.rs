@@ -3,9 +3,9 @@
 use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
-    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, RRF_RT_ANY,
-    RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegEnumValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
+    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_NOEXPAND,
+    RRF_RT_ANY, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
 };
 
 pub use windows::Win32::System::Registry::{
@@ -147,6 +147,78 @@ pub fn subkeys(root: HKEY, subkey: &str) -> Vec<String> {
         let _ = RegCloseKey(key);
         names
     }
+}
+
+/// Every value of a key: its name, and its data when it's a string.
+pub fn values(root: HKEY, subkey: &str) -> Vec<(String, Option<String>)> {
+    let path = HSTRING::from(subkey);
+    let mut key = HKEY::default();
+    // SAFETY: standard open/enumerate/close; name and data buffers are sized
+    // to the registry's limits for names and to 16 KB of data.
+    unsafe {
+        if RegOpenKeyExW(root, &path, None, KEY_READ, &mut key) != ERROR_SUCCESS {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut index = 0u32;
+        loop {
+            let mut name = [0u16; 16_384];
+            let mut name_len = name.len() as u32;
+            let mut kind = 0u32;
+            let mut data = vec![0u8; 16 * 1024];
+            let mut data_len = data.len() as u32;
+            let status = RegEnumValueW(
+                key,
+                index,
+                Some(PWSTR(name.as_mut_ptr())),
+                &mut name_len,
+                None,
+                Some(&mut kind),
+                Some(data.as_mut_ptr()),
+                Some(&mut data_len),
+            );
+            if status != ERROR_SUCCESS {
+                break; // ERROR_NO_MORE_ITEMS
+            }
+            index += 1;
+            let text = (kind == REG_SZ.0 || kind == REG_EXPAND_SZ.0).then(|| {
+                // A byte buffer has no u16 alignment: decode pairs instead.
+                let wide: Vec<u16> = data[..data_len as usize].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+                String::from_utf16_lossy(&wide)
+            });
+            out.push((String::from_utf16_lossy(&name[..name_len as usize]), text));
+        }
+        let _ = RegCloseKey(key);
+        out
+    }
+}
+
+/// A REG_SZ or REG_EXPAND_SZ value as stored, with `%VARIABLES%` left in.
+/// For a value in another user's hive: expanding it here would use this
+/// process's environment, not theirs.
+pub fn read_string_unexpanded(root: HKEY, subkey: &str, value: &str) -> Option<String> {
+    let subkey = HSTRING::from(subkey);
+    let value = HSTRING::from(value);
+    let mut buf = vec![0u16; 1024];
+    let mut size = (buf.len() * 2) as u32;
+    // SAFETY: `buf` is writable for `size` bytes and outlives the call.
+    let status = unsafe {
+        RegGetValueW(
+            root,
+            &subkey,
+            &value,
+            RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND,
+            None,
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            Some(&mut size),
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    let s = String::from_utf16_lossy(&buf[..len]).trim().to_string();
+    (!s.is_empty()).then_some(s)
 }
 
 /// Register an Application event-log source backed by .NET's

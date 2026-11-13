@@ -154,6 +154,33 @@ pub const FIXES: &[FixSpec] = &[
         technician_only: false,
     },
     FixSpec {
+        id: "clear-teams-cache",
+        label: "Clear Teams cache",
+        description: "Empties new Teams' cache folder for the signed-in person, as Microsoft's article on Teams that won't start or sign in describes. Teams has to be quit first; it rebuilds the cache when it next starts. It also deletes Teams' diagnostic logs, so don't use it for missing messages.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: false,
+    },
+    FixSpec {
+        id: "keep-usb-awake",
+        label: "Keep USB devices awake",
+        description: "Turns USB selective suspend off in the active power plan, plugged in and on battery, so Windows stops powering down idle USB devices such as scanners and badge readers. It costs some battery. The old settings are saved first; Restore USB power puts them back. Only offered when the site profile's fixes list names it.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: true,
+    },
+    FixSpec {
+        id: "restore-usb-power",
+        label: "Restore USB power",
+        description: "Puts USB selective suspend back the way it was in the power plan before Keep USB devices awake changed it.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: true,
+    },
+    FixSpec {
         id: "revert-tuneup",
         label: "Revert tune-up",
         description: "Puts TCP receive autotuning and the adapters' sleep settings back to what they were before TCP autotuning & NIC power last changed them. Adapter settings apply the next time each adapter restarts.",
@@ -164,6 +191,10 @@ pub const FIXES: &[FixSpec] = &[
     },
 ];
 
+/// Fixes a site has to ask for by name: with no `fixes` list in the
+/// profile they aren't offered or run, though everything else is.
+pub const OPT_IN: &[&str] = &["keep-usb-awake"];
+
 pub fn spec(id: &str) -> Option<&'static FixSpec> {
     FIXES.iter().find(|f| f.id == id)
 }
@@ -171,9 +202,9 @@ pub fn spec(id: &str) -> Option<&'static FixSpec> {
 /// Does this fix need administrator/root rights on this OS?
 pub fn requires_admin(id: &str) -> bool {
     if cfg!(windows) {
-        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart" | "clear-saved-credentials" | "purge-kerberos-tickets")
+        !matches!(id, "gpupdate" | "flush-dns" | "restart-computer" | "cancel-restart" | "clear-saved-credentials" | "purge-kerberos-tickets" | "clear-teams-cache")
     } else {
-        !matches!(id, "gpupdate" | "flush-dns" | "clear-saved-credentials" | "purge-kerberos-tickets")
+        !matches!(id, "gpupdate" | "flush-dns" | "clear-saved-credentials" | "purge-kerberos-tickets" | "clear-teams-cache")
     }
 }
 
@@ -423,6 +454,9 @@ mod imp {
                     crate::util::plural(before)
                 ))
             }
+            "clear-teams-cache" => crate::desk::m365::clear_teams_cache(),
+            "keep-usb-awake" => crate::fixes::usbpower::keep_awake(),
+            "restore-usb-power" => crate::fixes::usbpower::restore(),
             other => Err(format!("Fix `{other}` isn't available on Windows.")),
         }
     }
@@ -441,6 +475,12 @@ mod imp {
                     ),
                     Err(e) => format!("couldn't list the tickets to clear ({e}). Nothing was changed."),
                 },
+            }),
+            "clear-teams-cache" => Some(crate::desk::m365::teams_cache_preview()),
+            "keep-usb-awake" => Some(crate::fixes::usbpower::preview()),
+            "restore-usb-power" => Some(match crate::fixes::usbpower::load() {
+                Some(saved) => format!("would put back {}. Nothing was changed.", saved.describe()),
+                None => "nothing is saved to put back. Nothing was changed.".into(),
             }),
             _ => None,
         }
@@ -509,6 +549,9 @@ mod imp {
                     Err(format!("kdestroy failed ({}): {}", exit_label(out.code), first_line(&out.combined())))
                 }
             }
+            "clear-teams-cache" => Err("New Teams' cache is a Windows thing; on Linux, Teams runs in the browser.".into()),
+            "keep-usb-awake" => crate::fixes::usbpower::keep_awake(),
+            "restore-usb-power" => crate::fixes::usbpower::restore(),
             other => Err(format!("Fix `{other}` isn't available on Linux.")),
         }
     }

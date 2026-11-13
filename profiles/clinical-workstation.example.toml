@@ -40,6 +40,12 @@ fixes = [
   "logoff-session",
   "unlock-account",
   "revert-tuneup",
+  "clear-teams-cache",
+  # Opt-in: turns USB selective suspend off so idle scanners and badge
+  # readers stay connected, at some cost in battery. It's only offered when
+  # it's listed here, even in a profile with no fixes list at all.
+  # "keep-usb-awake",
+  "restore-usb-power",
 ]
 # Open in the simple self-service view. Set technician_view = false to keep
 # the app in self-service mode (a kiosk for end users).

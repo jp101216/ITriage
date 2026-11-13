@@ -575,7 +575,7 @@ impl Profile {
             return false;
         }
         let Some(list) = &self.policy.fixes else {
-            return true;
+            return !crate::actions::OPT_IN.iter().any(|o| o.eq_ignore_ascii_case(id));
         };
         list.iter().map(|e| e.trim()).any(|entry| match entry.split_once(':') {
             None => entry.eq_ignore_ascii_case(id),
@@ -697,6 +697,16 @@ mod tests {
         assert!(p.fix_allowed("start-service", Some("w32time")), "case-insensitive target");
         assert!(!p.fix_allowed("start-service", Some("Spooler")), "only the listed service");
         assert!(!p.fix_allowed("gpupdate", None));
+    }
+
+    #[test]
+    fn opt_in_fixes_need_naming() {
+        let open = Profile::default();
+        assert!(open.fix_allowed("restart-spooler", None), "no list: everything ordinary is allowed");
+        assert!(!open.fix_allowed("keep-usb-awake", None), "but not an opt-in fix");
+        assert!(open.fix_allowed("restore-usb-power", None), "putting things back isn't opt-in");
+        let listed = Profile::from_toml("[policy]\nfixes = [\"Keep-USB-Awake\"]\n").unwrap();
+        assert!(listed.fix_allowed("keep-usb-awake", None));
     }
 
     #[test]

@@ -264,6 +264,8 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::desk::account::SignInAccount),
         Box::new(crate::investigate::identity::IdentityHealth),
         Box::new(crate::desk::printers::Printers),
+        Box::new(crate::desk::m365::Microsoft365),
+        Box::new(crate::desk::browser::EdgeSiteList),
         Box::new(crate::desk::devices::Devices),
         Box::new(crate::desk::wifi::WifiVpn),
         Box::new(crate::desk::certs::MachineCerts),

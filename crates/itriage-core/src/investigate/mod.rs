@@ -5,6 +5,7 @@ pub mod baseline;
 pub mod bundle;
 pub mod guided;
 pub mod identity;
+pub mod peripherals;
 pub mod recording;
 pub mod timeline;
 pub mod wireless;

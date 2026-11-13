@@ -2,7 +2,8 @@
 
 use windows::core::{PCWSTR, PWSTR};
 use windows::Win32::Graphics::Printing::{
-    EnumPrintersW, GetDefaultPrinterW, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
+    EnumPrinterDriversW, EnumPrintersW, GetDefaultPrinterW, DRIVER_INFO_8W, PRINTER_DRIVER_PACKAGE_AWARE,
+    PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_INFO_2W,
 };
 
 #[derive(Clone, Debug)]
@@ -15,6 +16,8 @@ pub struct Printer {
     /// PRINTER_ATTRIBUTE_* flags.
     pub attributes: u32,
     pub jobs: u32,
+    /// The print server for a shared printer (`\\PRINT01`), empty for a local one.
+    pub server: String,
 }
 
 /// Local and connected printers. Fails (RPC server unavailable) when the
@@ -44,8 +47,32 @@ pub fn printers() -> Result<Vec<Printer>, windows::core::Error> {
                 status: p.Status,
                 attributes: p.Attributes,
                 jobs: p.cJobs,
+                server: text(p.pServerName),
             })
             .collect())
+    }
+}
+
+/// Installed printer drivers by name, and whether each is package-aware
+/// (installs from a signed driver package, which Package Point and Print
+/// requires).
+pub fn drivers() -> Vec<(String, bool)> {
+    let mut needed = 0u32;
+    let mut returned = 0u32;
+    // SAFETY: two-call pattern with a u64-backed buffer for the
+    // pointer-bearing DRIVER_INFO_8W records, as in printers().
+    unsafe {
+        let _ = EnumPrinterDriversW(PCWSTR::null(), PCWSTR::null(), 8, None, &mut needed, &mut returned);
+        if needed == 0 {
+            return Vec::new();
+        }
+        let mut backing = vec![0u64; needed as usize / 8 + 1];
+        let bytes = std::slice::from_raw_parts_mut(backing.as_mut_ptr() as *mut u8, backing.len() * 8);
+        if EnumPrinterDriversW(PCWSTR::null(), PCWSTR::null(), 8, Some(bytes), &mut needed, &mut returned).is_err() {
+            return Vec::new();
+        }
+        let infos = std::slice::from_raw_parts(backing.as_ptr() as *const DRIVER_INFO_8W, returned as usize);
+        infos.iter().map(|d| (text(d.pName), d.dwPrinterDriverAttributes & PRINTER_DRIVER_PACKAGE_AWARE != 0)).collect()
     }
 }
 

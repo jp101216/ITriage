@@ -13,6 +13,7 @@ pub mod maintenance;
 pub mod netrepair;
 pub mod temp;
 pub mod undo;
+pub mod usbpower;
 
 use crate::model::{Finding, Severity};
 use crate::module::RunContext;

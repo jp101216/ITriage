@@ -21,7 +21,8 @@ crc32fast = "1"
 # certificates, NetAPI, power, token elevation, registry, SMBIOS, PDH disk
 # counters, the console session user, WinHTTP proxy settings, the Recycle
 # Bin, ShellExecute (relaunch as admin), attaching to a console (CLI mode),
-# and the Credential Manager's list of saved credentials (names only).
+# the Credential Manager's list of saved credentials (names only), and
+# file version resources (Edge's version).
 # Pinned to the same major as Tauri's own `windows` dependency so the app only
 # compiles the crate once.
 [target.'cfg(windows)'.dependencies]
@@ -41,6 +42,7 @@ windows = { version = "0.62", features = [
     "Win32_Security_Authorization",
     "Win32_Security_Credentials",
     "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_Console",
     "Win32_System_EventLog",

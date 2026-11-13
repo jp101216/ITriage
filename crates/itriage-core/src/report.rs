@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn refreshing_case_logs_keeps_the_recording_markers_and_original_creation_time() {
         let mut r=report(vec![result("system.info",vec![Finding::info("OS","Windows")],None),result("system.changes",vec![Finding::info("Old event","before capture")],None)]);
-        r.recording=Some(crate::investigate::recording::Recording{started:r.generated.clone(),config:Default::default(),target:None,samples:vec![],markers:vec![crate::investigate::recording::Marker{at_ms:1,label:"Problem happened".into()}],stopped_early:false,gaps:vec![]});
+        r.recording=Some(crate::investigate::recording::Recording{started:r.generated.clone(),config:Default::default(),target:None,samples:vec![],markers:vec![crate::investigate::recording::Marker{at_ms:1,label:"Problem happened".into(),device:None}],stopped_early:false,gaps:vec![]});
         let original=r.generated.clone();
         r.append_evidence(vec![result("system.changes",vec![Finding::info("New event","after capture")],None)],false);
         assert_eq!(r.generated,original);assert!(r.evidence_updated.is_some());assert_eq!(r.results.len(),2);
