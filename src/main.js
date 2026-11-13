@@ -118,9 +118,10 @@
     mod("net.target", "Destination test", "network", "DNS, a TCP connect on each port, the route the PC picks, and ping, for one host you type in (ports default to 443, 80, 445, 3389).", { takes_target: true }),
     mod("net.applications", "Application connections", "network", "Profile-defined application URLs: DNS, direct route, TCP, proxy context, validated TLS and expected HTTP status."),
     mod("net.wifi-auth", "Wi-Fi roaming & network authentication", "network", "Recent Wi-Fi associations, disconnects, 802.1X and certificate-validation events, including wired authentication."),
+    mod("net.wired-auth", "Wired 802.1X & NAC", "network", "The wired 802.1X service, the last day's authentications and failures with their reasons, each wired port's state, and an address in one of the site's NAC quarantine subnets.", WIN),
     mod("eventlog.errors", "Recent errors", "eventlog", "Critical and error events from the System and Application logs in the last 24 hours, grouped by source and event ID."),
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
-    mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied.", WIN),
+    mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied. On Linux: the realm, SSSD online or offline, the machine account and keytab, and sssd.conf's permissions."),
     mod("desk.logon", "Sign-in speed (Group Policy)", "workstation", "How long the last sign-in spent loading the profile and applying Group Policy, which policy step took the time or failed, and lost contact with the domain controller during policy processing.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
     mod("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."),
@@ -169,8 +170,8 @@
   /** Ready-made selections (mirrors itriage-core::module::PRESETS). */
   const PRESET_CATALOGUE = [
     { id: "triage", title: "Slowness triage", script: "Invoke-NetTriage",
-      description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, the site's servers, and a destination if you give one. Changes nothing.",
-      modules: ["system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency", "net.proxy", "net.target", "desk.wifi", "site.checks"] },
+      description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, wired 802.1X and NAC, the site's servers, and a destination if you give one. Changes nothing.",
+      modules: ["system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency", "net.proxy", "net.target", "desk.wifi", "net.wired-auth", "site.checks"] },
     { id: "tuneup", title: "Tune-up", script: "Invoke-EndpointTuneUp",
       description: "DNS, address caches, TCP and adapter power, network stack and adapters, temp files, drive optimisation, Group Policy and Configuration Manager. Recycle Bin, system file repair and restart stay opt-in.",
       modules: ["fix.dns", "fix.netcache", "fix.tcp", "fix.netstack", "fix.adapters", "fix.temp", "fix.optimize", "fix.gpupdate", "fix.sccm"] },
@@ -214,7 +215,7 @@
     "system.changes": "CHG-LOG", "net.applications": "APP-CON", "net.wifi-auth": "NET-AUT", "desk.identity": "ID-SSO",
     "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
     "sec.blocks": "SEC-BLK", "desk.logon": "LOG-GPO", "system.hardware": "HW-THR",
-    "desk.m365": "M365-APP", "desk.browser": "EDGE-IEM",
+    "desk.m365": "M365-APP", "desk.browser": "EDGE-IEM", "net.wired-auth": "NAC-8021X",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -232,7 +233,7 @@
     "system.changes": I.trend, "net.applications": I.globe, "net.wifi-auth": I.wifi, "desk.identity": I.key,
     "system.storage": I.layers, "system.startup": I.power,
     "sec.blocks": I.shield, "desk.logon": I.domain, "system.hardware": I.chip,
-    "desk.m365": I.apps, "desk.browser": I.globe,
+    "desk.m365": I.apps, "desk.browser": I.globe, "net.wired-auth": I.nic,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -353,6 +354,12 @@
       F("Interpretation", "A nearby change is a possible temporal link. Confirm the failure's onset and the affected component before deciding it caused the problem."),
     ]),
     "net.applications": R("net.applications", "Application connections", "network", "1 application (sample)", 15, [F("Clinical portal · DNS", "1 address", "ok"),F("Clinical portal · HTTP", "HTTP 401 · first response 142 ms", "ok", "Expected [200, 401]. Authentication response is expected for an unauthenticated health probe."),F("Clinical portal · TLS", "Certificate chain and host name accepted", "ok")]),
+    "net.wired-auth": R("net.wired-auth", "Wired 802.1X & NAC", "network", "Wired 802.1X: authenticated as host/WS-07.corp.example.org 12m ago, after 2 failures in 24 h", 180, [
+      F("Wired AutoConfig service", "running", "ok"),
+      F("Wired 802.1X", "authenticated as host/WS-07.corp.example.org 12m ago, after 2 failures in 24 h", "warning",
+        "Last failure: 2026-11-10T13:58:02Z UTC, The authenticator is no longer present.", { metric: M(2, "failures") }),
+      F("Ethernet: 802.1X", "Authenticated"),
+    ]),
     "net.wifi-auth": R("net.wifi-auth", "Wi-Fi roaming & network authentication", "network", "5 recent network-authentication event(s)", 240, [
       F("Wireless session history (collected events)", "2 successful association(s), 1 disconnect(s), 1 failure(s)", "warning", "An association or a disconnect alone does not prove a roam or a fault. Compare access-point identifiers and the problem's time."),
       F("2026-11-10T16:57:09Z · Wi-Fi 8001", "WLAN AutoConfig service has successfully connected to a wireless network.", "info", "Microsoft-Windows-WLAN-AutoConfig/Operational · ConnectionMode: Automatic connection with a profile · ProfileName: CORP · SSID: CORP"),

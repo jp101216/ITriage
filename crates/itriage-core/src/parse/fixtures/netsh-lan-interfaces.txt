@@ -1,0 +1,7 @@
+There is 1 interface on the system:
+
+    Name             : Ethernet 3
+    Description      : Microsoft Hyper-V Network Adapter #3
+    GUID             : c36ee3d6-1160-4577-bd1e-ef0d2ad6f3d3
+    Physical Address : E4-FA-DE-4A-13-99
+    State            : Attempting to authenticate

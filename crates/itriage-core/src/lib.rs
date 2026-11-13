@@ -64,6 +64,7 @@ pub mod triage {
     pub mod startup;
     pub mod storage;
     pub mod system;
+    pub mod wired;
 }
 
 pub mod fixes;

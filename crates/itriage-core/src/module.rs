@@ -255,6 +255,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::net::target::DestinationTest),
         Box::new(crate::investigate::applications::ApplicationConnections),
         Box::new(crate::investigate::wireless::WirelessAuthentication),
+        Box::new(crate::triage::wired::WiredAuthentication),
         // --- Event log ---
         Box::new(crate::triage::eventlog::RecentErrors),
         // --- Workstation (service desk) ---
@@ -331,10 +332,10 @@ pub const PRESETS: &[Preset] = &[
         id: "triage",
         title: "Slowness triage",
         script: "Invoke-NetTriage",
-        description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, the site's servers, and a destination if you give one. Changes nothing.",
+        description: "System baseline, performance, network, latency, proxy, Wi-Fi and VPN, wired 802.1X and NAC, the site's servers, and a destination if you give one. Changes nothing.",
         modules: &[
             "system.info", "system.disk", "system.memory", "proc.top", "net.connectivity", "net.latency",
-            "net.proxy", "net.target", "desk.wifi", "site.checks",
+            "net.proxy", "net.target", "desk.wifi", "net.wired-auth", "site.checks",
         ],
     },
     Preset {

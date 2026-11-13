@@ -192,6 +192,12 @@ pub fn interfaces() -> Result<Vec<Interface>, String> {
                 description: a.Description.to_string().unwrap_or_default(),
                 up: a.OperStatus == IfOperStatusUp,
                 loopback: a.IfType == IF_TYPE_SOFTWARE_LOOPBACK,
+                ethernet: {
+                    // IF_TYPE_ETHERNET_CSMACD, but not a VPN or a Hyper-V
+                    // virtual switch port on the host.
+                    let description = a.Description.to_string().unwrap_or_default();
+                    a.IfType == 6 && !crate::parse::net::is_vpn_adapter(&description) && !description.contains("Virtual Ethernet")
+                },
                 addresses,
                 gateways,
                 dns_servers,
