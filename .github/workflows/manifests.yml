@@ -3,64 +3,64 @@ on: push
 permissions:
   contents: read
 jobs:
-  linux:
-    runs-on: ubuntu-latest
+  watch:
+    runs-on: windows-latest
     steps:
-      - name: realm, sssd, adcli, klist
-        shell: bash {0}
+      - uses: actions/checkout@v4
+        with:
+          ref: scratch/phase5-wip
+      - name: Build the command line
+        shell: pwsh
+        run: cargo build -q -p itriage-core --example triage
+      - name: Install and uninstall the watch task
+        shell: pwsh
         run: |
-          set +e
-          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq realmd sssd sssd-tools adcli krb5-user packagekit >/dev/null 2>&1 || true
-          realm --version || true
-          realm list; echo "realm list exit $?"
-          sudo tee /etc/krb5.conf >/dev/null <<'EOF'
-          [libdefaults]
-            default_realm = CORP.EXAMPLE.ORG
-            dns_lookup_kdc = false
-          [realms]
-            CORP.EXAMPLE.ORG = {
-              kdc = 192.0.2.10
-            }
-          EOF
-          printf 'addent -password -p WS-07$@CORP.EXAMPLE.ORG -k 3 -e aes256-cts-hmac-sha1-96\nhunter2\naddent -password -p host/ws-07.corp.example.org@CORP.EXAMPLE.ORG -k 3 -e aes256-cts-hmac-sha1-96\nhunter2\naddent -password -p host/WS-07@CORP.EXAMPLE.ORG -k 2 -e aes128-cts-hmac-sha1-96\nhunter2\nwkt /tmp/test.keytab\nquit\n' | ktutil
-          echo "===== klist -k"; klist -k /tmp/test.keytab
-          echo "===== klist -k -t -e"; klist -k -t -e /tmp/test.keytab
-          sudo cp /tmp/test.keytab /etc/krb5.keytab
-          sudo tee /etc/sssd/sssd.conf >/dev/null <<'EOF'
-          [sssd]
-          domains = corp.example.org
-          config_file_version = 2
-          services = nss, pam, ifp
-
-          [domain/corp.example.org]
-          ad_domain = corp.example.org
-          krb5_realm = CORP.EXAMPLE.ORG
-          realmd_tags = manages-system joined-with-adcli
-          cache_credentials = True
-          id_provider = ad
-          krb5_store_password_if_offline = True
-          default_shell = /bin/bash
-          ldap_id_mapping = True
-          use_fully_qualified_names = True
-          fallback_homedir = /home/%u@%d
-          access_provider = ad
-          ad_server = 192.0.2.10
-          EOF
-          sudo chmod 600 /etc/sssd/sssd.conf
-          sudo systemctl restart sssd; echo "sssd restart exit $?"
-          sleep 8
-          systemctl is-active sssd || true
-          echo "===== realm list"; realm list; echo "exit $?"
-          echo "===== realm list --name-only"; realm list --name-only; echo "exit $?"
-          echo "===== sssctl domain-list"; sudo sssctl domain-list; echo "exit $?"
-          echo "===== sssctl domain-status"; sudo sssctl domain-status corp.example.org; echo "exit $?"
-          echo "===== sssctl domain-status -o"; sudo sssctl domain-status -o corp.example.org; echo "exit $?"
-          echo "===== sssctl domain-status as user"; sssctl domain-status corp.example.org; echo "exit $?"
-          echo "===== adcli testjoin"; sudo timeout 30 adcli testjoin; echo "exit $?"
-          echo "===== adcli testjoin -D"; sudo timeout 30 adcli testjoin -D corp.example.org; echo "exit $?"
-          echo "===== adcli testjoin as user"; timeout 30 adcli testjoin; echo "exit $?"
-          echo "===== sssd.conf 0644"; sudo chmod 644 /etc/sssd/sssd.conf; sudo systemctl restart sssd; echo "restart exit $?"; sudo journalctl -u sssd -n 8 --no-pager
-          echo "===== sssctl config-check"; sudo sssctl config-check; echo "exit $?"
-          echo "===== no ifp"; sudo chmod 600 /etc/sssd/sssd.conf; sudo sed -i 's/services = nss, pam, ifp/services = nss, pam/' /etc/sssd/sssd.conf; sudo systemctl restart sssd; sleep 5; sudo sssctl domain-status corp.example.org; echo "exit $?"
-          echo "===== realm list after stop"; sudo systemctl stop sssd; realm list; echo "exit $?"
+          $exe = Resolve-Path target\debug\examples\triage.exe
+          "===== install"; & $exe --install-watch; "exit $LASTEXITCODE"
+          "===== query"; schtasks /Query /TN "ITriage Watch" /XML; "exit $LASTEXITCODE"
+          "===== query list"; schtasks /Query /TN "ITriage Watch" /V /FO LIST
+          "===== uninstall"; & $exe --uninstall-watch; "exit $LASTEXITCODE"
+          "===== query after"; schtasks /Query /TN "ITriage Watch" 2>&1; "exit $LASTEXITCODE"
+          "===== uninstall again"; & $exe --uninstall-watch; "exit $LASTEXITCODE"
+          "===== audit"; Get-Content "$env:LOCALAPPDATA\itriage\audit.jsonl" -Tail 3
+      - name: A real Application Error 1000
+        shell: pwsh
+        run: |
+          Start-Process powershell -ArgumentList '-NoProfile','-Command','[Environment]::FailFast(\"itriage watch test\")' -Wait
+          Start-Sleep 10
+          Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 2 -ErrorAction SilentlyContinue | ForEach-Object { "---- $($_.ProviderName) $($_.Id)"; $_.ToXml() }
+      - name: Watch catches a crash and a busy processor
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path target\debug\examples\triage.exe
+          @"
+          [advanced]
+          watch = true
+          watch_triggers = ["app_hang"]
+          "@ | Set-Content "$env:RUNNER_TEMP\hang.toml"
+          $env:ITRIAGE_PROFILE = "$env:RUNNER_TEMP\hang.toml"
+          $w = Start-Process $exe -ArgumentList '--watch' -PassThru -RedirectStandardError "$env:RUNNER_TEMP\watch1.err"
+          Start-Sleep 20
+          Start-Process powershell -ArgumentList '-NoProfile','-Command','[Environment]::FailFast(\"itriage watch test 2\")' -Wait
+          Start-Sleep 40
+          Stop-Process $w -Force
+          "===== watch 1 stderr"; Get-Content "$env:RUNNER_TEMP\watch1.err"
+          @"
+          [thresholds]
+          cpu_pct = { warn = 1, crit = 99 }
+          [advanced]
+          watch = true
+          watch_triggers = ["cpu", "gateway_loss"]
+          "@ | Set-Content "$env:RUNNER_TEMP\cpu.toml"
+          $env:ITRIAGE_PROFILE = "$env:RUNNER_TEMP\cpu.toml"
+          $busy = Start-Process pwsh -ArgumentList '-NoProfile','-Command','$e=(Get-Date).AddSeconds(100); while((Get-Date) -lt $e){}' -PassThru
+          $w = Start-Process $exe -ArgumentList '--watch' -PassThru -RedirectStandardError "$env:RUNNER_TEMP\watch2.err"
+          Start-Sleep 90
+          Stop-Process $w -Force; Stop-Process $busy -Force -ErrorAction SilentlyContinue
+          "===== watch 2 stderr"; Get-Content "$env:RUNNER_TEMP\watch2.err"
+          "===== off"
+          $env:ITRIAGE_PROFILE = ""
+          & $exe --watch; "exit $LASTEXITCODE"
+          "===== captures"
+          Get-ChildItem "$env:LOCALAPPDATA\itriage\history" | Select-Object Name, Length
+          Get-ChildItem "$env:LOCALAPPDATA\itriage\history\*_watch*.txt" | ForEach-Object { "######## $($_.Name)"; Get-Content $_ | Select-Object -First 40 }
