@@ -527,9 +527,10 @@ fn load_from(managed: Option<PathBuf>, trusted: impl Fn(&Path) -> Result<(), Str
         }
     }
     let mut found = load_unmanaged();
-    if found.status.error.is_none() {
-        found.status.error = ignored;
-    }
+    found.status.error = match (found.status.error.take(), ignored) {
+        (Some(own), Some(ignored)) => Some(format!("{own} {ignored}")),
+        (own, ignored) => own.or(ignored),
+    };
     found
 }
 

@@ -64,8 +64,25 @@ fn element(body: &str, tag: &str) -> Option<String> {
     Some(unescape(after[start..end].trim()))
 }
 
+/// The text without its `<!-- … -->` comments: an entry someone commented
+/// out is switched off, and Edge doesn't apply it.
+fn without_comments(xml: &str) -> String {
+    let mut out = String::with_capacity(xml.len());
+    let mut rest = xml;
+    while let Some(start) = rest.find("<!--") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("-->") {
+            Some(end) => rest = &rest[start + end + 3..],
+            None => return out, // an unclosed comment runs to the end
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 pub fn parse(xml: &str) -> Result<SiteList, String> {
-    let xml = xml.trim_start_matches('\u{feff}');
+    let xml = without_comments(xml.trim_start_matches('\u{feff}'));
+    let xml = xml.as_str();
     if let Some(root) = xml.find("<site-list") {
         let tag = &xml[root..root + xml[root..].find('>').ok_or("The site list's root tag isn't closed.")?];
         let version = attr(tag, "version").and_then(|v| v.trim().parse().ok());
@@ -180,6 +197,9 @@ mod tests {
         assert_eq!(list.sites[0], Site { url: "www.contoso.com/travel".into(), compat_mode: "IE8Enterprise".into(), open_in: "IE11".into() });
         assert!(list.sites[2].ie_mode(), "an attribute on open-in doesn't hide its value");
         assert!(!list.sites[3].ie_mode());
+        // An entry inside a comment is switched off.
+        let commented = parse(r#"<site-list version="7"><!-- retired <site url="old.contoso.com"><open-in>IE11</open-in></site> --><site url="new.contoso.com"><open-in>IE11</open-in></site><!-- unclosed"#).unwrap();
+        assert_eq!(commented.sites.iter().map(|s| s.url.as_str()).collect::<Vec<_>>(), ["new.contoso.com"]);
     }
 
     #[test]

@@ -365,7 +365,11 @@ mod os {
                 return Err(format!("netlink bind: {}", std::io::Error::last_os_error()));
             }
             let timeout = libc::timeval { tv_sec: 0, tv_usec: 250_000 };
-            libc::setsockopt(fd.0, libc::SOL_SOCKET, libc::SO_RCVTIMEO, &timeout as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as u32);
+            // Without the timeout a read would never return, and the reader
+            // thread could never be told to stop.
+            if libc::setsockopt(fd.0, libc::SOL_SOCKET, libc::SO_RCVTIMEO, &timeout as *const _ as *const libc::c_void, std::mem::size_of::<libc::timeval>() as u32) != 0 {
+                return Err(format!("netlink timeout: {}", std::io::Error::last_os_error()));
+            }
             fd
         };
         let stop = Arc::new(AtomicBool::new(false));
@@ -376,6 +380,13 @@ mod os {
                 // SAFETY: reads into a live buffer of the length passed.
                 let n = unsafe { libc::recv(fd.0, buf.as_mut_ptr() as *mut libc::c_void, buf.len(), 0) };
                 if n <= 0 {
+                    // The timeout (or a signal) just means look at the stop
+                    // flag again. Anything else would come straight back:
+                    // wait a moment instead of spinning on it.
+                    let kind = std::io::Error::last_os_error().kind();
+                    if n < 0 && !matches!(kind, std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::Interrupted) {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                     continue;
                 }
                 if let Some((arrived, path)) = super::parse_uevent(&buf[..n as usize]) {

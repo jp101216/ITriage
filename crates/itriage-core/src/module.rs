@@ -380,7 +380,7 @@ pub fn preset(id: &str) -> Option<&'static Preset> {
 /// and anything else that wants a blocking run without event streaming.
 pub fn run_selected(ids: &[String], ctx: &RunContext) -> Vec<ModuleResult> {
     let mut results = Vec::new();
-    for m in registry().iter().filter(|m| ids.iter().any(|id| *id == m.info().id)) {
+    for m in registry().iter().filter(|m| ids.contains(&m.info().id)) {
         if ctx.cancelled() {
             break;
         }

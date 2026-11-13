@@ -61,7 +61,8 @@ impl TriageModule for ClearTemp {
 
 fn run(ctx: &RunContext, dry_run: bool) -> Result<Output, String> {
     let hours = ctx.profile().cleanup.temp_min_age_hours;
-    let cutoff = SystemTime::now() - Duration::from_secs(u64::from(hours) * 3600);
+    // A minimum age longer than the clock can count back keeps everything.
+    let cutoff = SystemTime::now().checked_sub(Duration::from_secs(u64::from(hours) * 3600)).unwrap_or(SystemTime::UNIX_EPOCH);
     let (targets, note) = targets();
     let free_before = free_space();
     let mut findings = Vec::new();
@@ -149,8 +150,18 @@ fn os_targets() -> (Vec<PathBuf>, Option<String>) {
     let drive = crate::fixes::maintenance::system_drive();
     if let Ok(users) = fs::read_dir(format!("{drive}\\Users")) {
         for u in users.flatten() {
-            let temp = u.path().join(r"AppData\Local\Temp");
-            if u.file_type().is_ok_and(|t| t.is_dir()) && temp.is_dir() {
+            if !u.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            // Each folder on the way is the user's own to replace. One that
+            // is a junction or link would point an elevated cleanup at
+            // someone else's folder, so that profile is left alone.
+            let mut temp = u.path();
+            let real = ["AppData", "Local", "Temp"].iter().all(|part| {
+                temp.push(part);
+                fs::symlink_metadata(&temp).is_ok_and(|m| m.is_dir() && !is_link(&m))
+            });
+            if real {
                 out.push(temp);
             }
         }

@@ -448,7 +448,7 @@ Every setting, with its default:
 | `[updates] suspend_bitlocker` | `true` | before the manufacturer's tool runs, BitLocker is suspended for one restart, so a BIOS update doesn't leave the PC asking for its recovery key; if protection is on and can't be suspended, nothing is installed. `false` leaves BitLocker to the tool |
 | `[updates] notify` | `true` | a tag in the header when a newer ITriage is out: one request a day to GitHub, nothing downloaded. Also off whenever `public_probes` is off |
 | `[cleanup] temp_min_age_hours` | `24` | temp files changed more recently are kept |
-| `[history] keep` | `100` | saved runs kept; `0` keeps them all |
+| `[history] keep` | `100` | saved runs kept; `0` keeps them all. Watch captures aren't counted: they have their own limits below |
 | `[status] url`, `timeout_ms` | none, `2000` | the site's [incident feed](#known-incidents), `https://` only. Only a managed profile's counts |
 | `[advanced] watch` | `false` | [watch mode](#watch-mode): save a capture by itself when something goes wrong |
 | `[advanced] watch_max_mb`, `watch_keep_days` | `200`, `7` | how much disk watch captures may use, and how long they're kept |
@@ -1083,7 +1083,7 @@ Digital Signatures**, or with
 
 ## Verification status
 
-v0.10.0 passed 340 Linux core tests, 337 Windows core tests and 20 browser
+v0.10.0 passed 342 Linux core tests, 339 Windows core tests and 20 browser
 regression tests, along with workspace Clippy, smoke checks and installer
 builds on both platforms. The browser tests use simulated checks and repairs.
 The rows marked 0.10.0 below are what was run for this release; the earlier

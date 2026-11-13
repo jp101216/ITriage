@@ -274,6 +274,9 @@ pub fn valid_service_name(name: &str) -> bool {
 /// same way a real run checks it.
 pub fn preview(id: &str, target: Option<&str>, profile: &Profile, remote_safe: bool) -> Result<String, String> {
     let spec = spec(id).ok_or_else(|| format!("Unknown fix `{id}`."))?;
+    if spec.targeted && target.is_none() {
+        return Err(format!("The {} fix needs a target.", spec.label));
+    }
     let target = if spec.targeted { target } else { None };
     if let Some(t) = target {
         validate_target(id, t)?;
@@ -664,6 +667,7 @@ mod tests {
         assert!(preview("restart-computer", None, &open, true).unwrap_err().contains("Remote-safe"));
         assert!(preview("flush-dns", None, &Profile::fail_closed(), false).unwrap_err().contains("policy"));
         assert!(preview("unlock-account", Some("a;b"), &open, false).is_err());
+        assert!(preview("start-service", None, &open, false).unwrap_err().contains("target"), "as a real run would refuse");
         assert!(preview("purge-kerberos-tickets", None, &open, false).unwrap().contains("Nothing was changed."));
         assert!(!requires_admin("purge-kerberos-tickets"), "it acts on the user's own tickets");
     }

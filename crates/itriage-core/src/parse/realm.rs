@@ -209,6 +209,7 @@ pub fn findings(f: &Facts) -> Vec<Finding> {
         Some(Ok(entries)) => {
             let newest = entries.iter().map(|e| e.kvno).max().unwrap_or(0);
             let mut principals: Vec<&str> = entries.iter().filter(|e| e.kvno == newest).map(|e| e.principal.as_str()).collect();
+            principals.sort_unstable();
             principals.dedup();
             let all_weak = entries.iter().filter(|e| e.kvno == newest).all(|e| !e.enctype.is_empty() && weak(&e.enctype));
             let row = Finding::new(

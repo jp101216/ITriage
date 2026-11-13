@@ -193,10 +193,16 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
     if report.watch.is_some() {
         ticket.push_str("_watch");
     }
+    let mut stem = format!("{stamp}_{host}{ticket}");
+    // That ending is how watch mode's clean-up knows its own files. A PC or
+    // a ticket called "watch" mustn't make an ordinary run look like one.
+    if report.watch.is_none() && stem.ends_with("_watch") {
+        stem.push_str("_run");
+    }
     let json = serde_json::to_string_pretty(report).map_err(|e| e.to_string())?;
     // Two runs in the same second must not overwrite each other, but saving
     // the same report again (re-importing it) shouldn't duplicate it.
-    let mut path = dir.join(format!("{stamp}_{host}{ticket}.json"));
+    let mut path = dir.join(format!("{stem}.json"));
     let mut n = 1;
     loop {
         // Claim the name atomically: an import, another app instance or a
@@ -215,7 +221,7 @@ fn save_in(dir: &Path, report: &Report, keep: usize) -> Result<PathBuf, String> 
                     return Ok(path);
                 }
                 n += 1;
-                path = dir.join(format!("{stamp}_{host}{ticket}~{n}.json"));
+                path = dir.join(format!("{stem}~{n}.json"));
             }
             Err(e) => return Err(format!("Can't write {}: {e}", path.display())),
         }
@@ -244,8 +250,13 @@ fn file_part(text: &str, also: &str, fallback: &str) -> String {
     }
 }
 
+/// Remove the oldest ordinary runs past `keep`. Watch captures aren't
+/// counted and aren't removed here: they have their own limits (see
+/// `investigate::watch::prune`), and a morning of captures mustn't push the
+/// technician's own runs out of the history.
 fn prune(dir: &Path, keep: usize) {
     let mut files = json_files(dir);
+    files.retain(|p| !p.file_name().is_some_and(|n| crate::investigate::watch::is_capture_file(&n.to_string_lossy())));
     if files.len() <= keep {
         return;
     }
@@ -1371,6 +1382,35 @@ mod tests {
         names.sort();
         assert!(pa.with_extension("txt").exists(), "a transcript is saved beside it");
         assert_eq!(names, vec![pa, pb], "and sorts after the first, oldest first");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_captures_never_push_ordinary_runs_out_of_the_history() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-history-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let at = |minute: u32| format!("2026-11-10T12:{minute:02}:00Z");
+        let run = |minute: u32, watch: bool| {
+            let mut r = report(vec![result("system.disk", vec![Finding::ok("C:\\", "50% used")], None)]);
+            r.generated = at(minute);
+            r.watch = watch.then(|| "processor above 75% for 60 s".to_string());
+            r
+        };
+        // Two ordinary runs, then a string of captures, with room for two.
+        let first = save_in(&dir, &run(1, false), 2).unwrap();
+        let second = save_in(&dir, &run(2, false), 2).unwrap();
+        let captures: Vec<PathBuf> = (3..9).map(|m| save_in(&dir, &run(m, true), 2).unwrap()).collect();
+        assert!(first.exists() && second.exists(), "the technician's runs are still there");
+        assert!(captures.iter().all(|c| c.exists()), "captures are left to watch mode's own limits");
+        // A third ordinary run removes the oldest ordinary one, and no capture.
+        let third = save_in(&dir, &run(9, false), 2).unwrap();
+        assert!(!first.exists() && !first.with_extension("txt").exists(), "the oldest ordinary run and its transcript go");
+        assert!(second.exists() && third.exists() && captures.iter().all(|c| c.exists()));
+        // An ordinary run for a ticket called "watch" isn't taken for a capture.
+        let ticketed = save_in(&dir, &run(10, false).with_ticket(Some("watch")), 0).unwrap();
+        let name = ticketed.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.ends_with("_watch_run.json") && !crate::investigate::watch::is_capture_file(&name), "{name}");
+        assert!(captures.iter().all(|c| crate::investigate::watch::is_capture_file(&c.file_name().unwrap().to_string_lossy())));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
