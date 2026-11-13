@@ -266,17 +266,22 @@ mod imp {
         f.broker_present = crate::win::dirs::windows().join(r"SystemApps\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy").is_dir();
         f.workstation = read_string(HKLM, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "InstallationType").is_some_and(|t| t.eq_ignore_ascii_case("Client"));
         const AAD: &str = "*[System[(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) <= 86400000]]]";
-        if let Ok(rows) = crate::win::eventlog::query_xml("Microsoft-Windows-AAD/Operational", AAD, 100) {
-            for xml in rows {
-                let Some(system) = crate::parse::evtxml::parse_system(&xml) else { continue };
+        if let Ok(rows) = crate::win::eventlog::query_rendered("Microsoft-Windows-AAD/Operational", AAD, 100) {
+            for row in rows {
+                let xml = &row.xml;
+                let Some(system) = crate::parse::evtxml::parse_system(xml) else { continue };
                 let Some(at) = system.time_created.as_deref().and_then(crate::parse::time::iso8601_utc_to_epoch) else { continue };
-                let data = crate::parse::evtxml::payload(&xml);
+                let data = crate::parse::evtxml::payload(xml);
                 let field = |n: &[&str]| crate::parse::blocks::field(&data, n).map(str::to_string);
-                let what = match (field(&["Error"]), field(&["ErrorMessage"])) {
-                    (Some(code), Some(msg)) => format!("{code} {}", msg.lines().next().unwrap_or_default().trim()),
-                    (Some(code), None) => code,
-                    (None, Some(msg)) => msg.lines().next().unwrap_or_default().trim().to_string(),
-                    (None, None) => format!("event {}", system.event_id),
+                // Some AAD events (1104, for one) carry no Error field; their
+                // message names the error instead.
+                let message = row.message.as_deref().and_then(|m| m.lines().map(str::trim).find(|l| !l.is_empty())).map(str::to_string);
+                let what = match (field(&["Error"]), field(&["ErrorMessage"]), message) {
+                    (Some(code), Some(msg), _) => format!("{code} {}", msg.lines().next().unwrap_or_default().trim()),
+                    (Some(code), None, _) => code,
+                    (None, Some(msg), _) => msg.lines().next().unwrap_or_default().trim().to_string(),
+                    (None, None, Some(m)) => format!("event {}: {m}", system.event_id),
+                    (None, None, None) => format!("event {}", system.event_id),
                 };
                 f.aad_errors.push((at, what.chars().take(160).collect()));
             }
