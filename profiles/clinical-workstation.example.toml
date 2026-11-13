@@ -122,6 +122,21 @@ temp_min_age_hours = 24
 # Saved runs kept on this PC (0 keeps every run).
 keep = 100
 
+# The site's incident feed: runs that match an open incident say so first.
+# Only honoured from the managed profile, over HTTPS.
+# [status]
+# url = "https://itstatus.example.org/itriage.json"
+# timeout_ms = 2000
+
+# Watch mode: save a capture by itself when the PC misbehaves. Off unless
+# turned on here; "itriage --install-watch" (as administrator) starts it at
+# each sign-in.
+# [advanced]
+# watch = true
+# watch_max_mb = 200
+# watch_keep_days = 7
+# watch_triggers = ["cpu", "gateway_loss", "app_paths", "app_hang"]
+
 [ui]
 # The technician console's default theme: red (the default), amber, phosphor,
 # radar, cyber, holo, tactical, minimal or glass. Technicians can still pick

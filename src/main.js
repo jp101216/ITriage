@@ -1825,7 +1825,7 @@
       syncRows();
       setDiff(live.diff);
       const first = resultsEl.querySelector(".card");
-      const banners = topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely);
+      const banners = topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely, live.report && live.report.known_incidents);
       banners.forEach((b) => resultsEl.insertBefore(b, first));
       cases.decorate(live.report,resultsEl);
       if (live.diff) applyBadges();
@@ -2063,7 +2063,7 @@
       showEmpty();
       return;
     }
-    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely).forEach((b) => resultsEl.appendChild(b));
+    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely, live.report && live.report.known_incidents).forEach((b) => resultsEl.appendChild(b));
     live.results.forEach((r) => {
       resultsEl.appendChild(buildCard(r, { live: true }));
       lastSev.set(r.module_id, statusOf(r));
@@ -2278,8 +2278,29 @@
   const KIND_WORD = { new: "new", resolved: "resolved", changed: "changed", ongoing: "still failing" };
 
   /** The banners above the cards: restart needed, preview, and what changed. */
-  function topBanners(results, diff, label, liveRun, likely) {
-    return [liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), likelyBanner(likely), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  function topBanners(results, diff, label, liveRun, likely, incidents) {
+    return [incidentBanner(incidents), liveRun ? restartBanner(results) : null, previewBanner(results, liveRun), likelyBanner(likely), diff ? diffBanner(diff, label) : null].filter(Boolean);
+  }
+
+  /** "Matches a known incident": the site's incident feed names an outage
+   *  this run's findings (or this PC's subnet) fit. It goes first. */
+  function incidentBanner(incidents) {
+    if (!incidents || !incidents.length) return null;
+    const box = document.createElement("div");
+    box.className = "banner incident";
+    box.innerHTML = `
+      <div class="banner-row">
+        <span class="ttl">${I.alert}Matches a known incident</span>
+        <span class="sub">Attach this report to it and stop troubleshooting this PC on its own.</span>
+      </div>
+      <ol class="likely-list">${incidents
+        .map((k) => `
+          <li>
+            <p class="cause"><b>${esc(k.id)}</b> ${esc(k.title)}${k.url ? ` <a class="kb-link" data-kb href="${esc(k.url)}" target="_blank" rel="noopener noreferrer">${I.book}Status page</a>` : ""}</p>
+            <p class="why"><b>Because</b>${esc(k.because)}</p>
+          </li>`)
+        .join("")}</ol>`;
+    return box;
   }
 
   /** "Likely cause": what the engine's rules make of the findings, each
@@ -2309,7 +2330,7 @@
     if (mode !== "tech" || viewing) return;
     resultsEl.querySelectorAll(":scope > .banner").forEach((b) => b.remove());
     const first = resultsEl.querySelector(".card");
-    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely)
+    topBanners(live.results, live.diff, "Since last run", true, live.report && live.report.likely, live.report && live.report.known_incidents)
       .forEach((b) => resultsEl.insertBefore(b, first));
   }
 
@@ -2480,13 +2501,13 @@
     box.innerHTML = `
       <div class="banner-row">
         <span class="ttl">${source === "file" ? "Opened report" : source === "compare" ? "Comparison" : "Saved run"}</span>
-        <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.ticket ? " · ticket " + esc(report.ticket) : ""}${report.cancelled ? " · cancelled" : ""}</span>
+        <span class="sub">${esc(h.hostname || "unknown host")} · ${esc(fmtLocal(report.generated))} · ${report.results.length} module${report.results.length === 1 ? "" : "s"}${report.profile ? " · " + esc(report.profile) : ""}${report.ticket ? " · ticket " + esc(report.ticket) : ""}${report.watch ? " · saved by watch mode: " + esc(report.watch) : ""}${report.cancelled ? " · cancelled" : ""}</span>
         <span class="grow"></span>
         <button class="bk-btn xs" type="button" data-x="back">${live.results.length ? "Back to this run" : "Close"}</button>
       </div>`;
     box.querySelector('[data-x="back"]').onclick = renderLive;
     resultsEl.appendChild(box);
-    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false, report.likely).forEach((b) => resultsEl.appendChild(b));
+    topBanners(report.results, diff, source === "compare" ? "Compared with" : "Since the run before", false, report.likely, report.known_incidents).forEach((b) => resultsEl.appendChild(b));
     report.results.forEach((r) => resultsEl.appendChild(buildCard(r, { live: false })));
     cases.decorate(report,resultsEl);
     if (diff) applyBadges();
@@ -2541,7 +2562,7 @@
           <button class="hist${current === m.path ? " current" : ""}" type="button" data-i="${i}">
             <span class="when">${esc(fmtLocal(m.evidence_updated || m.generated))}${m.evidence_updated ? " · case updated" : ""}</span>
             <span class="chip sev-${esc(m.worst)}">${esc(m.worst)}</span>
-            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.cancelled ? " · cancelled" : ""}</span>
+            <span class="what">${esc(m.hostname)} · ${m.modules} module${m.modules === 1 ? "" : "s"}${m.ticket ? " · " + esc(m.ticket) : ""}${m.watch ? " · watch: " + esc(m.watch) : ""}${m.cancelled ? " · cancelled" : ""}</span>
           </button>
         </div>`)
       .join("");
@@ -2920,11 +2941,16 @@
   function plainText(report, diff, withLogs) {
     const lines = [`ITriage report — ${fmtUtc(report.generated)}`, hostLine(report)];
     if (report.ticket) lines.push(`Ticket: ${report.ticket}`);
+    if (report.watch) lines.push(`Saved by watch mode: ${report.watch}`);
     lines.push(...caseLines(report));
     if (report.cancelled) lines.push("Run was cancelled before every module finished.");
     if (report.results.some((r) => r.preview)) lines.push("PREVIEW: modules that change the machine only said what they would do.");
     if (report.results.some((r) => r.restart_required && !r.preview)) lines.push("A restart is needed to finish the changes.");
     if (diff) lines.push(diffLine(diff));
+    (report.known_incidents || []).forEach((k) => {
+      lines.push(`MATCHES KNOWN INCIDENT ${k.id}: ${k.title}${k.url ? ` <${k.url}>` : ""}. Attach this report to it.`);
+      lines.push(`  because ${k.because}`);
+    });
     lines.push("=".repeat(52));
     if ((report.likely || []).length) {
       lines.push("LIKELY CAUSE");
@@ -3932,6 +3958,10 @@
         if (ref) report.ticket = ref;
         const likely = mockLikely(results);
         if (likely.length) report.likely = likely;
+        // A sample incident feed: the ward's weak Wi-Fi is a known outage.
+        const weak = results.find((r) => r.module_id === "desk.wifi" && r.findings.some((f) => f.label === "Signal" && f.severity === "critical"));
+        if (weak) report.known_incidents = [{ id: "INC0048213", title: "Ward 4 wireless access points being replaced", url: "https://status.example.org/INC0048213",
+          because: "Wi-Fi & VPN: Signal: 34% · weak" }];
         const stamp = report.generated.replace(/[-:]/g, "");
         const path = `${HIST_DIR}${stamp}_${host.hostname}${ref ? "_" + ref.replace(/[^A-Za-z0-9-]/g, "_") : ""}.json`;
         saved.set(path, clone(report));
