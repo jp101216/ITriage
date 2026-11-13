@@ -181,8 +181,10 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Domain & Group Policy | domain join, **DC vs. cached-credential sign-in**, AD site, last computer policy refresh | n/a |
 | Sign-in speed (Group Policy) | the last sign-in as a waterfall: profile load (User Profile Service 1 → 2) plus user policy (GroupPolicy 4001 → 8001), each client-side extension's time (5016) and failures (6016/7016), how many GPOs applied or were filtered out, and lost domain controllers (1129) or unreadable SYSVOL files (1058). Warns at 60 s, critical at 120 s | n/a |
 | Sign-in & account lockouts | the signed-in account on its domain controller (**NetAPI**): locked, disabled, wrong-password count, password expiry (warns 14 days out), the lockout policy (a Microsoft Entra ID account lives in the cloud, so for those it says so and checks the rest); mapped drives and whether their servers answer; and [what on this PC keeps locking it](#account-lockouts) | `passwd -S`, `chage`, `faillock`, Kerberos ticket, network mounts |
-| Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers | CUPS `lpstat` |
-| Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers | USB devices from sysfs |
+| Printers & print queue | **spooler API**: status flags, stuck jobs, default and label printers; Point and Print policy (computer, then the signed-in person's): who may install drivers, the approved and package-approved print servers, each connected printer's server against those lists, drivers that aren't package-aware when only package Point and Print is allowed, and drivers Windows protected print mode won't load | CUPS `lpstat` |
+| Devices & peripherals | **SetupAPI**: Device Manager problem codes, microphones, cameras, card readers; USB selective suspend in the active power plan and each required USB device's own power settings, with the opt-in **Keep USB devices awake** fix | USB devices from sysfs |
+| Outlook, Teams & OneDrive | for the person at the console: Outlook data files (.ost/.pst) against `MaxLargeFileSize`/`WarnLargeFileSize` or Outlook's 50 GB / 47.5 GB defaults; the Click-to-Run version, update channel (named from Microsoft's channel GUIDs) and a profile minimum; Desktop, Documents and Pictures moved into OneDrive while OneDrive isn't running; the new Teams cache size with **Clear Teams cache**; leftover classic Teams; the Entra sign-in broker and AAD/Operational errors in 24 h | n/a |
+| Edge IE mode site list | the `InternetExplorerIntegrationLevel` and `InternetExplorerIntegrationSiteList` policies (computer, then user); the site list fetched from its web address or file share and read (version 2, or version 1 reported as legacy); which of the profile's application URLs and the target open in IE mode; Edge's version | n/a |
 | Wi-Fi & VPN | **WLAN API**: SSID, signal (warns at 70%), security, radio, channel, link rates; Cisco Secure Client and Zscaler clients and tunnels | `nmcli`, VPN clients and tunnel interfaces |
 | Machine certificates | LocalMachine\My expiry; warns 14 days out. For each one in use (it has a private key): its CRL fetched live from each HTTP distribution point (expired is critical, expiring within `[security] crl_warn_hours` a warning, unreachable a warning; LDAP points are left to the chain check), its OCSP and issuer URLs, and the chain engine's own revocation verdict, so a check that passes on a cached CRL while the distribution point is down still shows | n/a |
 | Entra, Kerberos & SSO sign-in | device join and authentication, Windows Hello and the signed-in user's PRT/WAM status (`dsregcmd`, skipped with `public_probes = false`); the Kerberos ticket cache through LSA (TGT and when it expires, service tickets, RC4 or DES tickets, the KDC), only when ITriage runs as the signed-in user unelevated; and servers that rejected a ticket (System event 4, KRB_AP_ERR_MODIFIED: a duplicate SPN or a stale account password) | the Kerberos cache from MIT `klist -e` |
@@ -421,7 +423,7 @@ Every setting, with its default:
 |---|---|---|
 | `[policy] allow_changes` | `true` | anything that changes the machine |
 | `[policy] allow_installs` | `true` | the two install modules and the install buttons |
-| `[policy] fixes` | every fix | one-click fixes that may run; `start-service:<name>` allows one service |
+| `[policy] fixes` | every fix except opt-in ones | one-click fixes that may run; `start-service:<name>` allows one service. `keep-usb-awake` runs only when listed here |
 | `[policy] start_in` | `"technician"` | or `"self-service"` |
 | `[policy] technician_view` | `true` | `false` keeps the app in self-service mode |
 | `[policy] remote_safe` | `false` | start in remote-safe mode (technicians can switch it off) |
@@ -489,6 +491,9 @@ turns any re-check of such a module into a preview whatever the UI asks for.
 | Sign out the session | the same person has a disconnected session on the PC | signs that session out, and only if it's still disconnected | n/a | ✔ |
 | Unlock the account | the account is locked out | clears the lockout on the domain controller (or the PC, for a local account) | resets the `faillock` count | ✔ |
 | Clear Kerberos tickets | the TGT is missing or expired, or a server rejected a ticket | `klist purge` through LSA, for the session ITriage runs in; refused when elevated or another user's | `kdestroy`; refused as root | |
+| Clear Teams cache | beside the new Teams cache size | empties `AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams` for the person at the console, as Microsoft's article describes; refused while Teams runs in their session | n/a | |
+| Keep USB devices awake | USB selective suspend is on, and the profile's `fixes` list names `keep-usb-awake` (it's opt-in: with no list it isn't offered) | turns selective suspend off in the active power plan, plugged in and on battery, after saving what it was; refused when a policy sets it | n/a | ✔ |
+| Restore USB power | Keep USB devices awake changed the plan | puts the saved selective suspend values back in that plan | n/a | ✔ |
 | Revert tune-up | TCP autotuning & NIC power changed something | puts TCP autotuning and the adapters' sleep settings back as they were (locked by remote-safe) | n/a | ✔ |
 
 Targets are validated before use (a service name, a Windows Update ID, one of
@@ -787,7 +792,7 @@ ITriage/
 │   │   │                       #   wifi, certs, battery
 │   │   ├── security/           # posture: encryption, antivirus, firewall, Secure Boot, admins
 │   │   ├── site/               # required apps, required services + endpoints
-│   │   ├── fixes/              # dns, netrepair, temp, maintenance (the Tune-up modules), undo
+│   │   ├── fixes/              # dns, netrepair, temp, maintenance (the Tune-up modules), undo, usbpower
 │   │   └── update/             # scan, apply, firmware, winget, oem (table-driven), pkgmgr, notice
 │   └── examples/triage.rs      # the command line, for `cargo run --example`
 ├── profiles/                   # example site profiles

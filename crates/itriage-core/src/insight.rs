@@ -483,6 +483,89 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         out.push(insight(84, Severity::Critical, "Nothing can print because the print service isn't running.", vec![cite(h)], "Restart the Print Spooler."));
     }
 
+    // --- Point and Print: a print server users can't take drivers from.
+    if let Some(h) = v.find("desk.printers", |f| f.label.starts_with("Print server ") && bad(f)) {
+        let server = h.1.label.trim_start_matches("Print server ");
+        out.push(insight(
+            58,
+            Severity::Warning,
+            format!("Adding a printer from {server} asks for an administrator: that server isn't on the approved Point and Print list."),
+            vec![cite(h)],
+            "Add the server to the approved list in Group Policy, or install its drivers for users ahead of time. Don't open driver installs to everyone.",
+        ));
+    } else if let Some(h) = v.find("desk.printers", |f| f.label.ends_with(": driver") && bad(f)) {
+        out.push(insight(52, Severity::Warning, format!("{}: {}.", h.1.label.trim_end_matches(": driver"), h.1.value), vec![cite(h)], "Switch that printer to a package-aware (v4) driver or Microsoft's IPP class driver."));
+    }
+
+    // --- Microsoft 365.
+    if let Some(h) = v.find("desk.m365", |f| f.label.starts_with("Outlook data file: ") && bad(f)) {
+        let file = h.1.label.trim_start_matches("Outlook data file: ");
+        let full = h.1.severity == Severity::Critical;
+        out.push(insight(
+            if full { 80 } else { 50 },
+            h.1.severity,
+            if full { format!("Outlook's data file {file} is full, so new mail stops arriving in it.") } else { format!("Outlook's data file {file} is nearly full.") },
+            vec![cite(h)],
+            "Archive or delete old mail, or for a mailbox cache (.ost) set a shorter \"mail to keep offline\" window. A policy can raise the limit, but a file this size makes Outlook slow.",
+        ));
+    }
+    if let Some(h) = v.problem("desk.m365", "Entra sign-in broker") {
+        out.push(insight(78, Severity::Critical, "Microsoft 365 apps can't sign in with the Windows account: the Entra sign-in broker is missing.", vec![cite(h)], "Follow Microsoft's primary refresh token troubleshooting article; the broker comes back with Windows repair, not a script."));
+    } else if let Some(h) = v.problem("desk.m365", "Entra sign-in errors (24 h)") {
+        out.push(insight(
+            55,
+            Severity::Warning,
+            "Entra sign-in keeps failing on this PC, the usual cause of Outlook and Teams asking for the password again and again.",
+            vec![cite(h)],
+            "Run dsregcmd /status as the user and check AzureAdPrt, then follow the linked Microsoft article.",
+        ));
+    }
+    if let Some(h) = v.problem("desk.m365", "OneDrive folder backup") {
+        out.push(insight(
+            62,
+            Severity::Warning,
+            format!("{} OneDrive isn't running, so files saved there aren't syncing or backed up.", head(&h.1.value).replace(", but OneDrive isn't running", ", but")),
+            vec![cite(h)],
+            "Start OneDrive from the Start menu and sign in. If it won't stay running, reset it (onedrive.exe /reset) and sign in again.",
+        ));
+    }
+    if let Some(h) = v.problem("desk.m365", "Microsoft 365 Apps") {
+        out.push(insight(45, Severity::Warning, "Microsoft 365 Apps are older than the site requires.", vec![cite(h)], "Check its update channel and whether Office updates are reaching this PC; Update Now in any Office app's Account page starts one."));
+    }
+
+    // --- Edge IE mode.
+    if let Some(h) = v.problem("desk.browser", "Enterprise site list") {
+        out.push(insight(
+            60,
+            Severity::Warning,
+            format!("Edge's IE mode site list {}, so older web apps may open in the wrong mode.", h.1.value),
+            vec![cite(h)],
+            "Open the list's address from this PC; if it fails, check the server or share hosting it and the proxy. edge://compat/enterprise shows what Edge last downloaded.",
+        ));
+    } else if let Some(h) = v.problem("desk.browser", "IE integration") {
+        out.push(insight(40, Severity::Warning, format!("Edge's IE integration is set to {}.", h.1.value), vec![cite(h)], "Set InternetExplorerIntegrationLevel to IE mode (1)."));
+    }
+
+    // --- A required device that drops out.
+    let drops = v.problems("capture.recording", |f| f.label.starts_with("Peripheral dropped: "));
+    if let Some(first) = drops.first() {
+        let device = first.1.label.trim_start_matches("Peripheral dropped: ");
+        let suspend = v.find("desk.devices", |f| f.label == "USB selective suspend" && f.value.contains("on "));
+        let mut evidence: Vec<String> = drops.iter().take(3).map(|h| cite(*h)).collect();
+        evidence.extend(suspend.map(cite));
+        out.push(insight(
+            70,
+            Severity::Warning,
+            format!("The {} {} during the recording.", device.to_lowercase(), head(&first.1.value)),
+            evidence,
+            if suspend.is_some() {
+                "USB selective suspend is on. If the drops follow idle time, keep USB devices awake (a site opt-in fix); if they happen mid-use, try another port, cable or dock."
+            } else {
+                "Try another USB port, cable or the dock's port; check Device Manager for the device's own power setting."
+            },
+        ));
+    }
+
     // --- One app that keeps failing.
     if let Some(h) = v.find("system.reliability", |f| f.label.starts_with("App crashes") && bad(f)) {
         let app = h.1.detail.as_deref().and_then(|d| d.split(';').next()).unwrap_or("").to_string();
@@ -780,6 +863,36 @@ mod tests {
         assert!(both[0].cause.starts_with("Network sign-in with this PC's certificate is failing"), "{both:#?}");
         assert_eq!(both[0].evidence.len(), 2);
         assert!(likely_causes(&[certs])[0].cause.starts_with("The certificate authority's revocation list has expired"));
+    }
+
+    #[test]
+    fn microsoft_365_problems_are_named() {
+        let r = vec![result("desk.m365", "Outlook, Teams & OneDrive", vec![
+            Finding::crit("Outlook data file: jparker@corp.example.org.ost", "50.0 GB · 100% of the 50.0 GB limit: full, Outlook stops adding mail to it"),
+            Finding::warn("OneDrive folder backup", "Desktop, Documents are in OneDrive, but OneDrive isn't running"),
+            Finding::warn("Entra sign-in errors (24 h)", "12 errors · last 1m ago"),
+        ])];
+        let found = likely_causes(&r);
+        assert_eq!(found[0].cause, "Outlook's data file jparker@corp.example.org.ost is full, so new mail stops arriving in it.");
+        assert!(found.iter().any(|i| i.cause == "Desktop, Documents are in OneDrive, but OneDrive isn't running, so files saved there aren't syncing or backed up."), "{found:#?}");
+        assert!(found.iter().any(|i| i.cause.starts_with("Entra sign-in keeps failing")));
+    }
+
+    #[test]
+    fn edge_print_servers_and_device_drops_are_named() {
+        let r = vec![
+            result("desk.browser", "Edge IE mode site list", vec![Finding::warn("Enterprise site list", "can't be fetched: intranet.example.org answered HTTP 404")]),
+            result("desk.printers", "Printers & print queues", vec![Finding::warn("Print server PRN09", "not on the approved list")]),
+            result("capture.recording", "Intermittent problem recording", vec![Finding::warn("Peripheral dropped: Scanner", "dropped 2 times · came back")]),
+            result("desk.devices", "Devices & peripherals", vec![Finding::info("USB selective suspend", "on plugged in · on on battery")]),
+        ];
+        let found = likely_causes(&r);
+        let causes: Vec<&str> = found.iter().map(|i| i.cause.as_str()).collect();
+        assert_eq!(causes[0], "The scanner dropped 2 times during the recording.");
+        assert!(found[0].next.starts_with("USB selective suspend is on"));
+        assert_eq!(found[0].evidence.len(), 2);
+        assert!(causes.contains(&"Edge's IE mode site list can't be fetched: intranet.example.org answered HTTP 404, so older web apps may open in the wrong mode."));
+        assert!(causes.iter().any(|c| c.starts_with("Adding a printer from PRN09 asks for an administrator")));
     }
 
     #[test]

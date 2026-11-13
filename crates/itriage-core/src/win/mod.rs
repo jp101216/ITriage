@@ -26,6 +26,7 @@ pub mod shell;
 pub mod smbios;
 pub mod token;
 pub mod trust;
+pub mod usbpower;
 pub mod wlan;
 pub mod wua;
 

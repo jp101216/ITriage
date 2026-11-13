@@ -4,10 +4,12 @@
 
 pub mod account;
 pub mod battery;
+pub mod browser;
 pub mod certs;
 pub mod devices;
 pub mod domain;
 pub mod logon;
+pub mod m365;
 pub mod printers;
 pub mod time;
 pub mod wifi;

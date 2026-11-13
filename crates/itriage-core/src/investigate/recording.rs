@@ -8,6 +8,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_SAMPLES: usize = 1800;
 pub const MAX_MARKERS: usize = 100;
+/// Device drops and returns are markers too, counted separately so a
+/// flapping scanner can't use up the technician's own.
+pub const MAX_DEVICE_MARKERS: usize = 200;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -34,6 +37,17 @@ impl Config {
 pub struct Marker {
     pub at_ms: u64,
     pub label: String,
+    /// Set when the marker is a required device dropping or coming back,
+    /// rather than something the technician typed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceMark>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeviceMark {
+    /// The `[[require.device]]` label.
+    pub label: String,
+    pub name: String,
+    pub arrived: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Sample {
@@ -79,13 +93,14 @@ pub fn mark(markers: &Mutex<Vec<Marker>>, label: &str) -> Result<Marker, String>
     append_marker(&mut rows, label)
 }
 pub fn append_marker(rows: &mut Vec<Marker>, label: &str) -> Result<Marker, String> {
-    if rows.len() >= MAX_MARKERS {
+    if rows.iter().filter(|m| m.device.is_none()).count() >= MAX_MARKERS {
         return Err("This recording already has 100 markers.".into());
     }
     let label: String = label.trim().chars().filter(|c| !c.is_control()).take(200).collect();
     let marker = Marker {
         at_ms: now_ms(),
         label: if label.is_empty() { "Problem happened now".into() } else { label },
+        device: None,
     };
     rows.push(marker.clone());
     Ok(marker)
@@ -151,72 +166,84 @@ pub fn record(
     // interval (a second at most) before taking the second; taken at once,
     // it would compare readings microseconds apart: a made-up CPU figure
     // (which could then be the recording's "peak") and rates of zero.
-    let mut sampler = Sampler::new();
-    let settle = Duration::from_millis(config.interval_ms.min(1000)).max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-    std::thread::sleep(settle);
-    let start = Instant::now();
-    let mut next = start;
-    let mut wifi: Option<crate::investigate::wireless::WifiState> = None;
-    let mut wifi_seen = false;
-    while start.elapsed() < Duration::from_secs(config.seconds) && recording.samples.len() < MAX_SAMPLES {
-        if ctx.cancelled() {
-            recording.stopped_early = true;
-            break;
-        }
-        if Instant::now() < next {
-            std::thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        let telemetry = sampler.sample();
-        let mut sample = Sample {
-            at_ms: now_ms(),
-            cpu_pct: telemetry.cpu,
-            memory_pct: telemetry.mem_pct,
-            disk_read: telemetry.disk_read,
-            disk_write: telemetry.disk_write,
-            net_rx: telemetry.net_rx,
-            net_tx: telemetry.net_tx,
-            tcp_ms: None,
-            tcp_error: None,
-            dns_ms: None,
-            dns_error: None,
-            wifi: None,
-            wifi_signal: None,
-            wifi_bssid: None,
-            clock_pct: telemetry.clock_pct,
-        };
-        if let (Some(addresses), Some((_, port))) = (&addresses, &target) {
-            let check = crate::net::tcp_check(addresses, *port, Duration::from_millis(250));
-            if let Some((_, time)) = check.connected() {
-                sample.tcp_ms = Some(time.as_secs_f64() * 1000.0);
-            } else {
-                sample.tcp_error = Some(check.error());
+    // Required devices are watched alongside the samples; each drop and
+    // return lands in `markers` as it happens.
+    let stop_watch = std::sync::atomic::AtomicBool::new(false);
+    let devices = &ctx.profile().require.device;
+    let (device_gap, wifi_seen) = std::thread::scope(|scope| {
+        let watcher = (!devices.is_empty())
+            .then(|| scope.spawn(|| crate::investigate::peripherals::watch(devices, markers, &stop_watch)));
+        let mut sampler = Sampler::new();
+        let settle = Duration::from_millis(config.interval_ms.min(1000)).max(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+        std::thread::sleep(settle);
+        let start = Instant::now();
+        let mut next = start;
+        let mut wifi: Option<crate::investigate::wireless::WifiState> = None;
+        let mut wifi_seen = false;
+        while start.elapsed() < Duration::from_secs(config.seconds) && recording.samples.len() < MAX_SAMPLES {
+            if ctx.cancelled() {
+                recording.stopped_early = true;
+                break;
             }
-        }
-        if recording.samples.len().is_multiple_of(5) {
-            if let Some((server, name)) = &dns {
-                match crate::net::dns_query(*server, name, Duration::from_millis(250)) {
-                    Ok((answer, time)) if answer.rcode == 0 => sample.dns_ms = Some(time.as_secs_f64() * 1000.0),
-                    Ok((answer, _)) => sample.dns_error = Some(format!("DNS response code {}", answer.rcode)),
-                    Err(_) => sample.dns_error = Some("DNS probe did not answer within 250 ms".into()),
+            if Instant::now() < next {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+            let telemetry = sampler.sample();
+            let mut sample = Sample {
+                at_ms: now_ms(),
+                cpu_pct: telemetry.cpu,
+                memory_pct: telemetry.mem_pct,
+                disk_read: telemetry.disk_read,
+                disk_write: telemetry.disk_write,
+                net_rx: telemetry.net_rx,
+                net_tx: telemetry.net_tx,
+                tcp_ms: None,
+                tcp_error: None,
+                dns_ms: None,
+                dns_error: None,
+                wifi: None,
+                wifi_signal: None,
+                wifi_bssid: None,
+                clock_pct: telemetry.clock_pct,
+            };
+            if let (Some(addresses), Some((_, port))) = (&addresses, &target) {
+                let check = crate::net::tcp_check(addresses, *port, Duration::from_millis(250));
+                if let Some((_, time)) = check.connected() {
+                    sample.tcp_ms = Some(time.as_secs_f64() * 1000.0);
+                } else {
+                    sample.tcp_error = Some(check.error());
                 }
             }
-            wifi = crate::investigate::wireless::state();
-            wifi_seen |= wifi.is_some();
+            if recording.samples.len().is_multiple_of(5) {
+                if let Some((server, name)) = &dns {
+                    match crate::net::dns_query(*server, name, Duration::from_millis(250)) {
+                        Ok((answer, time)) if answer.rcode == 0 => sample.dns_ms = Some(time.as_secs_f64() * 1000.0),
+                        Ok((answer, _)) => sample.dns_error = Some(format!("DNS response code {}", answer.rcode)),
+                        Err(_) => sample.dns_error = Some("DNS probe did not answer within 250 ms".into()),
+                    }
+                }
+                wifi = crate::investigate::wireless::state();
+                wifi_seen |= wifi.is_some();
+            }
+            if let Some(link) = &wifi {
+                sample.wifi = Some(link.describe());
+                sample.wifi_signal = link.signal;
+                sample.wifi_bssid = link.bssid.clone();
+            }
+            sample_ready(&sample);
+            recording.samples.push(sample);
+            next += Duration::from_millis(config.interval_ms);
+            if next < Instant::now() {
+                next = Instant::now() + Duration::from_millis(config.interval_ms);
+            }
         }
-        if let Some(link) = &wifi {
-            sample.wifi = Some(link.describe());
-            sample.wifi_signal = link.signal;
-            sample.wifi_bssid = link.bssid.clone();
-        }
-        sample_ready(&sample);
-        recording.samples.push(sample);
-        next += Duration::from_millis(config.interval_ms);
-        if next < Instant::now() {
-            next = Instant::now() + Duration::from_millis(config.interval_ms);
-        }
-    }
+        stop_watch.store(true, std::sync::atomic::Ordering::Relaxed);
+        (watcher.and_then(|w| w.join().ok().flatten()), wifi_seen)
+    });
+    recording.gaps.extend(device_gap);
     recording.markers = markers.lock().map_err(|_| "The marker list is unavailable.")?.clone();
+    recording.markers.sort_by_key(|m| m.at_ms);
     if !wifi_seen {
         recording
             .gaps
@@ -281,6 +308,7 @@ pub fn result(recording: &Recording) -> ModuleResult {
     if let Some(held) = held_back(recording) {
         result.findings.push(held);
     }
+    result.findings.extend(device_drops(recording));
     result
         .findings
         .extend(recording.gaps.iter().map(|g| Finding::info("Recording coverage", g)));
@@ -341,6 +369,41 @@ fn wifi_summary(recording: &Recording) -> Option<Finding> {
     };
     let finding = Finding::new("Wi-Fi during the recording", format!("{range} · {moved}"), if *low < 30 { Severity::Warning } else { Severity::Info });
     Some(finding.with_detail("Read every fifth sample. A drop in signal or a move at the moment of a marker is worth a look; neither is a fault alone."))
+}
+
+/// One row per required device that dropped out during the recording.
+fn device_drops(recording: &Recording) -> Vec<Finding> {
+    let mut labels: Vec<&str> = recording.markers.iter().filter_map(|m| m.device.as_ref()).map(|d| d.label.as_str()).collect();
+    labels.sort_unstable();
+    labels.dedup();
+    labels
+        .into_iter()
+        .filter_map(|label| {
+            let changes: Vec<(&Marker, &DeviceMark)> = recording.markers.iter().filter_map(|m| m.device.as_ref().filter(|d| d.label == label).map(|d| (m, d))).collect();
+            let drops: Vec<u64> = changes.iter().filter(|(_, d)| !d.arrived).map(|(m, _)| m.at_ms).collect();
+            if drops.is_empty() {
+                return None;
+            }
+            let back_at_end = changes.last().is_some_and(|(_, d)| d.arrived);
+            let times: Vec<String> = drops.iter().take(6).map(|t| crate::parse::time::epoch_to_rfc3339(t / 1000)).collect();
+            let more = if drops.len() > 6 { format!(", and {} more", drops.len() - 6) } else { String::new() };
+            Some(
+                Finding::warn(
+                    format!("Peripheral dropped: {label}"),
+                    format!(
+                        "dropped {} · {}",
+                        if drops.len() == 1 { "once".to_string() } else { format!("{} times", drops.len()) },
+                        if back_at_end { "came back" } else { "still missing at the end" }
+                    ),
+                )
+                .with_detail(format!(
+                    "{} disappeared at (UTC) {}{more}. Compare with the markers: a drop after the device sat idle points at USB power saving (Devices & peripherals shows it); a drop while in use points at the cable, port or dock.",
+                    changes[0].1.name,
+                    times.join(", ")
+                )),
+            )
+        })
+        .collect()
 }
 
 /// Samples where the processor was busy but running well below its rated
@@ -479,6 +542,26 @@ mod tests {
     }
 
     #[test]
+    fn device_drops_are_counted_per_device() {
+        let dev = |at_ms: u64, label: &str, arrived: bool| Marker {
+            at_ms,
+            label: format!("{label} {}", if arrived { "back" } else { "dropped" }),
+            device: Some(DeviceMark { label: label.into(), name: format!("{label} hardware"), arrived }),
+        };
+        let markers = vec![
+            dev(1_794_300_010_000, "Scanner", false),
+            dev(1_794_300_014_000, "Scanner", true),
+            Marker { at_ms: 1_794_300_015_000, label: "User said it beeped".into(), device: None },
+            dev(1_794_300_020_000, "Badge reader", true),
+            dev(1_794_300_030_000, "Scanner", false),
+        ];
+        let rows = device_drops(&capture(vec![], markers));
+        assert_eq!(rows.len(), 1, "a device that only arrived didn't drop");
+        assert_eq!((rows[0].label.as_str(), rows[0].value.as_str()), ("Peripheral dropped: Scanner", "dropped 2 times · still missing at the end"));
+        assert!(rows[0].detail.as_deref().unwrap().starts_with("Scanner hardware disappeared at (UTC) 2026-"));
+    }
+
+    #[test]
     fn wifi_moves_and_failures_are_summarised_and_markers_reach_the_csv() {
         let mut samples: Vec<Sample> = (0..6).map(|i| sample(1_794_300_000_000 + i * 1000)).collect();
         for (s, (signal, ap)) in samples.iter_mut().zip([(70, "aa:aa"), (68, "aa:aa"), (41, "bb:bb"), (44, "BB:BB"), (72, "aa:aa"), (71, "aa:aa")]) {
@@ -488,8 +571,8 @@ mod tests {
         samples[2].tcp_ms = None;
         samples[2].tcp_error = Some("timed out".into());
         let markers = vec![
-            Marker { at_ms: 1_794_300_001_500, label: "Call dropped, \"again\"".into() },
-            Marker { at_ms: 1_794_300_999_000, label: "=after the end".into() },
+            Marker { at_ms: 1_794_300_001_500, label: "Call dropped, \"again\"".into(), device: None },
+            Marker { at_ms: 1_794_300_999_000, label: "=after the end".into(), device: None },
         ];
         let recording = capture(samples, markers);
         assert_eq!(roams(&recording), 2, "case alone isn't a move");

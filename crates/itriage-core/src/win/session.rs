@@ -32,10 +32,22 @@ pub fn session_user(session: u32) -> Option<String> {
 
 /// The session ITriage itself is running in.
 pub fn current_session() -> Option<u32> {
+    session_of(std::process::id())
+}
+
+/// The session a process runs in.
+pub fn session_of(pid: u32) -> Option<u32> {
     let mut id = 0u32;
-    // SAFETY: plain query about this process.
-    unsafe { windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(std::process::id(), &mut id) }.ok()?;
+    // SAFETY: plain query; a process that's gone just fails.
+    unsafe { windows::Win32::System::RemoteDesktop::ProcessIdToSessionId(pid, &mut id) }.ok()?;
     Some(id)
+}
+
+/// The console session, if someone could be signed in to it.
+pub fn console_session() -> Option<u32> {
+    // SAFETY: plain query; 0xFFFFFFFF means no console session.
+    let session = unsafe { WTSGetActiveConsoleSessionId() };
+    (session != u32::MAX).then_some(session)
 }
 
 fn query(session: u32, class: WTS_INFO_CLASS) -> Option<String> {
@@ -89,5 +101,56 @@ pub fn current_account() -> Option<String> {
     Some(match std::env::var("USERDOMAIN") {
         Ok(d) if !d.is_empty() => format!("{d}\\{user}"),
         _ => user,
+    })
+}
+
+/// The person signed in at this PC, and where their settings and files
+/// are, for reading them when ITriage runs as another account (an elevated
+/// technician sign-in would otherwise read its own HKCU and profile).
+pub struct Person {
+    pub account: String,
+    /// HKCU when ITriage runs as them, else HKEY_USERS with `prefix`.
+    pub root: windows::Win32::System::Registry::HKEY,
+    pub prefix: String,
+    pub profile: std::path::PathBuf,
+    pub session: Option<u32>,
+}
+
+impl Person {
+    /// A key under this person's hive.
+    pub fn key(&self, subkey: &str) -> String {
+        format!("{}{subkey}", self.prefix)
+    }
+}
+
+/// Whoever is at the console, else the account ITriage runs as.
+pub fn person() -> Result<Person, String> {
+    use crate::win::registry::{read_hklm_string, HKCU, HKU};
+    let me = current_account();
+    let account = console_user().or_else(|| me.clone()).ok_or("Nobody is signed in to check.")?;
+    let same = me.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(&account));
+    let sid = sid_of(&account);
+    let profile = sid
+        .as_deref()
+        .and_then(|s| read_hklm_string(&format!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\{s}"), "ProfileImagePath"))
+        .map(std::path::PathBuf::from)
+        .or_else(|| if same { std::env::var_os("USERPROFILE").map(std::path::PathBuf::from) } else { None })
+        .ok_or_else(|| format!("Can't find {account}'s profile folder."))?;
+    let (root, prefix) = if same {
+        (HKCU, String::new())
+    } else {
+        (HKU, format!(r"{}\", sid.ok_or_else(|| format!("Can't find {account}'s registry hive."))?))
+    };
+    let session = if same { current_session() } else { console_session() };
+    Ok(Person { account, root, prefix, profile, session })
+}
+
+/// Is a program with this file name (`ms-teams.exe`) running, in that
+/// session when one is given?
+pub fn running_in(exe: &str, session: Option<u32>) -> bool {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
+    sys.processes().values().any(|p| {
+        p.name().to_string_lossy().eq_ignore_ascii_case(exe) && session.is_none_or(|s| session_of(p.pid().as_u32()) == Some(s))
     })
 }

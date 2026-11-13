@@ -8,7 +8,9 @@
 > (`investigate/recording.rs`), and the hypothesis hooks are rules in
 > `insight.rs`. Where an idea names a verified-repair mapping, the fix is
 > audited and re-checks its module instead. Each phase's pull request says
-> what was adapted.
+> what was adapted. In Phase 3, #10's device drops are markers in a
+> recording (there's no flight recorder to tag), and `keep-usb-awake` is
+> opt-in: it runs only when the profile's `fixes` list names it.
 
 Target baseline: ITriage 0.9.0 **with the advanced-features package applied**
 (`ITriage-Claude-Package.zip`). Every idea below was checked against that package
