@@ -198,6 +198,43 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         }
     }
 
+    // --- Certificates that can't be checked for revocation. Whatever checks
+    // them (the 802.1X RADIUS server, a VPN gateway) then refuses them.
+    let revocation = v.problems("desk.certs", |f| f.label.starts_with("Revocation: "));
+    if !revocation.is_empty() {
+        let auth = v
+            .find("net.wifi-auth", |f| f.label.starts_with("Wireless session history") && bad(f))
+            .or_else(|| v.find("net.wired-auth", |f| f.label == "Wired 802.1X" && bad(f)));
+        let mut evidence: Vec<String> = revocation.iter().map(|h| cite(*h)).collect();
+        evidence.extend(auth.map(cite));
+        let expired = revocation.iter().any(|(_, f)| f.value.contains("EXPIRED") || f.value.contains("REVOKED"));
+        let (rank, cause) = match (auth.is_some(), expired) {
+            (true, _) => (89, "Network sign-in with this PC's certificate is failing, and the certificate can't be checked for revocation: the RADIUS server refuses a certificate it can't check."),
+            (false, true) => (81, "The certificate authority's revocation list has expired or the certificate is revoked: 802.1X, VPN and smart-card sign-in fail for every PC with a certificate from it."),
+            (false, false) => (49, "This PC's certificate can't be checked for revocation right now. If the list stays out of reach, network sign-in with it will start failing."),
+        };
+        out.push(insight(
+            rank,
+            if auth.is_some() || expired { Severity::Critical } else { worst(&revocation) },
+            cause,
+            evidence,
+            "Have the PKI team publish a fresh CRL (certutil -CRL on the CA) and check the distribution point answers from the RADIUS server's network.",
+        ));
+    }
+
+    // --- A server rejecting tickets, or tickets that are about to stop working.
+    let rejected = v.problems("desk.identity", |f| f.label.starts_with("Kerberos ticket rejected by "));
+    if !rejected.is_empty() {
+        let names: Vec<&str> = rejected.iter().map(|(_, f)| f.label.trim_start_matches("Kerberos ticket rejected by ")).collect();
+        out.push(insight(
+            83,
+            Severity::Critical,
+            format!("{} can't read this PC's Kerberos tickets (KRB_AP_ERR_MODIFIED), so its shares and sites keep asking for a password.", names.join(" and ")),
+            rejected.iter().map(|h| cite(*h)).collect(),
+            "Find the duplicate SPN (setspn -X) or reset the server's computer account password, then clear the cached tickets here.",
+        ));
+    }
+
     // --- The clock.
     if let Some(h) = v.find("desk.time", |f| f.label.starts_with("Offset vs") && bad(f)) {
         out.push(insight(
@@ -733,6 +770,22 @@ mod tests {
         let mut lost = results.clone();
         lost[0].findings.push(Finding::crit("Domain controller during policy processing", "no domain controller reachable once in 7 days · last 1h ago"));
         assert!(likely_causes(&lost)[0].cause.contains("no domain controller answered"));
+    }
+
+    #[test]
+    fn an_expired_crl_with_failing_8021x_is_the_cause() {
+        let certs = result("desk.certs", "Machine certificates", vec![Finding::crit("Revocation: WS-07.corp.example.org", "CRL EXPIRED 3h ago (next update was due 2026-11-12T12:00 UTC) · chain check: passed")]);
+        let wifi = result("net.wifi-auth", "Wi-Fi roaming & network authentication", vec![Finding::warn("Wireless session history (collected events)", "0 successful association(s), 2 disconnect(s), 3 failure(s)")]);
+        let both = likely_causes(&[certs.clone(), wifi]);
+        assert!(both[0].cause.starts_with("Network sign-in with this PC's certificate is failing"), "{both:#?}");
+        assert_eq!(both[0].evidence.len(), 2);
+        assert!(likely_causes(&[certs])[0].cause.starts_with("The certificate authority's revocation list has expired"));
+    }
+
+    #[test]
+    fn a_server_rejecting_tickets_is_named() {
+        let r = vec![result("desk.identity", "Entra, Kerberos & SSO sign-in", vec![Finding::crit("Kerberos ticket rejected by fs01$", "KRB_AP_ERR_MODIFIED twice in 7 days · last 20m ago")])];
+        assert!(likely_causes(&r)[0].cause.starts_with("fs01$ can't read this PC's Kerberos tickets"));
     }
 
     #[test]

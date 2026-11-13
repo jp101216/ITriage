@@ -775,6 +775,8 @@ body::after {
 .modal ul { margin: 0 0 16px; padding-left: 18px; font-size: 13.5px; line-height: 1.55; color: var(--fg); }
 .modal ul li { margin: 7px 0; }
 .modal ul li b { color: var(--accent-hi); font-weight: 600; }
+/* What a fix would do on this PC, from its preview. */
+.modal .fix-preview { margin: 0 0 12px; font-size: 13px; color: var(--muted); }
 .warnbox, .notebox {
   display: flex; gap: 10px; align-items: flex-start;
   margin: 0 0 16px; padding: 11px 12px;

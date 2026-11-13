@@ -14,7 +14,8 @@
 //!   destination), streaming progress as events; cancelling stops at the next
 //!   safe point. A finished run is audited, saved to the history folder with
 //!   its transcript, and compared with the last comparable run of this machine.
-//! * `run_fix`: one policy-checked, audited one-click fix.
+//! * `run_fix`: one policy-checked, audited one-click fix; `preview_fix`:
+//!   what it would do, changing nothing.
 //! * `list_history`, `load_report`, `import_report`, `compare_with_previous`,
 //!   `compare_reports`, `report_text`: the report viewer and comparisons.
 //! * `trends`: every measurement over this computer's saved runs.
@@ -484,6 +485,16 @@ async fn run_fix(
     .map_err(|e| format!("The fix stopped unexpectedly: {e}"))?
 }
 
+/// What a fix would do here, changing nothing (its preview).
+#[tauri::command]
+async fn preview_fix(app: State<'_, App>, id: String, target: Option<String>, remote_safe: Option<bool>) -> Result<String, String> {
+    let profile = app.profile.clone();
+    let remote_safe = remote_safe.unwrap_or(profile.policy.remote_safe);
+    tauri::async_runtime::spawn_blocking(move || actions::preview(&id, target.as_deref(), &profile, remote_safe))
+        .await
+        .map_err(|e| format!("The preview stopped unexpectedly: {e}"))?
+}
+
 #[tauri::command]
 async fn list_history() -> Vec<ReportMeta> {
     tauri::async_runtime::spawn_blocking(report::list).await.unwrap_or_default()
@@ -600,6 +611,7 @@ fn main() {
     }
 
     let loaded = profile::load();
+    audit::set_system_log(audit::system_log_wanted(&loaded.profile, loaded.status.source));
     let app = App {
         profile: Arc::new(loaded.profile),
         status: loaded.status,
@@ -654,6 +666,7 @@ fn main() {
             close_when_done,
             keep_running,
             run_fix,
+            preview_fix,
             list_history,
             load_report,
             import_report,

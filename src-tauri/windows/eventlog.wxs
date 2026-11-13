@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Registers the "itriage" Application event log source with the MSI, so the
+  audit trail's events render cleanly in Event Viewer (and in WEF/SIEM) from
+  the first run. The message file is .NET Framework's EventLogMessages.dll,
+  which every supported Windows has; an elevated ITriage run registers the
+  same thing itself when it's missing. See hooks.nsh for the setup.exe.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="ITriageEventSource" Guid="9C3F5E7A-2B41-4D8E-A6F0-3E1B7C5D9A24" Win64="yes">
+        <RegistryKey Root="HKLM" Key="SYSTEM\CurrentControlSet\Services\EventLog\Application\itriage">
+          <RegistryValue Name="EventMessageFile" Type="expandable" Value="%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\EventLogMessages.dll" KeyPath="yes" />
+          <RegistryValue Name="TypesSupported" Type="integer" Value="7" />
+        </RegistryKey>
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
