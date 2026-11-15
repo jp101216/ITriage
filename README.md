@@ -206,7 +206,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | TCP autotuning & NIC power | `netsh int tcp set global autotuninglevel=normal`; adapter sleep settings off. What they were is saved first, and **Revert tune-up** puts them back | n/a | ✔ | locked |
 | Reset network stack | `netsh winsock reset`, `netsh int ip reset`, `netsh int ipv6 reset`; refused with any static address | n/a | ✔ | locked |
 | Restart adapters & renew DHCP | restart physical adapters that are up, wait for each, `ipconfig /release` and `/renew` | `nmcli connection up` on each connected device's connection: one request that NetworkManager carries out itself, so a session over that device can't leave it down | ✔ | locked |
-| Clear temp files | every profile's temp folder and `Windows\Temp` (your own without admin); older than 24 h; skips files in use and links | your own files in the temp folder; refuses as root | | runs |
+| Clear temp files | every profile's temp folder and `Windows\Temp` (your own without admin); older than 24 h; skips files in use and links | your own files in the temp folder, leaving other accounts' folders alone; refuses as root | | runs |
 | Empty Recycle Bin | all drives, for the account ITriage runs as | `~/.local/share/Trash` | | runs |
 | Clean up & check system files | `DISM /StartComponentCleanup`, then `sfc /scannow` | n/a | ✔ | runs |
 | Optimize system drive | `defrag C: /O /U` (TRIM on SSD, defrag on HDD) | `fstrim -av` | ✔ | runs |
@@ -498,7 +498,7 @@ turns any re-check of such a module into a preview whatever the UI asks for.
 | Sign out the session | the same person has a disconnected session on the PC | signs that session out, and only if it's still disconnected | n/a | ✔ |
 | Unlock the account | the account is locked out | clears the lockout on the domain controller (or the PC, for a local account) | resets the `faillock` count | ✔ |
 | Clear Kerberos tickets | the TGT is missing or expired, or a server rejected a ticket | `klist purge` through LSA, for the session ITriage runs in; refused when elevated or another user's | `kdestroy`; refused as root | |
-| Clear Teams cache | beside the new Teams cache size | empties `AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams` for the person at the console, as Microsoft's article describes; refused while Teams runs in their session | n/a | |
+| Clear Teams cache | beside the new Teams cache size | empties `AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams` for the person at the console, as Microsoft's article describes; refused while Teams runs in their session, and when any folder on the way to the cache is a link or junction | n/a | |
 | Keep USB devices awake | USB selective suspend is on, and the profile's `fixes` list names `keep-usb-awake` (it's opt-in: with no list it isn't offered) | turns selective suspend off in the active power plan, plugged in and on battery, after saving what it was; refused when a policy sets it | n/a | ✔ |
 | Restore USB power | Keep USB devices awake changed the plan | puts the saved selective suspend values back in that plan | n/a | ✔ |
 | Revert tune-up | TCP autotuning & NIC power changed something | puts TCP autotuning and the adapters' sleep settings back as they were (locked by remote-safe) | n/a | ✔ |
@@ -559,6 +559,12 @@ it's never the run a later one is compared with, and it isn't a trend point.
 There's at most one capture per 15 minutes, and captures past
 `watch_keep_days` or over `watch_max_mb` are removed oldest first; ordinary
 runs are never touched. `itriage --uninstall-watch` removes the task or unit.
+
+`--install-watch` sets the copy of ITriage it's run from to start for every
+user, so it refuses a copy that anyone but an administrator can change: one
+in Downloads, in a folder made at the top of `C:\`, or on a shared drive.
+Run it from the installed copy (Program Files on Windows, `/usr/bin` from
+the `.deb`), which passes.
 
 ## Run history and compare
 
@@ -1083,7 +1089,7 @@ Digital Signatures**, or with
 
 ## Verification status
 
-v0.10.0 passed 342 Linux core tests, 339 Windows core tests and 20 browser
+v0.10.1 passed 348 Linux core tests, 341 Windows core tests and 20 browser
 regression tests, along with workspace Clippy, smoke checks and installer
 builds on both platforms. The browser tests use simulated checks and repairs.
 The rows marked 0.10.0 below are what was run for this release; the earlier
@@ -1110,6 +1116,7 @@ validation remain as noted.
 | New in 0.10.0, Windows CI | `windows-latest` (Windows Server 2025), elevated, workgroup. Run for real in the smoke tests: Policy blocks, Sign-in speed (one sign-in's events found by ActivityID), Throttling & hardware errors (the processor clock through PDH), Outlook, Teams & OneDrive (the AAD log, named from its message), Edge IE mode (Edge's version from its file), Point and Print (Windows' defaults), USB selective suspend (from the power plan), and Wired 802.1X & NAC (service stopped, no 802.1X). Separate runs on the same image registered, read back and removed the watch-mode logon task, and saved watch captures for a real Application Error 1000 and a busy processor; a gateway that never answers ping saved none. Field names for the new event checks come from each provider's manifest, read there | passing |
 | New in 0.10.0, Linux | watch mode run end to end (a busy processor saved a capture); `desk.domain` run as root against SSSD pointed at an unreachable domain controller, with `sssd.conf` at 0644 (critical, the domain read from the file, the keytab read, `adcli`'s "no DC" a warning) and at 0600 (SSSD running; the missing system bus reported as a gap). The `sssctl`, `klist -k` and `adcli` parsers use real output captured on Ubuntu 24.04 | working |
 | New in 0.10.0, interface | 20 browser tests against simulated checks, including a known incident's banner (first, escaped, linking its status page) and fix previews in the confirmation dialog | working |
+| New in 0.10.1 | the published 0.10.0 `.deb` installed and run on Ubuntu (checks, history, audit log, the desktop app opening); every read-only check as root and as an ordinary user; watch mode installed from a root-only folder and refused from `/tmp`; a Teams cache behind a symlink refused with the linked folder untouched (Linux tests of the shared code). **Not yet run**: a real junction in a real profile on a desktop edition of Windows | working |
 | New in 0.10.0, not yet run | on a **desktop edition of Windows with a real user**: Outlook, OneDrive and Teams, Click-to-Run; an **IE mode site list and Point and Print set by GPO**; **changing the power plan** (Keep USB devices awake); **device notifications with a real scanner** unplugged mid-recording; a real **802.1X success or failure** and a **NAC quarantine**; **Kerberos tickets and certificate revocation on a domain**; the **ASR, AppLocker, App Control and WHEA** events (tested against events written from their manifests); **watch mode starting at an actual sign-in**; `realm list` on a **joined Linux machine** | ⚠ next step |
 | Account checks on a domain; the new fixes | **not yet run**: no test machine was joined to a domain, and Remove saved credentials, Sign out the session, Unlock and Revert tune-up's restore step were never run against real state. Nor was anything run as a standard user on Windows (CI is elevated) or under Constrained Language mode | ⚠ next step |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |

@@ -221,6 +221,24 @@ pub fn profile(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// May this program be started by itself for other people (a unit every
+/// user's session runs)? The file and every folder above it must be root's
+/// alone to change. Links are resolved first: what counts is where it is.
+#[cfg(unix)]
+pub fn program(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    let real = path.canonicalize().map_err(|e| format!("can't read {}: {e}", path.display()))?;
+    let mut at = Some(real.as_path());
+    while let Some(p) = at {
+        let meta = std::fs::metadata(p).map_err(|e| format!("can't read {}: {e}", p.display()))?;
+        if !unix_trusted(meta.uid(), meta.mode()) {
+            return Err(format!("{} isn't owned by root, or others can write to it", p.display()));
+        }
+        at = p.parent();
+    }
+    Ok(())
+}
+
 /// Programs run as root are looked up in the system's own folders, never in
 /// a PATH that might start with a user's `~/bin`.
 #[cfg(unix)]
@@ -334,6 +352,36 @@ mod tests {
         assert!(!unix_trusted(0, 0o40777), "world-writable");
         assert!(system_program("sh").is_some());
         assert!(system_program("../bin/sh").is_none() && system_program("definitely-not-a-tool-xyz").is_none());
+    }
+
+    /// What `--install-watch` asks before it sets a program to start for
+    /// every user: could anyone but root have put this file here?
+    #[cfg(unix)]
+    #[test]
+    fn a_program_others_can_replace_is_not_started_for_everyone() {
+        use std::os::unix::fs::PermissionsExt;
+        let sh = system_program("sh").unwrap();
+        assert_eq!(program(&sh), Ok(()), "the system's own tools are root's alone");
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-trust-program-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A copy anyone may overwrite, wherever it is and whoever made it.
+        let copy = dir.join("itriage");
+        std::fs::write(&copy, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o777)).unwrap();
+        let verdict = program(&copy).unwrap_err();
+        assert!(verdict.contains("isn't owned by root, or others can write to it") && verdict.contains("itriage"), "{verdict}");
+        // A file that's fine in a folder that isn't: it can be swapped there.
+        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(program(&copy).is_err());
+        // A link is judged by where it leads.
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&sh, &link).unwrap();
+        assert_eq!(program(&link), Ok(()));
+        assert!(program(&dir.join("missing")).unwrap_err().starts_with("can't read"));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The real thing, on a real Windows machine (CI runs this).
