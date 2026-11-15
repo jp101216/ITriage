@@ -515,7 +515,27 @@ mod imp {
     use crate::parse::text::first_line;
     use crate::util::{capture_for, command_exists, exit_label, pkexec_error, privileged, PROMPTED};
 
+    /// Why a fix that's only for Windows can't run here, for the ones that
+    /// never can. A real run refuses with it, and a preview says so too
+    /// instead of describing a change that wouldn't happen.
+    pub fn not_here(id: &str) -> Option<&'static str> {
+        Some(match id {
+            "gpupdate" => "Group Policy is a Windows feature.",
+            "install-oem-tool" | "install-update" => "That's a Windows Update / winget fix; on Linux, use Install OS & app updates.",
+            "clear-teams-cache" => "New Teams' cache is a Windows thing; on Linux, Teams runs in the browser.",
+            "revert-tuneup" => "The tune-up's TCP and adapter power step is Windows-only, so there's nothing to put back here.",
+            "clear-saved-credentials" => "Saved Windows credentials are a Windows feature. On Linux they're in the desktop keyring (Passwords and Keys).",
+            "logoff-session" => "Signing out a disconnected session is a Windows fix. On Linux: loginctl terminate-session.",
+            "keep-usb-awake" => "Keep USB devices awake changes a Windows power plan. On Linux, USB autosuspend is a kernel setting (usbcore.autosuspend).",
+            "restore-usb-power" => "There's no Windows power plan to restore here.",
+            _ => return None,
+        })
+    }
+
     pub fn run(id: &str, target: Option<&str>) -> Result<String, String> {
+        if let Some(why) = not_here(id) {
+            return Err(why.into());
+        }
         match id {
             "restart-spooler" => root("systemctl", &["restart", "cups"]).map(|_| "CUPS restarted.".into()),
             "clear-print-queue" => root("cancel", &["-a", "-x"]).map(|_| "Every queued print job was cancelled.".into()),
@@ -534,11 +554,6 @@ mod imp {
             "flush-dns" => crate::fixes::dns::flush().map(|(_, said)| said),
             "restart-computer" => crate::fixes::maintenance::schedule_restart().map(|s| format!("Restart {s}.")),
             "cancel-restart" => crate::fixes::maintenance::cancel_restart(),
-            "gpupdate" => Err("Group Policy is a Windows feature.".into()),
-            "install-oem-tool" | "install-update" => Err("That's a Windows Update / winget fix; on Linux, use Install OS & app updates.".into()),
-            "revert-tuneup" => crate::fixes::undo::revert(),
-            "clear-saved-credentials" => crate::desk::account::clear_saved_credentials(),
-            "logoff-session" => crate::desk::account::logoff_session(target.ok_or("No session named.")?),
             "unlock-account" => crate::desk::account::unlock_account(target.ok_or("No account named.")?),
             "purge-kerberos-tickets" => {
                 crate::investigate::identity::require_user_context()?;
@@ -552,14 +567,14 @@ mod imp {
                     Err(format!("kdestroy failed ({}): {}", exit_label(out.code), first_line(&out.combined())))
                 }
             }
-            "clear-teams-cache" => Err("New Teams' cache is a Windows thing; on Linux, Teams runs in the browser.".into()),
-            "keep-usb-awake" => crate::fixes::usbpower::keep_awake(),
-            "restore-usb-power" => crate::fixes::usbpower::restore(),
             other => Err(format!("Fix `{other}` isn't available on Linux.")),
         }
     }
 
     pub fn preview(id: &str, _target: Option<&str>) -> Option<String> {
+        if let Some(why) = not_here(id) {
+            return Some(format!("it would refuse: {why} Nothing was changed."));
+        }
         match id {
             "purge-kerberos-tickets" => Some(match crate::investigate::identity::require_user_context() {
                 Err(why) => format!("it would refuse: {why} Nothing was changed."),
@@ -670,6 +685,38 @@ mod tests {
         assert!(preview("start-service", None, &open, false).unwrap_err().contains("target"), "as a real run would refuse");
         assert!(preview("purge-kerberos-tickets", None, &open, false).unwrap().contains("Nothing was changed."));
         assert!(!requires_admin("purge-kerberos-tickets"), "it acts on the user's own tickets");
+    }
+
+    /// On Linux, a preview of a Windows-only fix says it would refuse, with
+    /// the reason a real run gives, instead of describing the change.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_preview_of_a_windows_only_fix_says_it_would_refuse() {
+        let mut open = Profile::default();
+        open.policy.fixes = Some(vec!["keep-usb-awake".into(), "clear-teams-cache".into(), "restore-usb-power".into(), "revert-tuneup".into(), "gpupdate".into(), "clear-saved-credentials".into(), "logoff-session".into(), "install-update".into(), "install-oem-tool".into(), "flush-dns".into()]);
+        for (id, target) in [
+            ("gpupdate", None),
+            ("clear-teams-cache", None),
+            ("keep-usb-awake", None),
+            ("restore-usb-power", None),
+            ("revert-tuneup", None),
+            ("clear-saved-credentials", None),
+            ("logoff-session", Some("3")),
+            ("install-update", Some("c9cbc7a0-29e0-4f93-9e37-7d8d6c0f5b2a")),
+            ("install-oem-tool", Some("Dell.CommandUpdate")),
+        ] {
+            let said = preview(id, target, &open, false).unwrap();
+            let real = run(id, target, &open, false).unwrap_err();
+            assert_eq!(said, format!("Preview: it would refuse: {real} Nothing was changed."), "{id}");
+        }
+        // The fixes that do run here still describe themselves.
+        assert!(preview("flush-dns", None, &open, false).unwrap().starts_with("Preview: Clears cached DNS lookups"));
+        // The stand-ins the other modules keep for Linux say the same thing.
+        assert_eq!(crate::fixes::undo::revert().unwrap_err(), imp::not_here("revert-tuneup").unwrap());
+        assert_eq!(crate::fixes::usbpower::keep_awake().unwrap_err(), imp::not_here("keep-usb-awake").unwrap());
+        assert_eq!(crate::fixes::usbpower::restore().unwrap_err(), imp::not_here("restore-usb-power").unwrap());
+        assert_eq!(crate::desk::account::clear_saved_credentials().unwrap_err(), imp::not_here("clear-saved-credentials").unwrap());
+        assert_eq!(crate::desk::account::logoff_session("3").unwrap_err(), imp::not_here("logoff-session").unwrap());
     }
 
     #[test]

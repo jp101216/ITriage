@@ -192,6 +192,54 @@ pub fn inside(folder: &str, profile: &str, onedrive: &str) -> bool {
 /// profile folder.
 pub const TEAMS_CACHE: &str = r"AppData\Local\Packages\MSTeams_8wekyb3d8bbwe\LocalCache\Microsoft\MSTeams";
 
+/// A profile's new Teams cache folder, or `None` when there isn't one.
+///
+/// Every folder from the profile down to it belongs to that person, and
+/// ITriage often runs elevated as somebody else. If any of them has been
+/// swapped for a junction or link, emptying "the cache" would delete
+/// whatever it leads to with administrator rights, so that's refused.
+#[cfg(any(windows, test))]
+fn teams_cache_dir(profile: &std::path::Path, who: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let parts: Vec<&str> = TEAMS_CACHE.split('\\').collect();
+    match crate::util::real_folder(profile, &parts) {
+        Ok(dir) => Ok(Some(dir)),
+        Err(crate::util::NotReal::Missing(_)) => Ok(None),
+        Err(crate::util::NotReal::Link(link)) => Err(format!(
+            "{} is a link or junction, not a real folder, so {who}'s Teams cache was left alone: emptying it would delete whatever the link leads to.",
+            link.display()
+        )),
+    }
+}
+
+/// Empty a profile's new Teams cache folder (not the folder itself), the
+/// way Microsoft's article says. `None` when there's no cache; otherwise the
+/// bytes freed and how many items couldn't be removed.
+#[cfg(any(windows, test))]
+fn empty_teams_cache(profile: &std::path::Path, who: &str) -> Result<Option<(u64, usize)>, String> {
+    let Some(dir) = teams_cache_dir(profile, who)? else { return Ok(None) };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Can't open {}: {e}", dir.display())),
+    };
+    let size = |dir: &std::path::Path| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        crate::triage::storage::measure(dir, deadline, &|| false).map(|s| s.bytes).unwrap_or(0)
+    };
+    let before = size(&dir);
+    let mut failed = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        // A link is removed as a link; what it points at is left alone.
+        let link = std::fs::symlink_metadata(&path).map(|m| crate::util::is_link(&m)).unwrap_or(true);
+        let gone = if !link && path.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path)) };
+        if gone.is_err() {
+            failed += 1;
+        }
+    }
+    Ok(Some((before.saturating_sub(size(&dir)), failed)))
+}
+
 #[cfg(windows)]
 pub use imp::{clear_teams_cache, teams_cache_preview};
 
@@ -255,10 +303,13 @@ mod imp {
             f.onedrive_running = running("OneDrive.exe", who.session);
         }
 
-        // Teams.
-        let cache = who.profile.join(TEAMS_CACHE);
+        // Teams. A cache reached through a link isn't measured or offered
+        // for clearing (see `teams_cache_dir`).
         let deadline = Instant::now() + Duration::from_secs(10);
-        f.teams_cache = crate::triage::storage::measure(&cache, deadline, &|| false).map(|s| s.bytes);
+        f.teams_cache = super::teams_cache_dir(&who.profile, &who.account)
+            .ok()
+            .flatten()
+            .and_then(|cache| crate::triage::storage::measure(&cache, deadline, &|| false).map(|s| s.bytes));
         f.teams_running = running("ms-teams.exe", who.session);
         f.classic_teams_left = who.profile.join(r"AppData\Roaming\Microsoft\Teams").is_dir();
 
@@ -289,16 +340,22 @@ mod imp {
         Ok(f)
     }
 
-    fn cache_dir() -> Result<(PathBuf, Option<u32>, String), String> {
+    /// Whose cache: their profile folder, their session and their name.
+    fn cache_owner() -> Result<(PathBuf, Option<u32>, String), String> {
         let who = person()?;
-        Ok((who.profile.join(TEAMS_CACHE), who.session, who.account))
+        Ok((who.profile, who.session, who.account))
     }
 
     /// What clearing would remove, for the preview.
     pub fn teams_cache_preview() -> String {
-        match cache_dir() {
-            Err(e) => format!("couldn't find the cache: {e} Nothing was changed."),
-            Ok((dir, session, who)) => {
+        let (profile, session, who) = match cache_owner() {
+            Ok(owner) => owner,
+            Err(e) => return format!("couldn't find the cache: {e} Nothing was changed."),
+        };
+        match super::teams_cache_dir(&profile, &who) {
+            Err(why) => format!("it would refuse: {why} Nothing was changed."),
+            Ok(None) => format!("{who} has no new Teams cache to clear. Nothing was changed."),
+            Ok(Some(dir)) => {
                 let size = crate::triage::storage::measure(&dir, Instant::now() + Duration::from_secs(10), &|| false).map(|s| s.bytes).unwrap_or(0);
                 let blocked = if running("ms-teams.exe", session) { " It would refuse right now: Teams is running; quit it first." } else { "" };
                 format!("would empty {} ({}) for {who}.{blocked} Nothing was changed.", dir.display(), human_bytes(size))
@@ -306,35 +363,20 @@ mod imp {
         }
     }
 
-    /// Empty the new Teams cache folder (not the folder itself), the way
-    /// Microsoft's article says, refusing while Teams is running.
+    /// Empty the new Teams cache folder, refusing while Teams is running.
     pub fn clear_teams_cache() -> Result<String, String> {
-        let (dir, session, who) = cache_dir()?;
+        let (profile, session, who) = cache_owner()?;
         if running("ms-teams.exe", session) {
             return Err("Teams is running. Quit it (right-click its icon by the clock, Quit), then clear the cache.".into());
         }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(e) => e,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(format!("{who} has no new Teams cache to clear.")),
-            Err(e) => return Err(format!("Can't open {}: {e}", dir.display())),
-        };
-        let before = crate::triage::storage::measure(&dir, Instant::now() + Duration::from_secs(10), &|| false).map(|s| s.bytes).unwrap_or(0);
-        let mut failed = 0usize;
-        for e in entries.flatten() {
-            let path = e.path();
-            // A link is removed as a link; what it points at is left alone.
-            let link = e.file_type().is_ok_and(|t| t.is_symlink());
-            let gone = if path.is_dir() && !link { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path)) };
-            if gone.is_err() {
-                failed += 1;
-            }
-        }
-        let after = crate::triage::storage::measure(&dir, Instant::now() + Duration::from_secs(10), &|| false).map(|s| s.bytes).unwrap_or(0);
-        let freed = human_bytes(before.saturating_sub(after));
-        if failed > 0 {
-            Err(format!("Cleared {freed} of {who}'s Teams cache, but {failed} item{} couldn't be removed (in use?). Restart the PC and try again.", plural(failed)))
-        } else {
-            Ok(format!("Cleared {freed} of {who}'s Teams cache. Teams rebuilds it the next time it starts, which takes a little longer than usual."))
+        match super::empty_teams_cache(&profile, &who)? {
+            None => Ok(format!("{who} has no new Teams cache to clear.")),
+            Some((freed, 0)) => Ok(format!("Cleared {} of {who}'s Teams cache. Teams rebuilds it the next time it starts, which takes a little longer than usual.", human_bytes(freed))),
+            Some((freed, failed)) => Err(format!(
+                "Cleared {} of {who}'s Teams cache, but {failed} item{} couldn't be removed (in use?). Restart the PC and try again.",
+                human_bytes(freed),
+                plural(failed)
+            )),
         }
     }
 }
@@ -402,6 +444,59 @@ mod tests {
         assert_eq!((aad.severity, aad.value.as_str()), (Severity::Warning, "12 errors · last 1m ago"));
         assert!(aad.detail.as_deref().unwrap().starts_with("Most common: 0xCAA2000C"));
         assert_eq!(aad.kb.as_ref().unwrap().url, PRT_ARTICLE);
+    }
+
+    /// A profile with a Teams cache in it, built from the real folder names.
+    fn profile_with_cache(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let profile = dir.join("jparker");
+        let cache = TEAMS_CACHE.split('\\').fold(profile.clone(), |p, part| p.join(part));
+        std::fs::create_dir_all(cache.join("EBWebView").join("Default")).unwrap();
+        std::fs::write(cache.join("EBWebView").join("Default").join("Cookies"), vec![0u8; 4096]).unwrap();
+        std::fs::write(cache.join("app_settings.json"), vec![0u8; 512]).unwrap();
+        (dir, profile, cache)
+    }
+
+    #[test]
+    fn clearing_the_teams_cache_empties_the_folder_and_keeps_it() {
+        let (dir, profile, cache) = profile_with_cache("itriage-teams-cache");
+        assert_eq!(teams_cache_dir(&profile, "CORP\\jparker"), Ok(Some(cache.clone())));
+        let (freed, failed) = empty_teams_cache(&profile, "CORP\\jparker").unwrap().expect("there is a cache");
+        assert!(freed >= 4608 && failed == 0, "freed {freed}, failed {failed}");
+        assert!(cache.is_dir() && std::fs::read_dir(&cache).unwrap().next().is_none(), "emptied, and still there for Teams to refill");
+        // Somebody who never ran new Teams has nothing to clear.
+        assert_eq!(empty_teams_cache(&dir.join("nobody"), "CORP\\nobody"), Ok(None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An elevated ITriage empties the console user's cache. The folders on
+    /// the way are theirs to replace: a link there must stop the fix, or it
+    /// would delete what the link leads to with the technician's rights.
+    #[cfg(unix)]
+    #[test]
+    fn a_teams_cache_behind_a_link_is_refused_and_nothing_is_deleted() {
+        let (dir, profile, cache) = profile_with_cache("itriage-teams-link");
+        let victim = dir.join("someone-elses");
+        std::fs::create_dir_all(victim.join("Documents")).unwrap();
+        std::fs::write(victim.join("Documents").join("thesis.docx"), b"irreplaceable").unwrap();
+        // The cache folder itself, then a folder higher up, swapped for a link.
+        for swapped in [cache.clone(), profile.join("AppData").join("Local").join("Packages")] {
+            let kept = dir.join("kept");
+            std::fs::rename(&swapped, &kept).unwrap();
+            std::os::unix::fs::symlink(&victim, &swapped).unwrap();
+            let refused = empty_teams_cache(&profile, "CORP\\jparker").unwrap_err();
+            assert!(refused.contains("is a link or junction") && refused.contains(&swapped.display().to_string()), "{refused}");
+            assert!(teams_cache_dir(&profile, "CORP\\jparker").is_err(), "so the preview says it would refuse, and the check offers no fix");
+            assert_eq!(std::fs::read(victim.join("Documents").join("thesis.docx")).unwrap(), b"irreplaceable");
+            std::fs::remove_file(&swapped).unwrap();
+            std::fs::rename(&kept, &swapped).unwrap();
+        }
+        // A link inside the cache goes as a link; what it leads to stays.
+        std::os::unix::fs::symlink(&victim, cache.join("shortcut")).unwrap();
+        assert_eq!(empty_teams_cache(&profile, "CORP\\jparker").unwrap().map(|(_, failed)| failed), Some(0));
+        assert!(!cache.join("shortcut").exists() && victim.join("Documents").join("thesis.docx").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-/* ITriage frontend logic — v0.10.0.
+/* ITriage frontend logic — v0.10.1.
  *
  * Two views over the same engine:
  *   • Technician: the HUD console (red by default, eight more themes in the
@@ -19,7 +19,7 @@
   "use strict";
 
   const isTauri = !!(window.__TAURI__ && window.__TAURI__.core);
-  const VERSION = "v0.10.0";
+  const VERSION = "v0.10.1";
 
   /* ----------------------------- icons ----------------------------- */
   const sv = (body, extra) =>
@@ -106,8 +106,8 @@
     mod("system.disk", "Disk space & latency", "system", "Free vs. total space per volume (warns under 15% free) and disk latency with queue length (warns at 15 ms)."),
     mod("system.storage", "What's using the space", "system", "The biggest places on the system drive: each profile and its folders, old Windows installations, update downloads, memory dumps, the Recycle Bin, temp folders and the page file. Names folders, not files."),
     mod("system.memory", "Memory usage", "system", "RAM and swap in use. Warns at 80% used, critical at 90% (the site profile can change both)."),
-    mod("system.hardware", "Throttling & hardware errors", "system", "Whether the processor is running below its rated speed (firmware or heat limits), and corrected or fatal hardware errors in the last 30 days (WHEA)."),
     mod("system.reliability", "Drive health & reliability", "system", "Each drive's health, wear and errors (SMART), and the last 30 days of blue screens, unexpected shutdowns, disk errors and the apps that crash most."),
+    mod("system.hardware", "Throttling & hardware errors", "system", "Whether the processor is running below its rated speed (firmware or heat limits), and corrected or fatal hardware errors in the last 30 days (WHEA)."),
     mod("system.startup", "Startup & sign-in speed", "system", "How long the last starts took (warns past 60 s to the desktop), what Windows recorded as slowing them down, and what starts with the PC."),
     mod("system.changes", "Recent changes timeline", "system", "Recent update, installer, driver, service, policy and restart evidence. Correlates timing without claiming causation."),
     mod("proc.top", "Top processes", "processes", "Overall CPU load (warns at 75%), the busiest processes right now, and the biggest memory users. Flags anything pinning a core or holding a quarter of RAM."),
@@ -126,9 +126,9 @@
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
     mod("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, label printers, and Point and Print: who may install drivers, the approved print servers, and drivers protected print mode won't load."),
-    mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, devices the site profile requires, and USB power saving (selective suspend) that makes idle scanners drop out."),
     mod("desk.m365", "Outlook, Teams & OneDrive", "workstation", "Outlook data files against their size limit, the Microsoft 365 Apps version and update channel, Desktop and Documents in OneDrive without OneDrive running, the Teams cache, and Entra sign-in broker errors.", WIN),
     mod("desk.browser", "Edge IE mode site list", "workstation", "Whether Edge's Internet Explorer mode is set up, whether its Enterprise Mode Site List can be fetched and read, and which of the site's application URLs (and the target) open in IE mode.", WIN),
+    mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, devices the site profile requires, and USB power saving (selective suspend) that makes idle scanners drop out."),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
     mod("desk.certs", "Machine certificates", "workstation", "Computer certificates (used for 802.1X Wi-Fi and VPN), when they expire (warns 14 days out), and whether their revocation lists are reachable and current.", WIN),
     mod("desk.battery", "Battery health", "workstation", "Charge, power source, and battery wear (capacity left vs. design, cycle count). Flags batteries under 80%."),

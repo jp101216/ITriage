@@ -74,6 +74,52 @@ pub fn plural(n: usize) -> &'static str {
     }
 }
 
+// ------------------------------------------------------------------- links
+
+/// A symlink, junction or other reparse point: something that is really
+/// somewhere else. Clean-ups never follow or delete through one.
+pub fn is_link(meta: &std::fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        meta.file_type().is_symlink()
+    }
+}
+
+/// Why [`real_folder`] wouldn't hand a folder over.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NotReal {
+    /// A folder on the way isn't there.
+    Missing(PathBuf),
+    /// Something on the way is a link or junction, or isn't a folder.
+    Link(PathBuf),
+}
+
+/// `base` followed by each of `parts`, when every folder on the way is a
+/// real folder. Each of those folders is the profile owner's to replace, and
+/// one swapped for a junction or link would point a clean-up that runs with
+/// administrator rights at somebody else's files, so the first that isn't a
+/// plain folder is named instead.
+pub fn real_folder(base: &Path, parts: &[&str]) -> Result<PathBuf, NotReal> {
+    let mut path = base.to_path_buf();
+    for part in parts {
+        path.push(part);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() && !is_link(&meta) => {}
+            Ok(_) => return Err(NotReal::Link(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(NotReal::Missing(path)),
+            // Can't tell what it is: treat it as not ours to enter.
+            Err(_) => return Err(NotReal::Link(path)),
+        }
+    }
+    Ok(path)
+}
+
 /// Exit status as people read it. Large or negative codes are HRESULTs
 /// (winget, WUA-backed tools), so show those in hex.
 pub fn exit_label(code: Option<i32>) -> String {
@@ -655,6 +701,32 @@ pub fn pkexec_error(code: Option<i32>) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_reached_through_a_link_is_not_handed_over() {
+        let dir = std::env::current_dir().unwrap().join("target").join(format!("itriage-real-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let profile = dir.join("profile");
+        std::fs::create_dir_all(profile.join("AppData").join("Local").join("Cache")).unwrap();
+        std::fs::create_dir_all(dir.join("elsewhere").join("Cache")).unwrap();
+        assert_eq!(real_folder(&profile, &["AppData", "Local", "Cache"]), Ok(profile.join("AppData").join("Local").join("Cache")));
+        assert_eq!(real_folder(&profile, &["AppData", "Roaming"]), Err(NotReal::Missing(profile.join("AppData").join("Roaming"))));
+        // A file where a folder should be is no folder to empty.
+        std::fs::write(profile.join("AppData").join("file"), b"x").unwrap();
+        assert_eq!(real_folder(&profile, &["AppData", "file"]), Err(NotReal::Link(profile.join("AppData").join("file"))));
+        // The profile's owner swaps a folder on the way for a link to
+        // somewhere else: the first link is named, wherever it sits.
+        #[cfg(unix)]
+        {
+            let local = profile.join("AppData").join("Local");
+            std::fs::remove_dir_all(&local).unwrap();
+            std::os::unix::fs::symlink(dir.join("elsewhere"), &local).unwrap();
+            assert!(local.join("Cache").is_dir(), "the link really does lead to a folder");
+            assert_eq!(real_folder(&profile, &["AppData", "Local", "Cache"]), Err(NotReal::Link(local.clone())));
+            assert!(is_link(&std::fs::symlink_metadata(&local).unwrap()) && !is_link(&std::fs::symlink_metadata(&profile).unwrap()));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn formats_bytes_and_time() {

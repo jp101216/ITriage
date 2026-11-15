@@ -13,7 +13,7 @@
 
 use crate::model::{Category, Finding, ModuleInfo, Output, Severity};
 use crate::module::{RunContext, TriageModule};
-use crate::util::{human_bytes, plural};
+use crate::util::{human_bytes, is_link, plural};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -156,12 +156,7 @@ fn os_targets() -> (Vec<PathBuf>, Option<String>) {
             // Each folder on the way is the user's own to replace. One that
             // is a junction or link would point an elevated cleanup at
             // someone else's folder, so that profile is left alone.
-            let mut temp = u.path();
-            let real = ["AppData", "Local", "Temp"].iter().all(|part| {
-                temp.push(part);
-                fs::symlink_metadata(&temp).is_ok_and(|m| m.is_dir() && !is_link(&m))
-            });
-            if real {
+            if let Ok(temp) = crate::util::real_folder(&u.path(), &["AppData", "Local", "Temp"]) {
                 out.push(temp);
             }
         }
@@ -194,20 +189,6 @@ fn free_space() -> Option<(String, u64)> {
         .filter(|d| target.starts_with(d.mount_point()))
         .max_by_key(|d| d.mount_point().as_os_str().len())
         .map(|d| (d.mount_point().display().to_string(), d.available_space()))
-}
-
-/// A symlink, junction or other reparse point: never followed or deleted.
-fn is_link(meta: &fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-        meta.file_type().is_symlink() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        meta.file_type().is_symlink()
-    }
 }
 
 /// Only regular files and folders this account owns (Linux temp folders are
@@ -247,6 +228,11 @@ fn classify(e: &std::io::Error, path: &Path, c: &mut Counts) {
 
 /// Clean one folder, depth first, keeping the folder itself.
 pub fn clean(root: &Path, cutoff: SystemTime, dry_run: bool) -> Counts {
+    clean_owned(root, cutoff, dry_run, &ours)
+}
+
+/// [`clean`], with the test for "this account's own" passed in.
+fn clean_owned(root: &Path, cutoff: SystemTime, dry_run: bool, ours: &dyn Fn(&fs::Metadata) -> bool) -> Counts {
     struct Entry {
         path: PathBuf,
         /// The folder's own times from before its contents were cleaned.
@@ -268,6 +254,13 @@ pub fn clean(root: &Path, cutoff: SystemTime, dry_run: bool) -> Counts {
             continue;
         }
         if meta.is_dir() && entry.times.is_none() {
+            // Another account's folder (a service's, another person's, one
+            // left by something run with sudo): nothing in it is ours to
+            // remove, and most can't even be listed. Leaving it alone isn't
+            // a failure.
+            if !entry.root && !ours(&meta) {
+                continue;
+            }
             // First visit: come back to the folder after its contents.
             let times = (meta.created().ok(), meta.modified().ok());
             let children = match fs::read_dir(&entry.path) {
@@ -368,6 +361,30 @@ mod tests {
         assert!(dir.join("link").symlink_metadata().is_ok(), "links are left alone");
         assert!(fs::read_link(dir.join("link")).is_ok());
         assert!(dir.exists(), "the folder itself stays");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn another_accounts_folder_is_left_alone_and_is_not_a_failure() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = scratch("itriage-temp-theirs");
+        let theirs = dir.join("theirs");
+        fs::create_dir_all(&theirs).unwrap();
+        fs::write(theirs.join("x.tmp"), b"x").unwrap();
+        fs::write(dir.join("mine.tmp"), vec![0u8; 512]).unwrap();
+        // Only root can give a folder away, so one that nobody may open
+        // stands in for another account's (which is how /tmp's usually are).
+        fs::set_permissions(&theirs, fs::Permissions::from_mode(0o000)).unwrap();
+        let not_theirs = |m: &fs::Metadata| ours(m) && !(m.is_dir() && m.mode() & 0o777 == 0);
+        let future = SystemTime::now() + Duration::from_secs(3600);
+        let preview = clean_owned(&dir, future, true, &not_theirs);
+        let done = clean_owned(&dir, future, false, &not_theirs);
+        fs::set_permissions(&theirs, fs::Permissions::from_mode(0o700)).unwrap();
+        for c in [&preview, &done] {
+            assert_eq!((c.files, c.failed, c.errors.len()), (1, 0, 0), "only this account's file counts, and nothing failed: {c:?}");
+        }
+        assert!(theirs.join("x.tmp").exists(), "nothing inside it was touched");
+        assert!(!dir.join("mine.tmp").exists());
         let _ = fs::remove_dir_all(&dir);
     }
 

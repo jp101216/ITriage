@@ -165,7 +165,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--verify-audit" => {
                 let path = match &inline {
                     Some(v) => Some(v.clone()),
-                    None => it.next_if(|n| !n.starts_with("--")).cloned(),
+                    None => it.next_if(|n| !n.starts_with('-')).cloned(),
                 };
                 a.verify_audit = Some(path.map(PathBuf::from));
             }
@@ -184,7 +184,9 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             }
             "--fix" => {
                 let id = take("--fix")?;
-                let target = it.next_if(|n| !n.starts_with("--")).cloned();
+                // A target never starts with a dash, so `-q` after the id is
+                // the option, not the service to start.
+                let target = it.next_if(|n| !n.starts_with('-')).cloned();
                 a.fix = Some((id, target));
             }
             "--compare" => {
@@ -673,6 +675,9 @@ mod tests {
         let f = args(&["--fix", "flush-dns", "--quiet"]);
         assert_eq!(f.fix, Some(("flush-dns".into(), None)));
         assert!(f.quiet);
+        let f = args(&["--fix", "flush-dns", "-q"]);
+        assert_eq!((f.fix, f.quiet), (Some(("flush-dns".into(), None)), true), "a short option isn't the fix's target");
+        assert_eq!(args(&["--verify-audit", "-q"]).verify_audit, Some(None));
         let c = args(&["--compare", "a.json", "b.json"]);
         assert_eq!(c.compare.unwrap().1, PathBuf::from("b.json"));
         assert_eq!(args(&["--no-remote-safe"]).remote_safe, Some(false));

@@ -323,7 +323,12 @@ mod lock {
                     let pid: Option<u32> = std::fs::read_to_string(&path).ok().and_then(|t| t.trim().parse().ok());
                     let mut sys = sysinfo::System::new();
                     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
-                    let alive = pid.is_some_and(|p| sys.process(sysinfo::Pid::from_u32(p)).is_some_and(|proc| proc.name().to_string_lossy().to_ascii_lowercase().contains("itriage")));
+                    // Still a watcher, or has the number been handed to
+                    // something else since? A watcher is this same program,
+                    // whatever its file is called.
+                    let name = |pid: u32| sys.process(sysinfo::Pid::from_u32(pid)).map(|proc| proc.name().to_string_lossy().to_ascii_lowercase());
+                    let mine = name(std::process::id());
+                    let alive = pid.and_then(name).is_some_and(|theirs| Some(&theirs) == mine.as_ref() || theirs.contains("itriage"));
                     if alive {
                         return None;
                     }
@@ -535,10 +540,24 @@ fn require_admin() -> Result<(), String> {
     }
 }
 
+/// Why a copy of ITriage that others can change isn't set to start for
+/// everyone.
+fn not_trusted(program: &str, why: &str) -> String {
+    format!(
+        "Watch mode starts ITriage at every sign-in, as whoever signs in, so the copy it starts must be one only administrators can change. {program} isn't: {why}. Install ITriage for all users ({}) and run --install-watch from that copy.",
+        if cfg!(windows) { "the setup program and the MSI put it in Program Files" } else { "the .deb puts it in /usr/bin" }
+    )
+}
+
 /// Set watch mode to start at sign-in. Administrator/root.
 pub fn install() -> Result<String, String> {
     require_admin()?;
     let program = program()?;
+    // The task or unit runs this file for every user, as that user. A copy
+    // in a folder other people can write to (Downloads, a folder made at the
+    // top of C:\, a shared drive) could be swapped for anything, which would
+    // then run as each person who signs in, administrators included.
+    crate::trust::program(Path::new(&program)).map_err(|why| not_trusted(&program, &why))?;
     imp::install(&program)
 }
 
@@ -601,13 +620,24 @@ mod imp {
     }
 
     pub fn install(program: &str) -> Result<String, String> {
+        let had_unit = Path::new(UNIT_PATH).exists();
         std::fs::create_dir_all("/etc/systemd/user").map_err(|e| e.to_string())?;
         std::fs::write(UNIT_PATH, unit_text(program)).map_err(|e| format!("Can't write {UNIT_PATH}: {e}"))?;
-        let out = systemctl(&["--global", "enable", "itriage-watch.service"])?;
-        if out.success() {
-            Ok(format!("Watch mode will start at each sign-in ({UNIT_PATH}, a systemd user unit enabled for every user). It only watches while the site profile has [advanced] watch = true."))
-        } else {
-            Err(format!("systemctl couldn't enable the unit: {}", out.combined()))
+        let enabled = match systemctl(&["--global", "enable", "itriage-watch.service"]) {
+            Ok(out) if out.success() => Ok(()),
+            Ok(out) => Err(format!("systemctl couldn't enable the unit: {}", out.combined())),
+            Err(e) => Err(format!("systemctl couldn't be run ({e}), so the unit can't be enabled. Watch mode starts through systemd's user sessions.")),
+        };
+        match enabled {
+            Ok(()) => Ok(format!("Watch mode will start at each sign-in ({UNIT_PATH}, a systemd user unit enabled for every user). It only watches while the site profile has [advanced] watch = true.")),
+            Err(why) => {
+                // Don't leave a unit that says "installed" when it isn't. One
+                // from an earlier, working install is left as it was found.
+                if !had_unit {
+                    let _ = std::fs::remove_file(UNIT_PATH);
+                }
+                Err(why)
+            }
         }
     }
 
@@ -615,12 +645,14 @@ mod imp {
         if !Path::new(UNIT_PATH).exists() {
             return Ok("Watch mode wasn't installed.".into());
         }
-        let out = systemctl(&["--global", "disable", "itriage-watch.service"])?;
+        // The unit goes whether or not systemctl can be asked to disable it
+        // first: without the file there is nothing left to start.
+        let disabled = systemctl(&["--global", "disable", "itriage-watch.service"]);
         std::fs::remove_file(UNIT_PATH).map_err(|e| format!("Can't remove {UNIT_PATH}: {e}"))?;
-        if out.success() {
-            Ok(format!("Removed {UNIT_PATH}. Watchers already running stop at the next sign-out."))
-        } else {
-            Ok(format!("Removed {UNIT_PATH} ({}).", out.combined()))
+        match disabled {
+            Ok(out) if out.success() => Ok(format!("Removed {UNIT_PATH}. Watchers already running stop at the next sign-out.")),
+            Ok(out) => Ok(format!("Removed {UNIT_PATH} ({}).", out.combined())),
+            Err(e) => Ok(format!("Removed {UNIT_PATH} (systemctl couldn't be run to disable it first: {e}).")),
         }
     }
 }
@@ -718,6 +750,8 @@ mod tests {
         assert!(task.contains("<GroupId>S-1-5-32-545</GroupId>") && task.contains("<Priority>7</Priority>") && task.contains("<Arguments>--watch</Arguments>"));
         assert!(unit_text("/usr/bin/itriage").contains("ExecStart=/usr/bin/itriage --watch\nNice=10"));
         assert!(privacy_notice(7, 200).contains("doesn't record the screen"));
+        let refused = not_trusted("/home/jparker/Downloads/itriage", "/home/jparker isn't owned by root, or others can write to it");
+        assert!(refused.contains("must be one only administrators can change") && refused.contains("/home/jparker/Downloads/itriage isn't: /home/jparker isn't owned by root"), "{refused}");
         assert_eq!(marker(1_794_600_000, "x").label, "Watch: x");
     }
 }
