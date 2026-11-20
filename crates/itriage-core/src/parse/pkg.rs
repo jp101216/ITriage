@@ -46,16 +46,27 @@ pub fn apt_simulation(out: &str) -> Vec<PkgUpdate> {
 }
 
 /// `dnf check-update`: `name.arch  version  repo` rows. Stops at the
-/// "Obsoleting Packages" section.
+/// "Obsoleting Packages" section. A name too long for its column pushes the
+/// rest of its row onto the next, indented line, and the two are read as one.
 pub fn dnf_check_update(out: &str) -> Vec<PkgUpdate> {
     const ARCHES: &[&str] = &["x86_64", "noarch", "i686", "aarch64", "armv7hl", "ppc64le", "s390x"];
+    let name_arch = |s: &str| s.rsplit_once('.').is_some_and(|(_, arch)| ARCHES.contains(&arch));
     let mut updates = Vec::new();
+    let mut carried: Vec<&str> = Vec::new();
     for line in out.lines() {
         let t = line.trim();
         if t.starts_with("Obsoleting") {
             break;
         }
-        let parts: Vec<&str> = t.split_whitespace().collect();
+        let mut parts: Vec<&str> = t.split_whitespace().collect();
+        let wrapped = std::mem::take(&mut carried);
+        if !wrapped.is_empty() && line.starts_with(char::is_whitespace) {
+            parts = wrapped.into_iter().chain(parts).collect();
+        }
+        if (1..3).contains(&parts.len()) && name_arch(parts[0]) && !line.starts_with(char::is_whitespace) {
+            carried = parts;
+            continue;
+        }
         if parts.len() != 3 {
             continue;
         }
@@ -170,6 +181,23 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].name, "kernel");
         assert_eq!(rows[1].to, "132.0-1.fc41");
+    }
+
+    #[test]
+    fn dnf_rows_wrapped_by_a_long_name() {
+        let out = "kernel.x86_64                     6.11.5-300.fc41          updates\n\
+            xorg-x11-server-Xwayland-devel.x86_64\n\
+            \x20                                 24.1.4-1.fc41            updates\n\
+            gnome-shell-extension-appindicator.noarch 59-1.fc41\n\
+            \x20                                                          updates\n\
+            firefox.x86_64                    132.0-1.fc41             updates\n";
+        let rows = dnf_check_update(out);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["kernel", "xorg-x11-server-Xwayland-devel", "gnome-shell-extension-appindicator", "firefox"]);
+        assert_eq!(rows[1].to, "24.1.4-1.fc41");
+        assert_eq!(rows[2].to, "59-1.fc41");
+        // A stray name with nothing after it is dropped, not glued to the next row.
+        assert_eq!(dnf_check_update("orphan.x86_64\nfirefox.x86_64  132.0-1.fc41  updates\n").len(), 1);
     }
 
     #[test]

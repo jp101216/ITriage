@@ -14,7 +14,7 @@
 use crate::model::{Category, Finding, ModuleInfo, Output, Severity};
 use crate::module::{RunContext, TriageModule};
 use crate::parse::hardware::{severity, HwError, SpeedCap};
-use crate::util::{ago, human_duration, plural};
+use crate::util::{ago, human_span, plural};
 
 pub struct Hardware;
 
@@ -66,7 +66,7 @@ pub fn speed_caps(caps: &[SpeedCap], now: u64, on_ac: Option<bool>) -> Finding {
         "{} report{} · limited for {} in total · last {}",
         caps.len(),
         plural(caps.len()),
-        human_duration(total),
+        human_span(std::time::Duration::from_secs(total)),
         ago(now.saturating_sub(last))
     );
     // A minute here and there is power management; tens of minutes is a

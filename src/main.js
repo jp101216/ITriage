@@ -3687,6 +3687,13 @@
     if (!host || host.length > 253 || host.startsWith("-") || !/^[A-Za-z0-9._:%-]+$/.test(host)) {
       throw `\`${host}\` isn't a host name or IP address.`;
     }
+    // ':' and '%' only belong in an IPv6 address and its zone.
+    if (/[:%]/.test(host)) {
+      const [ip, zone] = host.split("%");
+      let v6 = ip.includes(":") && zone !== "";
+      try { new URL(`http://[${ip}]`); } catch (_) { v6 = false; }
+      if (!v6) throw `\`${host}\` isn't a host name or IP address. Give ports after one ':' or a space, separated by commas, like fileserver01:445,3389.`;
+    }
     const ports = [];
     for (const part of portsText.split(/[,\s;]+/).filter(Boolean)) {
       const n = Number(part);

@@ -452,10 +452,19 @@ pub fn stream(mut command: Command, ctx: &RunContext, timeout: Duration) -> Resu
 }
 
 fn timed_out(name: &str, timeout: Duration) -> String {
-    format!(
-        "`{name}` was stopped after {} without finishing",
-        human_duration(timeout.as_secs())
-    )
+    format!("`{name}` was stopped after {} without finishing", human_span(timeout))
+}
+
+/// A length of time as people read it, for spans that can be under a minute
+/// (a 30 s time limit, 20 s of throttling), which [`human_duration`] would
+/// round down to "0m".
+pub fn human_span(span: Duration) -> String {
+    match span.as_secs() {
+        0 if span.as_millis() == 0 => "0 s".to_string(),
+        0 => format!("{} ms", span.as_millis()),
+        s @ 1..=59 => format!("{s} s"),
+        s => human_duration(s),
+    }
 }
 
 /// Read a pipe on its own thread, sending each *finished* line. A segment that
@@ -737,6 +746,16 @@ mod tests {
         assert_eq!(ago(14 * 60), "14m ago");
         assert_eq!(ago(3 * 3600 + 5), "3h ago");
         assert_eq!(ago(2 * 86_400), "2d ago");
+    }
+
+    #[test]
+    fn time_limits_under_a_minute_are_not_zero() {
+        assert_eq!(timed_out("w32tm", Duration::from_secs(30)), "`w32tm` was stopped after 30 s without finishing");
+        assert_eq!(human_span(Duration::from_millis(600)), "600 ms");
+        assert_eq!(human_span(Duration::ZERO), "0 s");
+        assert_eq!(human_span(Duration::from_secs(20)), "20 s");
+        assert_eq!(human_span(Duration::from_secs(60)), "1m");
+        assert_eq!(human_span(Duration::from_secs(2 * 3600)), "2h 0m");
     }
 
     #[test]
