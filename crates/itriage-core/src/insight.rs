@@ -364,7 +364,10 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
     // --- Running out of room.
     let full = v.problems("system.disk", |f| f.metric.as_ref().is_some_and(|m| m.unit == "% free"));
     if !full.is_empty() {
-        let (_, f) = full[0];
+        // Named after the fullest by severity (the first of those, so the
+        // system drive on a tie): the headline carries the worst severity,
+        // so it mustn't name a drive that's only at a warning.
+        let (_, f) = *full.iter().rev().max_by_key(|(_, f)| f.severity.rank()).expect("not empty");
         // When the space check ran too, it says where the space went: what
         // it flagged as clearable, or failing that its biggest folder.
         let mut evidence: Vec<String> = full.iter().map(|h| cite(*h)).collect();
@@ -738,6 +741,31 @@ mod tests {
         assert!(found[0].cause.starts_with("A drive is failing."));
         assert_eq!(found[1].cause, "Windows has crashed with a blue screen 3 times in the last 30 days. The most common stop code usually means the drive or its cable.");
         assert!(found[2].cause.starts_with("C:\\ is nearly full (4.1 GB free of 237 GB (98% used))"), "{}", found[2].cause);
+    }
+
+    #[test]
+    fn a_full_disk_is_named_after_the_drive_at_the_worst_severity() {
+        let results = vec![result(
+            "system.disk",
+            "Disk space & latency",
+            vec![
+                Finding::warn("/", "28.8 GB free of 252.0 GB (89% used) · ext4").with_metric(11.0, "% free", false),
+                Finding::crit("/opt/data", "27.1 MB free of 393.0 MB (93% used) · ext4").with_metric(7.0, "% free", false),
+            ],
+        )];
+        let found = likely_causes(&results);
+        assert_eq!(found[0].severity, Severity::Critical);
+        assert!(found[0].cause.starts_with("/opt/data is nearly full (27.1 MB free"), "{}", found[0].cause);
+        // Two at the same severity: the first listed (the system drive) is named.
+        let tie = vec![result(
+            "system.disk",
+            "Disk space & latency",
+            vec![
+                Finding::warn("C:\\", "20 GB free of 237 GB (92% used)").with_metric(8.0, "% free", false),
+                Finding::warn("D:\\", "40 GB free of 465 GB (91% used)").with_metric(9.0, "% free", false),
+            ],
+        )];
+        assert!(likely_causes(&tie)[0].cause.starts_with("C:\\ is nearly full"));
     }
 
     #[test]

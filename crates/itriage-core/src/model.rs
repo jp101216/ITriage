@@ -222,6 +222,18 @@ impl Target {
         if !valid {
             return Err(format!("`{host}` isn't a host name or IP address."));
         }
+        // ':' and '%' only belong in an IPv6 address (and its zone). Anything
+        // else with them is a mistyped destination, most often ports joined
+        // with colons ("fileserver01:445:3389"), which would otherwise be
+        // tried as a host name, with the default ports.
+        if host.contains([':', '%']) {
+            let (ip, zone) = host.split_once('%').map_or((host, None), |(ip, z)| (ip, Some(z)));
+            if ip.parse::<std::net::Ipv6Addr>().is_err() || zone.is_some_and(str::is_empty) {
+                return Err(format!(
+                    "`{host}` isn't a host name or IP address. Give ports after one ':' or a space, separated by commas, like fileserver01:445,3389."
+                ));
+            }
+        }
         Ok(Target { host: host.to_string(), ports, explicit_ports })
     }
 }
@@ -422,6 +434,8 @@ mod tests {
         assert_eq!(t("[2001:db8::1]:443"), Target { host: "2001:db8::1".into(), ports: vec![443], explicit_ports: true });
         assert_eq!(t("2001:db8::1").ports, DEFAULTS.to_vec(), "a bare IPv6 address keeps the defaults");
         assert_eq!(t("10.0.0.5:80,443").ports, vec![80, 443]);
+        assert_eq!(t("fe80::1%eth0").host, "fe80::1%eth0", "a link-local address keeps its zone");
+        assert_eq!(t("[fe80::1%12]:3389").ports, vec![3389]);
     }
 
     #[test]
@@ -429,6 +443,8 @@ mod tests {
         for bad in [
             "", "-oProxyCommand=x", "host;reboot", "host:0", "host:99999", "a b,c",
             "[::1]garbage", "[::1]:", "[server]:443", "host:", "host:,;", "host:443 80",
+            // Ports joined with colons, and a zone on something that isn't IPv6.
+            "fileserver01:445:3389", "10.0.0.5:80:443", "file%server", "fe80::1%",
         ] {
             assert!(Target::parse(bad, &DEFAULTS).is_err(), "{bad}");
         }

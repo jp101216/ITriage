@@ -47,9 +47,31 @@ fn segments(v: &str) -> Vec<Seg> {
     out
 }
 
+/// A Debian or Arch package epoch (the `1:` in `1:2.39-0ubuntu8`) and the
+/// version after it.
+fn split_epoch(v: &str) -> (Option<u64>, &str) {
+    let v = v.trim();
+    match v.split_once(':') {
+        Some((epoch, rest)) if (1..=9).contains(&epoch.len()) && epoch.bytes().all(|b| b.is_ascii_digit()) && !rest.is_empty() => {
+            (epoch.parse().ok(), rest)
+        }
+        _ => (None, v),
+    }
+}
+
 /// Compare two version strings. Missing trailing zeros don't matter
 /// (1.0 == 1.0.0); a trailing text part marks a pre-release (2.0-beta < 2.0).
+///
+/// A package epoch counts only when both have one. A site profile's
+/// `min_version = "15.0"` means the program's own version, so the `1:` of
+/// an installed `1:15.1.01-1` mustn't be read as major version 1.
 pub fn compare(a: &str, b: &str) -> Ordering {
+    let ((epoch_a, a), (epoch_b, b)) = (split_epoch(a), split_epoch(b));
+    if let (Some(x), Some(y)) = (epoch_a, epoch_b) {
+        if x != y {
+            return x.cmp(&y);
+        }
+    }
     let (x, y) = (segments(a), segments(b));
     for i in 0..x.len().max(y.len()) {
         let o = match (x.get(i), y.get(i)) {
@@ -72,7 +94,7 @@ pub fn compare(a: &str, b: &str) -> Ordering {
 
 /// Is `installed` at least `minimum`? An unreadable version never passes.
 pub fn meets(installed: &str, minimum: &str) -> bool {
-    !segments(installed).is_empty() && compare(installed, minimum) != Ordering::Less
+    !segments(split_epoch(installed).1).is_empty() && compare(installed, minimum) != Ordering::Less
 }
 
 #[cfg(test)]
@@ -102,5 +124,19 @@ mod tests {
         assert!(!meets("23.11.1.45", "24.2"));
         assert!(!meets("", "1.0"));
         assert!(!meets("unknown", "1.0"));
+    }
+
+    #[test]
+    fn package_epochs_are_not_major_versions() {
+        // dpkg and pacman put an epoch before the version.
+        assert!(meets("1:15.1.01-1build1", "15.0"));
+        assert!(!meets("1:14.2-1", "15.0"));
+        assert!(meets("2:9.1.0016-1ubuntu7", "9.1"));
+        // Two epochs: the epoch decides, as dpkg would.
+        assert_eq!(compare("2:1.0", "1:5.0"), Ordering::Greater);
+        assert_eq!(compare("1:1.0", "1:1.0"), Ordering::Equal);
+        assert!(!meets("1:beta", "1.0"), "an epoch with no version after it never passes");
+        // Not an epoch: nothing before the colon, or not a number.
+        assert_eq!(compare("Build:24.2", "24.2"), Ordering::Equal);
     }
 }
