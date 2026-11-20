@@ -1089,7 +1089,7 @@ Digital Signatures**, or with
 
 ## Verification status
 
-v0.10.1 passed 348 Linux core tests, 341 Windows core tests and 20 browser
+v0.10.2 passed 352 Linux core tests, 345 Windows core tests and 20 browser
 regression tests, along with workspace Clippy, smoke checks and installer
 builds on both platforms. The browser tests use simulated checks and repairs.
 The rows marked 0.10.0 below are what was run for this release; the earlier
@@ -1117,6 +1117,7 @@ validation remain as noted.
 | New in 0.10.0, Linux | watch mode run end to end (a busy processor saved a capture); `desk.domain` run as root against SSSD pointed at an unreachable domain controller, with `sssd.conf` at 0644 (critical, the domain read from the file, the keytab read, `adcli`'s "no DC" a warning) and at 0600 (SSSD running; the missing system bus reported as a gap). The `sssctl`, `klist -k` and `adcli` parsers use real output captured on Ubuntu 24.04 | working |
 | New in 0.10.0, interface | 20 browser tests against simulated checks, including a known incident's banner (first, escaped, linking its status page) and fix previews in the confirmation dialog | working |
 | New in 0.10.1 | the published 0.10.0 `.deb` installed and run on Ubuntu (checks, history, audit log, the desktop app opening); every read-only check as root and as an ordinary user; watch mode installed from a root-only folder and refused from `/tmp`; a Teams cache behind a symlink refused with the linked folder untouched (Linux tests of the shared code). **Not yet run**: a real junction in a real profile on a desktop edition of Windows | working |
+| New in 0.10.2 | on an Ubuntu 24.04 machine with `/` at a warning and another volume critical, the likely cause named `/` before the fix and the critical volume after it; `[[require.app]]` minimums checked against the package database of an Ubuntu 24.04 machine (`bison 2:3.8.2` against 3.8 flagged before the fix and passing after; `bsdutils 1:2.39.3` against 2.40 still flagged); a mistyped `--target fileserver01:445:3389` refused from the command line; the smoke checks run again on Linux. The dnf and time-limit fixes are covered by tests only | working |
 | New in 0.10.0, not yet run | on a **desktop edition of Windows with a real user**: Outlook, OneDrive and Teams, Click-to-Run; an **IE mode site list and Point and Print set by GPO**; **changing the power plan** (Keep USB devices awake); **device notifications with a real scanner** unplugged mid-recording; a real **802.1X success or failure** and a **NAC quarantine**; **Kerberos tickets and certificate revocation on a domain**; the **ASR, AppLocker, App Control and WHEA** events (tested against events written from their manifests); **watch mode starting at an actual sign-in**; `realm list` on a **joined Linux machine** | ⚠ next step |
 | Account checks on a domain; the new fixes | **not yet run**: no test machine was joined to a domain, and Remove saved credentials, Sign out the session, Unlock and Revert tune-up's restore step were never run against real state. Nor was anything run as a standard user on Windows (CI is elevated) or under Constrained Language mode | ⚠ next step |
 | Repairs, installs and OEM tools on real hardware | not yet run on a physical Windows workstation | ⚠ next step |
