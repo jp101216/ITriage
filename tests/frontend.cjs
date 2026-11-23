@@ -329,7 +329,7 @@ test("a failed case refresh preserves the report and its recording",async(t)=>{
 
 test("the checks filter narrows the list without touching what is ticked",async(t)=>{
   const page=await pageFor(t,{timeline:true});
-  const ticked=()=>page.evaluate(()=>[...document.querySelectorAll('.mod[aria-checked="true"]')].map((m)=>m.dataset.id).sort());
+  const ticked=()=>page.evaluate(()=>[...document.querySelectorAll('.mod .box[aria-checked="true"]')].map((m)=>m.closest(".mod").dataset.id).sort());
   const before=await ticked();assert.ok(before.length>=2);
   await page.locator("body").press("/");
   assert.equal(await page.evaluate(()=>document.activeElement.id),"modFilter","/ jumps to the filter");
@@ -425,4 +425,131 @@ test("the timeline can show everything collected, with each row placed against t
   assert.match(row,/Windows update/);assert.match(row,/before|after/);
   assert.match(row,/31 events: Package KB1/,"the end of a burst is in the When column, not repeated in the text");
   assert.equal(await page.evaluate(()=>testState.calls.includes("timeline_rows")),true);
+});
+
+/* ------------------------------ accessibility ------------------------------ */
+const axeSource = require.resolve("axe-core/axe.min.js");
+async function axeViolations(page) {
+  await page.addScriptTag({ path: axeSource });
+  return page.evaluate(async () => (await axe.run(document)).violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(" ")).slice(0, 3).join(", ")}`));
+}
+
+test("axe finds nothing in the console, its dialogs and the self-service view", async (t) => {
+  const page = await pageFor(t, { preview: true });
+  assert.deepEqual(await axeViolations(page), [], "idle");
+  await page.click("#run");
+  await page.waitForFunction(() => !document.querySelector("#run.running"), null, { timeout: 120000 });
+  assert.deepEqual(await axeViolations(page), [], "after a run");
+  for (const opener of ["#historyBtn", "#skinBtn", "#profileTag", "#guidedBtn"]) {
+    await page.click(opener);
+    await page.locator('[role="dialog"]').first().waitFor();
+    assert.deepEqual(await axeViolations(page), [], opener);
+    await page.keyboard.press("Escape");
+  }
+  await page.click("#toSelf");
+  assert.deepEqual(await axeViolations(page), [], "self-service");
+});
+
+test("the keyboard reaches everything: skip link, ticking a check, dialogs that keep and return focus", async (t) => {
+  const page = await pageFor(t, { preview: true });
+  await page.keyboard.press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "skipChecks", "the first Tab is the skip link");
+  await page.keyboard.press("Enter");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "modules");
+  await page.keyboard.press("Tab");
+  const box = () => page.evaluate(() => ({ role: document.activeElement.getAttribute("role"), id: document.activeElement.closest(".mod").dataset.id, checked: document.activeElement.getAttribute("aria-checked") }));
+  const before = await box();
+  assert.equal(before.role, "checkbox");
+  await page.keyboard.press("Space");
+  const after = await box();
+  assert.equal(after.id, before.id);
+  assert.notEqual(after.checked, before.checked, "Space ticks or unticks it");
+  assert.equal(await page.locator(`[data-id="${after.id}"]`).evaluate((m) => m.classList.contains("on")), after.checked === "true");
+
+  // A dialog keeps Tab inside it, and Escape hands focus back.
+  await page.focus("#historyBtn");
+  await page.keyboard.press("Enter");
+  await page.locator(".drawer").waitFor();
+  for (let i = 0; i < 20; i++) {
+    await page.keyboard.press(i % 2 ? "Shift+Tab" : "Tab");
+    assert.equal(await page.evaluate(() => !!document.activeElement.closest(".drawer")), true, `Tab ${i} stayed in the dialog`);
+  }
+  assert.equal(await page.evaluate(() => document.getElementById("app").inert), true, "the console behind it is inert");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "historyBtn", "focus went back to the button");
+  assert.equal(await page.evaluate(() => document.getElementById("app").inert), false);
+
+  // The destination field is its own control, not part of a checkbox.
+  assert.equal(await page.locator('.box[role="checkbox"] input, [role="checkbox"] input').count(), 0);
+});
+
+test("the export menu works from the keyboard", async (t) => {
+  const page = await pageFor(t, { preview: true });
+  await page.click("#run");
+  await page.waitForFunction(() => !document.querySelector("#run.running"), null, { timeout: 120000 });
+  await page.focus("#exportBtn");
+  await page.keyboard.press("ArrowDown");
+  const item = () => page.evaluate(() => document.activeElement.dataset.fmt);
+  assert.equal(await item(), "plain", "opens on the first item");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await item(), "transcript");
+  await page.keyboard.press("End");
+  assert.equal(await item(), "json");
+  await page.keyboard.press("ArrowDown");
+  assert.equal(await item(), "plain", "wraps around");
+  await page.keyboard.press("ArrowUp");
+  assert.equal(await item(), "json");
+  await page.keyboard.press("Escape");
+  assert.equal(await page.evaluate(() => document.activeElement.id), "exportBtn");
+  assert.equal(await page.locator("#exportMenu").isHidden(), true);
+});
+
+test("results say their severity in words, and runs are announced", async (t) => {
+  const page = await pageFor(t, { preview: true });
+  await page.click("#run");
+  await page.waitForFunction(() => !document.querySelector("#run.running"), null, { timeout: 120000 });
+  const rows = await page.evaluate(() => [...document.querySelectorAll(".fr")].map((r) => [r.querySelector(".fdot").className.replace("fdot sev-", ""), (r.querySelector(".sr-only") || {}).textContent]));
+  assert.ok(rows.length > 10);
+  const words = { ok: "OK:", info: "information:", warning: "warning:", critical: "critical:" };
+  for (const [sev, said] of rows) assert.equal(said, words[sev], sev);
+  const led = await page.evaluate(() => [...document.querySelectorAll(".mod[data-sev] .led")].map((l) => l.textContent));
+  assert.ok(led.length && led.every((t) => /^Last result: (OK|information|warning|critical)$/.test(t)), led.join(" | "));
+  await page.waitForFunction(() => document.getElementById("srStatus").textContent.startsWith("Finished:"));
+  assert.equal(await page.locator("#progressWrap").getAttribute("role"), "progressbar");
+});
+
+test("reduce motion: the picker's switch applies at once, sticks on Apply and is undone by Cancel", async (t) => {
+  const page = await pageFor(t, { preview: true });
+  const motion = () => page.evaluate(() => document.documentElement.dataset.motion || "");
+  const sweep = () => page.evaluate(() => getComputedStyle(document.querySelector(".run-btn")).transitionDuration);
+  assert.equal(await motion(), "");
+  await page.click("#skinBtn");
+  await page.locator("#motionOpt").check({ force: true });
+  assert.equal(await motion(), "reduce", "tried on straight away");
+  assert.equal(await sweep(), "0s", "transitions are off");
+  await page.getByRole("button", { name: "Cancel / Close" }).click();
+  assert.equal(await motion(), "", "Cancel undoes it");
+  await page.click("#skinBtn");
+  await page.locator("#motionOpt").check({ force: true });
+  await page.getByRole("button", { name: "Apply changes" }).click();
+  await page.reload();
+  assert.equal(await motion(), "reduce", "kept after a restart");
+});
+
+test("a Windows contrast theme still shows switches, ticks and severity", async (t) => {
+  const page = await pageFor(t, { preview: true });
+  await page.emulateMedia({ forcedColors: "active" });
+  const sw = (id) => page.evaluate((id) => getComputedStyle(document.querySelector(`#${id} + .sw`)).backgroundColor, id);
+  const off = await sw("optSafe");
+  await page.locator("#optPreview").check({ force: true });
+  assert.notEqual(await sw("optPreview"), off, "a ticked switch looks different from an unticked one");
+  await page.click("#run");
+  await page.waitForFunction(() => !document.querySelector("#run.running"), null, { timeout: 120000 });
+  const shapes = await page.evaluate(() => {
+    const clip = (sel) => { const e = document.querySelector(sel); return e && getComputedStyle(e, "::before").clipPath; };
+    return { warning: clip(".fdot.sev-warning"), critical: clip(".fdot.sev-critical") };
+  });
+  assert.match(shapes.warning, /polygon/, "a warning is a triangle");
+  assert.match(shapes.critical, /polygon/, "critical is a diamond");
+  assert.notEqual(shapes.warning, shapes.critical);
 });

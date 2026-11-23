@@ -787,6 +787,52 @@ unknown name falls back to red. Themes are plain CSS: each one sets the colour
 and type tokens at the top of `src/styles.css`, and the "v0.6 — themes"
 section at the end adds what a palette can't (scanlines, cut corners, glass).
 
+### Accessibility
+
+The console and the self-service view work with a keyboard alone, with a
+screen reader, with reduced motion and with Windows contrast themes:
+
+* **Keyboard.** The first Tab reaches *Skip to the checks* and *Skip to the
+  results*. Each check is ticked with Space or Enter on its box, and the
+  focus ring goes round the whole row. A dialog keeps Tab inside it while
+  it's open (the console behind it is inert) and puts focus back on the
+  button that opened it when it closes. The Export menu follows the menu
+  pattern: Down opens it, the arrows, Home and End move, Esc closes it.
+* **Screen readers.** Each check box is labelled by the check's title and
+  described by what it looks at and its last result. Every finding says its
+  severity in words ("warning:") before its label, and so does each row's
+  last-result light. The start and end of a run (and the self-service
+  verdict) are announced once each, not every step; the progress bar is a
+  real progress bar. The destination field is a control of its own rather
+  than one hidden inside a checkbox. Both views have a heading and
+  landmarks.
+* **Not colour alone.** Severity also has a shape: a dot is OK, a ring is
+  information, a triangle a warning and a diamond critical, in the findings
+  and in the module list.
+* **Contrast.** On the main screen, text in every theme measures at least
+  4.5:1 (WCAG AA) against what's actually painted behind it, scanlines and
+  gradients included; axe checks the dialogs and self-service view. Getting there
+  brightened each theme's dim text a little, moved the few labels that used
+  the faintest colour up to it, and gave Sleek Minimalist and Enterprise Glass
+  a darker red behind white button text (also on hover).
+* **Motion.** The computer's own reduced-motion setting turns animations and
+  transitions off, and **Reduce motion** in the theme picker does the same for
+  people who haven't set it there.
+* **Windows contrast themes.** Under forced colours the switches, ticked boxes,
+  progress bar and severity shapes take system colours, so their state stays
+  visible when Windows replaces the console's colours.
+
+How it was tested: axe-core finds nothing in the console (before and after a
+run), its dialogs (history, themes, profile, troubleshooting) or the
+self-service view; browser tests drive the skip link, ticking a check from
+the keyboard, Tab staying in a dialog and focus coming back, the Export menu's
+arrow keys, the words for severity and the run announcement, the motion
+switch (Apply, Cancel, a reload) and a forced-colours page. Contrast was
+measured in all nine themes after a run, by hiding the text and sampling
+what's painted behind each line. **Not yet done**: a session with NVDA, JAWS
+or Orca, a real Windows contrast theme (rather than Chromium's emulation of
+one), and the Linux app's WebKitGTK engine.
+
 ## Privilege model
 
 | | Windows | Linux |
