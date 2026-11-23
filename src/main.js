@@ -292,6 +292,8 @@
     "built-in": ["DEFAULT", "Built-in default (no profile file found)"],
   };
   const RANK = { ok: 0, info: 1, warning: 2, critical: 3 };
+  /** Severity in words, for screen readers and anyone who can't tell the colours apart. */
+  const SEV_WORD = { ok: "OK", info: "information", warning: "warning", critical: "critical" };
 
   /* --------------------- sample data for the preview ---------------- */
   const ADMIN_REQUIRED =
@@ -887,15 +889,20 @@
     { id: "glass", name: "Enterprise Glass", note: "Frosted panels over a soft gradient." },
   ];
   const SKIN_KEY = "itriage.skin.v1";
+  const MOTION_KEY = "itriage.motion.v1";
   /** The site profile's theme at the last start, so a site default doesn't flash red. */
   const SITE_SKIN_KEY = "itriage.skin.site.v1";
   /** Canvas colours read from the theme (see pal()); cleared when it changes. */
   let PAL = null;
   setSkin(savedSkin() || storedSkin(SITE_SKIN_KEY) || "red");
+  setMotion(savedMotion());
 
   /* --------------------------- mount ------------------------------- */
   const root = document.getElementById("app");
   root.innerHTML = `
+    <a class="skip" id="skipChecks" href="#modules">Skip to the checks</a>
+    <a class="skip" id="skipResults" href="#results">Skip to the results</a>
+    <div class="sr-only" id="srStatus" role="status" aria-live="polite" aria-atomic="true"></div>
     <section class="hud brackets" id="hud" aria-label="Live telemetry">
       <div class="hud-main">
         <div class="hud-title">TELEMETRY: <span class="v">${isTauri ? "LIVE" : "SIMULATED"}</span>
@@ -911,6 +918,7 @@
       </div>
     </section>
     <header class="brandbar" id="brandbar">
+      <h1 class="sr-only">ITriage technician console</h1>
       <div class="brand">
         <span class="logo">${I.logo}</span>
         <span class="name">ITriage</span>
@@ -944,7 +952,7 @@
             title="Type part of a check's name or what it looks at. Press / to jump here, Esc to clear.">
         </div>
         <div class="presets" id="presets" role="group" aria-label="Presets"></div>
-        <div class="modules" id="modules"></div>
+        <div class="modules" id="modules" tabindex="-1" role="group" aria-label="Checks"></div>
         <div class="run-dock">
           <div class="run-opts">
             <label class="opt" title="Modules that change the machine only say what they would do. Nothing is changed.">
@@ -986,8 +994,8 @@
           <button class="bk-btn sm" id="baselineBtn" type="button">Working PC</button>
           <button class="bk-btn sm" id="bundleBtn" type="button">Case bundle</button>
         </div>
-        <div class="progress-wrap"><div class="progress-bar" id="progress"></div></div>
-        <div class="results" id="results"></div>
+        <div class="progress-wrap" id="progressWrap" role="progressbar" aria-label="Run progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-bar" id="progress"></div></div>
+        <div class="results" id="results" tabindex="-1" role="region" aria-label="Results"></div>
       </main>
     </div>
     <div class="ss" id="ss" hidden></div>`;
@@ -1019,6 +1027,13 @@
   el("optSafe").onchange = (e) => setRemoteSafe(e.target.checked);
   el("none").onclick = () => { if (!running) { selected.clear(); syncRows(); } };
   runBtn.onclick = () => (running ? requestCancel() : onRun());
+  ["skipChecks", "skipResults"].forEach((id) => {
+    el(id).onclick = (e) => {
+      e.preventDefault();
+      const target = el(el(id).getAttribute("href").slice(1));
+      if (target) target.focus();
+    };
+  });
   el("modFilter").oninput = applyModFilter;
   el("modFilter").onkeydown = (e) => {
     if (e.key === "Escape" && e.target.value) {
@@ -1053,6 +1068,21 @@
   });
   document.addEventListener("click", (e) => { if (!exportMenu.hidden && !exportMenu.contains(e.target)) toggleMenu(false); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !exportMenu.hidden) { toggleMenu(false); exportBtn.focus(); } });
+  // The menu pattern: arrows move between the items, Home and End jump,
+  // Tab leaves (and closes it).
+  exportMenu.addEventListener("keydown", (e) => {
+    const items = [...exportMenu.querySelectorAll('[role="menuitem"]')];
+    const at = items.indexOf(document.activeElement);
+    const go = (i) => { e.preventDefault(); items[(i + items.length) % items.length].focus(); };
+    if (e.key === "ArrowDown") go(at + 1);
+    else if (e.key === "ArrowUp") go(at - 1);
+    else if (e.key === "Home") go(0);
+    else if (e.key === "End") go(items.length - 1);
+    else if (e.key === "Tab") toggleMenu(false);
+  });
+  exportBtn.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" && exportMenu.hidden) { e.preventDefault(); toggleMenu(true); }
+  });
 
   // Paint immediately from the bundled catalogue so the first frame is
   // complete, then refresh from the live source (Rust, in the Tauri app).
@@ -1222,6 +1252,7 @@
     const self = mode === "self";
     document.body.classList.toggle("calm", self);
     hudEl.hidden = brandEl.hidden = workspaceEl.hidden = self;
+    el("skipChecks").hidden = el("skipResults").hidden = self;
     profileWarn.hidden = self || !(profile && profile.error);
     ssEl.hidden = !self;
     toggleMenu(false);
@@ -1610,16 +1641,17 @@
         const live = LIVE_GLYPH[m.id];
         const glyph = live ? `<canvas data-mini="${live}"></canvas>` : STATIC_GLYPH[m.id] || "";
         html += `
-          <div class="mod${m.locked ? " locked" : ""}" data-id="${esc(m.id)}" role="checkbox" tabindex="0" aria-checked="false"${m.locked ? ' aria-disabled="true"' : ""}>
-            <span class="box"><span class="plus">+</span>${I.check}</span>
+          <div class="mod${m.locked ? " locked" : ""}" data-id="${esc(m.id)}">
+            <span class="box" role="checkbox" tabindex="0" aria-checked="false" aria-labelledby="mt-${esc(m.id)}"
+              aria-describedby="md-${esc(m.id)} ml-${esc(m.id)}"${m.locked ? ' aria-disabled="true"' : ""}><span class="plus" aria-hidden="true">+</span>${I.check}</span>
             <span class="body">
               <span class="t">
-                <span class="title">${esc(m.title)}</span>
-                <span class="code">[${esc(CODES[m.id] || m.id.toUpperCase().replace(/\./g, "-"))}]</span>
-                <span class="led" title="Last result"></span>
+                <span class="title" id="mt-${esc(m.id)}">${esc(m.title)}</span>
+                <span class="code" aria-hidden="true">[${esc(CODES[m.id] || m.id.toUpperCase().replace(/\./g, "-"))}]</span>
+                <span class="led" id="ml-${esc(m.id)}" title="Last result"></span>
                 <span class="chips">${plats}${badges}</span>
               </span>
-              <span class="d">${esc(m.locked || m.description)}</span>
+              <span class="d" id="md-${esc(m.id)}">${esc(m.locked || m.description)}</span>
               ${dest}
             </span>
             <span class="glyph" aria-hidden="true">${glyph}</span>
@@ -1632,7 +1664,7 @@
     modulesEl.querySelectorAll(".mod").forEach((row) => {
       const id = row.dataset.id;
       const m = catalogue.find((x) => x.id === id);
-      if (lastSev.has(id)) row.dataset.sev = lastSev.get(id);
+      if (lastSev.has(id)) setRowSev(row, lastSev.get(id));
       const toggle = () => {
         if (running) return;
         if (m && m.locked) { toast(m.locked); return; }
@@ -1640,7 +1672,7 @@
         syncRows();
       };
       row.addEventListener("click", toggle);
-      row.addEventListener("keydown", (e) => {
+      row.querySelector(".box").addEventListener("keydown", (e) => {
         if (e.key === " " || e.key === "Enter") { e.preventDefault(); toggle(); }
       });
       const input = row.querySelector("input.dest");
@@ -1701,12 +1733,24 @@
     }
   }
 
+  /** A row's last result: its coloured light, and the same in words. */
+  function setRowSev(row, sev) {
+    const led = row.querySelector(".led");
+    if (!sev) {
+      row.removeAttribute("data-sev");
+      if (led) led.textContent = "";
+      return;
+    }
+    row.dataset.sev = sev;
+    if (led) led.innerHTML = `<span class="sr-only">Last result: ${esc(SEV_WORD[sev] || sev)}</span>`;
+  }
+
   function syncRows() {
     document.querySelectorAll(".case-toolbar button").forEach((b)=>{b.disabled=running||fixBusy;});
     modulesEl.querySelectorAll(".mod").forEach((row) => {
       const on = selected.has(row.dataset.id);
       row.classList.toggle("on", on);
-      row.setAttribute("aria-checked", on ? "true" : "false");
+      row.querySelector(".box").setAttribute("aria-checked", on ? "true" : "false");
     });
     const n = selected.size;
     countEl.textContent = n;
@@ -1743,6 +1787,7 @@
     Promise.resolve(api.cancel()).catch(() => {});
     runLabel.textContent = "STOPPING AFTER THIS STEP";
     statusText.textContent = "Stopping at the next safe point…";
+    announce("Stopping at the next safe point.");
     syncRows();
   }
 
@@ -1760,7 +1805,7 @@
     logs.clear();
     liveCards.clear();
     lastSev.clear();
-    modulesEl.querySelectorAll(".mod[data-sev]").forEach((r) => r.removeAttribute("data-sev"));
+    modulesEl.querySelectorAll(".mod[data-sev]").forEach((r) => setRowSev(r, null));
     syncRows();
     el("toSelf").disabled = true;
     runBtn.classList.add("running");
@@ -1770,6 +1815,7 @@
     exportBtn.disabled = true;
     setPhase("running");
     statusText.textContent = previewMode ? "Running preview: nothing will be changed" : "Running sequence";
+    announce(`Running ${total} check${total === 1 ? "" : "s"}${previewMode ? " in preview: nothing will be changed" : ""}.`);
     resultsEl.innerHTML = "";
     if (!isTauri) {
       const note = document.createElement("div");
@@ -1842,6 +1888,7 @@
       // A restart or preview notice needs reading before the cards, so bring it into view.
       if (banners.some((b) => b.matches(".banner.restart, .banner.preview"))) resultsEl.scrollTo({ top: 0, behavior: "smooth" });
       statusText.textContent = runSummary(live.results, cancelled, total);
+      announce(`Finished: ${statusText.textContent}.`);
       exportBtn.disabled = live.results.length === 0;
       setProgress(1);
       setTimeout(() => setProgress(0), 600);
@@ -1879,7 +1926,18 @@
   }
 
   function setProgress(fraction) {
-    progressEl.style.width = Math.round(clamp(fraction, 0, 1) * 100) + "%";
+    const pct = Math.round(clamp(fraction, 0, 1) * 100);
+    progressEl.style.width = pct + "%";
+    el("progressWrap").setAttribute("aria-valuenow", String(pct));
+  }
+
+  /** Tell screen readers about the start and end of something, not every step. */
+  function announce(text) {
+    const box = el("srStatus");
+    if (!box) return;
+    box.textContent = "";
+    // A new node each time, so the same words twice are still read.
+    setTimeout(() => { box.textContent = text; }, 60);
   }
 
   /** Keep the newest output in view, unless the user has scrolled up to read. */
@@ -1937,7 +1995,7 @@
     const sev = statusOf(res);
     lastSev.set(res.module_id, sev);
     const row = modulesEl.querySelector(`.mod[data-id="${CSS.escape(res.module_id)}"]`);
-    if (row) row.dataset.sev = sev;
+    if (row) setRowSev(row, sev);
     sticky(() => {
       const done = buildCard(res, { live: true });
       const card = liveCards.get(res.module_id);
@@ -2030,7 +2088,8 @@
     const kb = f.kb ? `<a class="kb-link" data-kb href="${esc(f.kb.url)}" target="_blank" rel="noopener noreferrer">${I.book}${esc(f.kb.title)}</a>` : "";
     const fx = fix || kb ? `<div class="fx">${fix}${kb}<span class="fix-slot"></span></div>` : "";
     return `
-      <div class="fr" data-label="${esc(f.label)}"><span class="fdot sev-${esc(f.severity)}"></span>
+      <div class="fr" data-label="${esc(f.label)}"><span class="fdot sev-${esc(f.severity)}" title="${esc(SEV_WORD[f.severity] || f.severity)}"></span>
+        <span class="sr-only">${esc(SEV_WORD[f.severity] || f.severity)}:</span>
         <span class="fl">${esc(f.label)}${change ? badgeHtml(change) : ""}${delta}</span>
         <span class="fv">${esc(f.value)}</span>
         ${f.detail ? `<span class="fd">${esc(f.detail)}</span>` : ""}
@@ -2080,7 +2139,7 @@
     });
     cases.decorate(live.report,resultsEl);
     modulesEl.querySelectorAll(".mod").forEach((row) => {
-      if (lastSev.has(row.dataset.id)) row.dataset.sev = lastSev.get(row.dataset.id);
+      if (lastSev.has(row.dataset.id)) setRowSev(row, lastSev.get(row.dataset.id));
     });
     statusText.textContent = runSummary(live.results, !!(live.report && live.report.cancelled), live.results.length);
     exportBtn.disabled = false;
@@ -2183,7 +2242,7 @@
     setDiff(live.diff);
     lastSev.set(moduleId, statusOf(res));
     const row = modulesEl.querySelector(`.mod[data-id="${CSS.escape(moduleId)}"]`);
-    if (row) row.dataset.sev = statusOf(res);
+    if (row) setRowSev(row, statusOf(res));
     if (mode === "tech" && !viewing) {
       const old = resultsEl.querySelector(`.card[data-mod="${CSS.escape(moduleId)}"]`);
       const fresh = buildCard(res, { live: true, note });
@@ -2524,6 +2583,7 @@
     const worst = worstOf(report.results);
     statusEl.className = "status";
     statusText.textContent = `Viewing · ${report.results.length} module${report.results.length === 1 ? "" : "s"}` + (worst ? ` · worst: ${worst}` : "");
+    announce(`Opened a saved report: ${statusText.textContent}.`);
     exportBtn.disabled = report.results.length === 0;
     resultsEl.scrollTop = 0;
   }
@@ -2531,7 +2591,7 @@
   async function openHistory() {
     const scrim = document.createElement("div");
     scrim.className = "drawer-scrim";
-    const d = document.createElement("aside");
+    const d = document.createElement("div");
     d.className = "drawer";
     d.setAttribute("role", "dialog");
     d.setAttribute("aria-modal", "true");
@@ -2546,7 +2606,8 @@
         <button class="bk-btn sm" data-x="open" type="button">${I.open}Open report</button>
         <button class="bk-btn sm" data-x="folder" type="button">Show folder</button>
       </div>`;
-    const close = () => { scrim.remove(); d.remove(); document.removeEventListener("keydown", onKey); };
+    let unlayer = () => {};
+    const close = () => { scrim.remove(); d.remove(); document.removeEventListener("keydown", onKey); unlayer(); };
     const onKey = (e) => { if (e.key === "Escape") close(); };
     scrim.onclick = close;
     d.querySelector('[data-x="close"]').onclick = close;
@@ -2555,6 +2616,7 @@
     d.querySelector('[data-x="folder"]').onclick = () => Promise.resolve(api.openHistoryFolder()).catch((e) => toast(errText(e)));
     document.addEventListener("keydown", onKey);
     document.body.append(scrim, d);
+    unlayer = openLayer([scrim, d]);
     d.querySelector('[data-x="close"]').focus();
 
     let list = [];
@@ -3156,7 +3218,8 @@
     const p = profile;
     const sub = p && p.source !== "built-in" ? p.name : "Quick health check";
     ssEl.innerHTML = `
-      <div class="ss-wrap">
+      <main class="ss-wrap">
+        <h1 class="sr-only">Computer check</h1>
         <div class="ss-top">
           <span class="ss-logo">${I.logoCalm}</span>
           <span class="ss-brand"><b>Computer check</b><span>${esc(sub)}</span></span>
@@ -3171,10 +3234,10 @@
         </section>
         <button class="ss-go" id="ssGo" type="button"${running || fixBusy ? " disabled" : ""}>${I.radar}<span>${running ? "Checking…" : live.results.length ? "Check again" : "Check my computer"}</span></button>
         <p class="ss-hint">Takes about a minute. Nothing on your computer is changed.</p>
-        <div class="ss-progress" id="ssProg" hidden><div class="bar"><i id="ssBar"></i></div><p id="ssStep">Starting…</p></div>
+        <div class="ss-progress" id="ssProg" hidden><div class="bar"><i id="ssBar"></i></div><p id="ssStep" role="status">Starting…</p></div>
         <div class="ss-results" id="ssResults"></div>
         <p class="ss-foot">ITriage ${VERSION}${isTauri ? "" : " · preview with sample results"}</p>
-      </div>`;
+      </main>`;
     const tech = el("ssTech");
     if (tech) {
       tech.disabled = running || fixBusy;
@@ -3228,7 +3291,11 @@
       running = false;
       live.results.forEach((r) => lastSev.set(r.module_id, statusOf(r)));
       exportBtn.disabled = live.results.length === 0;
-      if (mode === "self") renderSelf();
+      if (mode === "self") {
+        renderSelf();
+        const verdict = ssEl.querySelector(".ss-verdict h2");
+        if (verdict) announce(`Check finished: ${verdict.textContent}.`);
+      }
     }
   }
 
@@ -3257,7 +3324,7 @@
         const fixable = f.action && !(spec && spec.technician_only) && (!f.action.requires_admin || (host && host.elevated));
         return `
           <div class="ss-issue${f.severity === "critical" ? " crit" : ""}">
-            <h4>${esc(title)}: ${esc(f.label)}</h4>
+            <h3><span class="sr-only">${f.severity === "critical" ? "Urgent" : "Needs attention"}: </span>${esc(title)}: ${esc(f.label)}</h3>
             <p>${esc(f.value)}${f.detail ? ". " + esc(f.detail) : ""}</p>
             <div class="row">
               ${fixable ? `<button class="ss-fix" type="button" data-i="${i}">${I.bolt}${esc(f.action.label)}</button>` : '<span class="ss-desk">The service desk can help with this.</span>'}
@@ -3325,6 +3392,37 @@
   }
 
   /* -------------------------- modals ------------------------------ */
+  /**
+   * While a dialog is open everything else on the page is inert: Tab can't
+   * wander behind it and screen readers don't read what it covers. Closing
+   * it puts focus back where it was. Returns the function that undoes it.
+   */
+  function openLayer(nodes) {
+    const opener = document.activeElement;
+    const others = [...document.body.children].filter((c) => !nodes.includes(c) && !c.inert && c.tagName !== "SCRIPT");
+    others.forEach((c) => { c.inert = true; });
+    // Tab wraps around inside the dialog instead of leaving the page.
+    const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const wrap = (e) => {
+      // A dialog opened on top of this one makes this one inert: it's in charge now.
+      if (e.key !== "Tab" || nodes.some((n) => n.inert)) return;
+      const items = nodes.flatMap((n) => [...n.querySelectorAll(FOCUSABLE)]).filter((x) => x.offsetParent !== null || x === document.activeElement);
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      const inside = nodes.some((n) => n.contains(document.activeElement));
+      if (e.shiftKey && (document.activeElement === first || !inside)) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || !inside)) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener("keydown", wrap, true);
+    return () => {
+      document.removeEventListener("keydown", wrap, true);
+      others.forEach((c) => { c.inert = false; });
+      if (opener && opener !== document.body && opener.isConnected && !opener.closest("[inert]") && typeof opener.focus === "function") {
+        opener.focus({ preventScroll: true });
+      }
+    };
+  }
+
   /** A dialog. Resolves with the chosen action's value (undefined if dismissed). */
   function modal({ title, body, actions, onMount, cls }) {
     return new Promise((resolve) => {
@@ -3341,12 +3439,14 @@
               .join("")}</div>
           </div>
         </div>`;
-      const close = (v) => { scrim.remove(); document.removeEventListener("keydown", onKey); resolve(v); };
+      let unlayer = () => {};
+      const close = (v) => { scrim.remove(); document.removeEventListener("keydown", onKey); unlayer(); resolve(v); };
       const onKey = (e) => { if (e.key === "Escape") close(undefined); };
       scrim.addEventListener("click", (e) => { if (e.target === scrim) close(undefined); });
       scrim.querySelectorAll("[data-i]").forEach((b) => { b.onclick = () => close(actions[Number(b.dataset.i)].value); });
       document.addEventListener("keydown", onKey);
       document.body.appendChild(scrim);
+      unlayer = openLayer([scrim]);
       if (onMount) onMount(scrim, close);
       const fi = Math.max(0, actions.findIndex((a) => a.focus));
       // The buttons are at the bottom: focusing one mustn't scroll a tall
@@ -3386,6 +3486,23 @@
     PAL = null;
     return s.id;
   }
+  /* Reduce motion: the console's own switch, for people who haven't (or
+   * can't) set it for the whole computer. The computer's setting always
+   * wins; CSS honours both. */
+  function systemReducesMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+  function savedMotion() {
+    try { return localStorage.getItem(MOTION_KEY) === "reduce"; } catch (_) { return false; }
+  }
+  function saveMotion(on) {
+    try { if (on) localStorage.setItem(MOTION_KEY, "reduce"); else localStorage.removeItem(MOTION_KEY); } catch (_) { /* ignore */ }
+  }
+  function setMotion(on) {
+    if (on) document.documentElement.dataset.motion = "reduce";
+    else delete document.documentElement.dataset.motion;
+  }
+
   /** The site profile's default theme ([ui] theme), if it names a known one. */
   function profileSkin() {
     return skinById(profile && profile.ui && profile.ui.theme);
@@ -3406,6 +3523,8 @@
   /** The theme picker: Equip tries a theme on the whole console, Apply keeps it. */
   function openSkins() {
     const before = currentSkin();
+    const motionBefore = savedMotion();
+    let motion = motionBefore;
     let chosen = before;
     const site = profileSkin();
     const card = (s) => `
@@ -3425,7 +3544,12 @@
       body: `
         <p>Equip a theme to try it on the whole console, then apply it to keep it on this computer.${site ? ` This site's default is ${esc(site.name)}.` : ""}
           The self-service view keeps its own calm look.</p>
-        <div class="skins" role="group" aria-label="Themes">${SKINS.map(card).join("")}</div>`,
+        <div class="skins" role="group" aria-label="Themes">${SKINS.map(card).join("")}</div>
+        <label class="opt motion-opt">
+          <input type="checkbox" id="motionOpt"${systemReducesMotion() || motionBefore ? " checked" : ""}${systemReducesMotion() ? " disabled" : ""}>
+          <span class="sw" aria-hidden="true"></span><span class="ol">Reduce motion<small>${systemReducesMotion()
+            ? "This computer asks for less motion, so it's on"
+            : "No sweeps, pulsing, flicker or sliding"}</small></span></label>`,
       actions: [{ label: "Cancel / Close", value: false }, { label: "Apply changes", hot: true, value: true }],
       onMount: (scrim) => {
         const cards = scrim.querySelectorAll(".skin");
@@ -3440,6 +3564,8 @@
             paintTelemetry();
           };
         });
+        const mo = scrim.querySelector("#motionOpt");
+        mo.onchange = () => { motion = mo.checked; setMotion(motion); };
         // Start on the current theme rather than the first button.
         requestAnimationFrame(() => {
           const cur = scrim.querySelector('.skin[aria-pressed="true"]');
@@ -3449,10 +3575,14 @@
     }).then((apply) => {
       if (apply) {
         saveSkin(chosen);
-        toast(`Theme: ${skinById(chosen).name}`);
-      } else if (currentSkin() !== before) {
-        setSkin(before);
-        paintTelemetry();
+        saveMotion(motion);
+        toast(`Theme: ${skinById(chosen).name}${motion && !motionBefore ? " · reduced motion" : ""}`);
+      } else {
+        if (currentSkin() !== before) {
+          setSkin(before);
+          paintTelemetry();
+        }
+        setMotion(motionBefore);
       }
     });
   }
