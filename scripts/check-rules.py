@@ -58,7 +58,8 @@ label = "file version"
 kind = "file"
 platform = "windows"
 path = '%SystemRoot%\System32\kernel32.dll'
-min_version = "10.0"
+# Windows still stamps its system DLLs' file version 6.2 for compatibility.
+min_version = "6.2"
 
 [[check]]
 label = "boot events"
@@ -88,7 +89,7 @@ EXPECT = {
     "list value": ("ok", r"^List = \"System Reserved"),
     "expandable value as stored": ("ok", r"%SystemRoot%"),
     "missing value": ("ok", r"not set"),
-    "file version": ("ok", r"^version 10\."),
+    "file version": ("ok", r"^version 6\.2\.\d+\."),
     # The runner has started at least once in 30 days: the query must find it.
     "boot events": ("info", r"^\d+\+? in the last 30 days · 0 allowed"),
     "event log service": ("ok", r"running"),
