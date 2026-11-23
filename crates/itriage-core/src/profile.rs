@@ -45,6 +45,8 @@ pub struct Profile {
     pub status: StatusSettings,
     /// Watch mode (off unless the profile turns it on).
     pub advanced: AdvancedSettings,
+    /// `itriage --mcp`, the read-only checks for AI clients.
+    pub mcp: crate::mcp::McpSettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
     /// `[[check]]`: the site's own read-only checks (see
