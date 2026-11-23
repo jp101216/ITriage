@@ -109,6 +109,14 @@ jobs:
           cargo run -q -p itriage-core --example triage -- --list
           smoke cargo run -q -p itriage-core --example triage -- desk.time desk.printers desk.devices desk.wifi desk.battery site.apps site.checks site.rules
 
+      # Site custom checks against values every Windows machine has: the
+      # registry reads (text, expandable, number, list), a file version, an
+      # event query that has to match real boot events, a service, a process.
+      - name: Check site custom checks against real Windows values
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python scripts/check-rules.py cargo run -q -p itriage-core --example triage --
+
       - name: Upload smoke report
         # Case evidence is checked locally in the job; only the standard
         # synthetic-runner smoke report is retained as an artifact.
