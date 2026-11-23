@@ -436,6 +436,8 @@ async function axeViolations(page) {
 
 test("axe finds nothing in the console, its dialogs and the self-service view", async (t) => {
   const page = await pageFor(t, { preview: true });
+  // Judge colours at rest: a card fading in is briefly lower contrast.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   assert.deepEqual(await axeViolations(page), [], "idle");
   await page.click("#run");
   await page.waitForFunction(() => !document.querySelector("#run.running"), null, { timeout: 120000 });
