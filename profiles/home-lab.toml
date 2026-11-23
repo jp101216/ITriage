@@ -65,3 +65,13 @@ port = 53
 label = "Internet (HTTPS)"
 host = "example.com"
 port = 443
+
+# The lab's own read-only checks (Site custom checks); see the README.
+[[check]]
+# ssh.service on Debian and Ubuntu, sshd.service on Fedora and Arch.
+label = "SSH password guessing today"
+kind = "journal"
+unit = "ssh.service"
+matches = "(?i)failed password"
+max_count = 20
+severity = "info"

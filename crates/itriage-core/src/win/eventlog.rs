@@ -128,6 +128,35 @@ pub fn query_activity(channel: &str, activity: &str, max: usize) -> Result<Vec<S
     Ok(Vec::new())
 }
 
+/// How many events in `channel` over the last `hours` have one of `ids`
+/// (from `provider`, when given), up to `max`, and when the newest was
+/// written. For a site profile's own checks: the names were checked by
+/// [`crate::site::rules::valid_event_name`] and are checked again here, and
+/// IDs are numbers, so nothing a profile says can change the query's shape.
+pub fn count_matching(channel: &str, provider: Option<&str>, ids: &[u32], hours: u32, max: usize) -> Result<(usize, Option<String>), String> {
+    use crate::site::rules::valid_event_name;
+    if !valid_event_name(channel) || provider.is_some_and(|p| !valid_event_name(p)) || ids.is_empty() {
+        return Err("that log or provider name can't be queried".into());
+    }
+    let mut parts = Vec::new();
+    if let Some(p) = provider {
+        parts.push(format!("Provider[@Name='{}']", p.trim()));
+    }
+    let ids: Vec<String> = ids.iter().map(|id| format!("EventID={id}")).collect();
+    parts.push(format!("({})", ids.join(" or ")));
+    parts.push(format!("TimeCreated[timediff(@SystemTime) <= {}]", u64::from(hours) * 3_600_000));
+    let query = format!("*[System[{}]]", parts.join(" and "));
+    let events = query_owned(channel.trim(), &query, max, false)?;
+    let newest = events.first().and_then(|e| parse_system(&e.xml)).and_then(|s| s.time_created).map(|t| {
+        // "2026-11-20T08:14:03.1234567Z" → whole seconds.
+        match t.split_once('.') {
+            Some((secs, _)) => format!("{secs}Z"),
+            None => t,
+        }
+    });
+    Ok((events.len(), newest))
+}
+
 /// One event as XML, and as Windows words it for a person ("The start type
 /// of the Print Spooler service was changed from auto start to disabled.").
 pub struct Rendered {

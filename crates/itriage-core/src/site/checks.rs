@@ -80,6 +80,8 @@ impl TriageModule for SiteChecks {
     }
 }
 
+pub(crate) use imp::service_state;
+
 pub(crate) enum State {
     Running,
     /// Stopped; whether starting it can work (it can't while disabled).

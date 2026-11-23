@@ -4,8 +4,9 @@ use windows::core::{HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::ERROR_SUCCESS;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegEnumKeyExW, RegEnumValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
-    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_NOEXPAND,
-    RRF_RT_ANY, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_SZ,
+    HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE, REG_DWORD, REG_EXPAND_SZ, REG_OPTION_NON_VOLATILE, REG_ROUTINE_FLAGS, REG_SZ,
+    RRF_NOEXPAND, RRF_RT_ANY, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_EXPAND_SZ, RRF_RT_REG_MULTI_SZ,
+    RRF_RT_REG_QWORD, RRF_RT_REG_SZ,
 };
 
 pub use windows::Win32::System::Registry::{
@@ -219,6 +220,68 @@ pub fn read_string_unexpanded(root: HKEY, subkey: &str, value: &str) -> Option<S
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     let s = String::from_utf16_lossy(&buf[..len]).trim().to_string();
     (!s.is_empty()).then_some(s)
+}
+
+/// A value of any common type, as a site profile's own check sees it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Data {
+    /// REG_SZ, or REG_EXPAND_SZ as stored (with its `%VARIABLES%`).
+    Text(String),
+    /// REG_DWORD or REG_QWORD.
+    Number(u64),
+    /// REG_MULTI_SZ.
+    Lines(Vec<String>),
+    /// Anything else (REG_BINARY…): its size in bytes.
+    Binary(usize),
+}
+
+/// Read a value whatever its type. Each read asks for one type, so a
+/// value is never misread as another.
+pub fn read_any(root: HKEY, subkey: &str, value: &str) -> Option<Data> {
+    if let Some(n) = read_dword(root, subkey, value) {
+        return Some(Data::Number(n.into()));
+    }
+    if let Some(b) = raw(root, subkey, value, RRF_RT_REG_QWORD) {
+        let bytes: [u8; 8] = b.get(..8)?.try_into().ok()?;
+        return Some(Data::Number(u64::from_le_bytes(bytes)));
+    }
+    // Expandable strings first, as stored, so the same value always reads
+    // the same way whatever this process's environment is.
+    if let Some(b) = raw(root, subkey, value, RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND).or_else(|| raw(root, subkey, value, RRF_RT_REG_SZ)) {
+        return Some(Data::Text(wide(&b).split('\0').next().unwrap_or_default().to_string()));
+    }
+    if let Some(b) = raw(root, subkey, value, RRF_RT_REG_MULTI_SZ) {
+        return Some(Data::Lines(wide(&b).split('\0').filter(|s| !s.is_empty()).map(str::to_string).collect()));
+    }
+    value_size(root, subkey, value).map(|n| Data::Binary(n as usize))
+}
+
+/// A value's bytes if it has one of the types in `flags` (up to 1 MB).
+fn raw(root: HKEY, subkey: &str, value: &str, flags: REG_ROUTINE_FLAGS) -> Option<Vec<u8>> {
+    let subkey = HSTRING::from(subkey);
+    let value = HSTRING::from(value);
+    let mut size = 0u32;
+    // SAFETY: a size-only query (no data buffer).
+    if unsafe { RegGetValueW(root, &subkey, &value, flags, None, None, Some(&mut size)) } != ERROR_SUCCESS {
+        return None;
+    }
+    let mut buf = vec![0u8; (size as usize).clamp(8, 1 << 20) + 2];
+    let mut len = buf.len() as u32;
+    // SAFETY: `buf` is writable for `len` bytes and outlives the call.
+    let status = unsafe {
+        RegGetValueW(root, &subkey, &value, flags, None, Some(buf.as_mut_ptr() as *mut core::ffi::c_void), Some(&mut len))
+    };
+    if status != ERROR_SUCCESS {
+        return None;
+    }
+    buf.truncate(len as usize);
+    Some(buf)
+}
+
+/// UTF-16LE bytes (any alignment) as text.
+fn wide(bytes: &[u8]) -> String {
+    let units: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    String::from_utf16_lossy(&units)
 }
 
 /// Register an Application event-log source backed by .NET's

@@ -136,6 +136,7 @@
     mod("sec.blocks", "Policy blocks", "security", "Which security rule stopped a program, plugin or save in the last 7 days: Defender ASR rules, Controlled folder access, antivirus detections, AppLocker and App Control (WDAC)."),
     mod("site.apps", "Required & clinical apps", "site", "Apps the site profile requires (with minimum versions), plus which clinical clients are installed: Citrix, Imprivata, Epic, Dragon, VPN, EDR."),
     mod("site.checks", "Site services & endpoints", "site", "Services the site profile requires are running, and the servers it lists (EHR, file, print, license) answer, with connect times."),
+    mod("site.rules", "Site custom checks", "site", "The site profile's own read-only checks ([[check]]): registry values, files, services, programs, and events or journal entries, each with what it should be."),
     mod("fix.dns", "Flush & re-register DNS", "repair", "Flushes the DNS resolver cache (ipconfig /flushdns) and re-registers this PC's DNS records (ipconfig /registerdns).",
       CHANGE("Clears cached DNS lookups, so the next few page loads may be a little slower.")),
     mod("fix.netcache", "Purge ARP & NetBIOS caches", "repair", "Purges the ARP cache (netsh interface ip delete arpcache) and the NetBIOS name cache (nbtstat -R / -RR).",
@@ -216,6 +217,7 @@
     "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
     "sec.blocks": "SEC-BLK", "desk.logon": "LOG-GPO", "system.hardware": "HW-THR",
     "desk.m365": "M365-APP", "desk.browser": "EDGE-IEM", "net.wired-auth": "NAC-8021X",
+    "site.rules": "SITE-RUL",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -234,6 +236,7 @@
     "system.storage": I.layers, "system.startup": I.power,
     "sec.blocks": I.shield, "desk.logon": I.domain, "system.hardware": I.chip,
     "desk.m365": I.apps, "desk.browser": I.globe, "net.wired-auth": I.nic,
+    "site.rules": I.okc,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -615,6 +618,12 @@
       F("EHR gateway", "ehr-gateway.example.org:443 reachable · 18 ms", "ok", "connected to 10.40.2.15", { metric: M(18, "ms") }),
       F("Print server", "print01.example.org:445 unreachable (10.40.8.20 timed out)", "critical"),
     ]),
+    "site.rules": R("site.rules", "Site custom checks", "site", "2 of 3 custom checks passed", 210, [
+      F("Badge-tap agent points at production", "IPTXPrimServer = \"imprivata-test.example.org\" · expected \"imprivata.example.org\"", "critical",
+        "This PC is pointed at another appliance. Reinstall the agent from Software Center."),
+      F("Badge-tap agent running", "running", "ok"),
+      F("Temporary-profile sign-ins", "none in the last day", "ok"),
+    ]),
     "fix.dns": R("fix.dns", "Flush & re-register DNS", "repair", "DNS cache flushed and records re-registered", 1240, [
       F("ipconfig /flushdns", "Successfully flushed the DNS Resolver Cache.", "ok"),
       F("ipconfig /registerdns", "Registration of the DNS resource records for all adapters of this computer has been initiated.", "ok"),
@@ -747,6 +756,7 @@
     "desk.battery": ["Running powercfg /batteryreport…"],
     "site.apps": ["Reading the installed-programs list…"],
     "site.checks": ["Checking 2 endpoint(s)…"],
+    "site.rules": ["Checking Badge-tap agent points at production…", "Checking Badge-tap agent running…", "Checking Temporary-profile sign-ins…"],
     "fix.dns": ["› ipconfig /registerdns", "Registration of the DNS resource records for all adapters of this computer has been initiated."],
     "fix.netstack": ["› netsh winsock reset", "Sucessfully reset the Winsock Catalog.", "› netsh int ip reset", "Resetting Interface, OK!", "› netsh int ipv6 reset"],
     "fix.adapters": ["Before: Wi-Fi: 10.20.33.118/22", "Restarting physical adapters; the connection will drop for a moment…", "› ipconfig /release", "› ipconfig /renew", "After: Wi-Fi: 10.20.33.140/22"],

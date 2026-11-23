@@ -277,6 +277,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         // --- Site & clinical (driven by the site profile) ---
         Box::new(crate::site::apps::SiteApps),
         Box::new(crate::site::checks::SiteChecks),
+        Box::new(crate::site::rules::SiteRules),
         // --- Network repair (mutating; the Tune-Up network phase) ---
         Box::new(crate::fixes::dns::FlushDns),
         Box::new(crate::fixes::netrepair::PurgeCaches),

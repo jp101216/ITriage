@@ -179,6 +179,44 @@ match = "pcProx"
 label = "Dictation microphone"
 match = "PowerMic"
 
+# The site's own read-only checks (Site custom checks). Each [[check]] looks
+# at one thing and says what it should be. `kind` is registry, file, service,
+# process, event (Windows) or journal (Linux); none of them can run a command.
+# A failed check is a warning unless `severity` says otherwise, and `help` is
+# shown under it. A mistake in one check is reported on that check; the rest
+# still run. The README lists every setting.
+[[check]]
+label = "Badge-tap agent points at production"
+kind = "registry"
+key = 'HKLM\SOFTWARE\SSOProvider\ISXAgent'
+value = "IPTXPrimServer"
+equals = "imprivata.example.org"
+severity = "critical"
+help = "This PC is pointed at another appliance. Reinstall the agent from Software Center."
+
+[[check]]
+label = "Badge-tap agent running"
+kind = "process"
+platform = "windows"
+name = "ISXAgent.exe"
+
+[[check]]
+# Windows signed someone in with a temporary profile (1511), or fell back
+# to a backup of theirs (1515), in the last day.
+label = "Temporary-profile sign-ins"
+kind = "event"
+log = "Application"
+provider = "Microsoft-Windows-User Profiles Service"
+ids = [1511, 1515]
+help = "Profile load failures: see the profile-repair article before signing the person out."
+
+[[check]]
+label = "Printer mapping script ran this week"
+kind = "file"
+platform = "windows"
+path = '%ProgramData%\Example Health\printmap.log'
+max_age_days = 7
+
 # Knowledge-base links, attached to findings that need attention.
 # `module` limits a rule to one module; `match` is a case-insensitive
 # substring of the finding's label, value or detail.

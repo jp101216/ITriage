@@ -47,6 +47,11 @@ pub struct Profile {
     pub advanced: AdvancedSettings,
     pub require: Requirements,
     pub kb: Vec<KbRule>,
+    /// `[[check]]`: the site's own read-only checks (see
+    /// [`crate::site::rules`]). A mistake in one is reported on that check;
+    /// it doesn't make the profile invalid.
+    #[serde(rename = "check")]
+    pub checks: Vec<crate::site::rules::Rule>,
 }
 
 /// How the app looks. Cosmetic only: a technician's own pick (saved on
@@ -599,7 +604,7 @@ impl Profile {
 
     pub fn requirement_count(&self) -> usize {
         let r = &self.require;
-        r.service.len() + r.app.len() + r.endpoint.len() + r.device.len() + r.application.len()
+        r.service.len() + r.app.len() + r.endpoint.len() + r.device.len() + r.application.len() + self.checks.len()
     }
 
     /// Why the policy blocks a module, if it does.

@@ -195,6 +195,7 @@ Each saved report records its `exit_code` and the `tool_version` that made it.
 | Security posture | BitLocker on the system drive, Defender real-time protection and definition age (warns at 3 days), other antivirus and EDR sensors, the firewall per profile (critical when it's off for the profile in use), Secure Boot, TPM, UAC, and who is an administrator of the PC | LUKS under the root file system, endpoint agents, firewalld / ufw / nftables, Secure Boot, TPM, sudo and wheel members |
 | Required & clinical apps | the profile's required apps and minimum versions, plus a watchlist of clinical clients | dpkg / rpm / pacman packages |
 | Site services & endpoints | the profile's required services; its servers checked by DNS + TCP, in parallel, with connect times | systemd units; same |
+| Site custom checks | the profile's own [`[[check]]` rules](#custom-checks): registry values, files and their versions, services, running programs, and how often event IDs were logged | files, services, running programs, a unit's journal entries |
 | Available updates | **WUA COM** search (KB, MSRC severity) with an install button per update, Windows Update drivers, pending restart, winget, current BIOS, the OEM tool's state | apt/dnf/pacman/zypper (no root), fwupd, reboot required |
 
 **Repairs and maintenance** (change the machine; picked on purpose and confirmed):
@@ -456,6 +457,91 @@ Every setting, with its default:
 | `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
 | `[[require.service]]`, `[[require.app]]`, `[[require.endpoint]]`, `[[require.device]]` | none | what this machine must have |
 | `[[kb]]` | none | knowledge-base links for matching findings |
+| `[[check]]` | none | the site's own read-only [custom checks](#custom-checks), up to 100 |
+
+### Custom checks
+
+Every site has a few things ITriage can't know to look for: the badge-tap
+agent should point at the production appliance, a printer-mapping script
+should have run this week, nobody should have signed in with a temporary
+profile today. A `[[check]]` in the profile describes one of them, and
+**Site custom checks** runs them, so the desk doesn't wait for a new release
+to check something new.
+
+```toml
+[[check]]
+label = "Badge-tap agent points at production"
+kind = "registry"
+key = 'HKLM\SOFTWARE\SSOProvider\ISXAgent'
+value = "IPTXPrimServer"
+equals = "imprivata.example.org"
+severity = "critical"
+help = "This PC is pointed at another appliance. Reinstall the agent from Software Center."
+
+[[check]]
+label = "Temporary-profile sign-ins"
+kind = "event"
+log = "Application"
+provider = "Microsoft-Windows-User Profiles Service"
+ids = [1511, 1515]                # none allowed in the last 24 hours (the default)
+
+[[check]]
+label = "Printer mapping script ran this week"
+kind = "file"
+platform = "windows"
+path = '%ProgramData%\Example Health\printmap.log'
+max_age_days = 7
+```
+
+| `kind` | Looks at | Conditions (one per check) | Platforms |
+|---|---|---|---|
+| `registry` | `key` (`HKLM\…`, `HKCU\…` or `HKU\…`), and optionally one `value` in it | `exists`, `equals`, `contains`, `matches`, `min`/`max`, `min_version` | Windows |
+| `file` | `path`, with `%VARIABLES%` (Windows) or `~/` and `$HOME` (Linux) expanded | `exists`, `contains`, `matches` (first 1 MB, UTF-8 or UTF-16), `min_version` (the file's version resource), `max_age_days` | both |
+| `service` | `name`: a Windows service or a systemd unit | `exists`, `state` (`running`, the default, or `stopped`) | both |
+| `process` | `name` of a running program (`.exe` optional, any case) | `exists` (default `true`) | both |
+| `event` | `log`, `ids` (up to 20), optionally `provider`, over `within_hours` (default 24) | `max_count` (default 0) | Windows |
+| `journal` | `unit`'s errors over `within_hours`, or with `matches`, its entries whose message matches | `max_count` (default 0) | Linux |
+
+Every check takes `label` and `kind`; `severity` (`info`, `warning` (the
+default) or `critical`) grades a failure, `help` is shown under it, and
+`platform = "windows"` or `"linux"` keeps a `file`, `service` or `process`
+check to one OS. `equals` and `contains` ignore case; `matches` is a regular
+expression (start it with `(?i)` to ignore case). A failed `service` check
+that expected `running` offers **Start service**, under the profile's fix
+policy as usual. A `[[kb]]` rule with `module = "site.rules"` links articles
+to these rows like any other.
+
+What a check can't do is the point of the design:
+
+* **Nothing runs.** There's no kind for a command or a script. A profile can
+  make ITriage look somewhere, never do something, so a custom check is as
+  read-only as the built-in ones, and a personal profile gets no more power
+  from them than it already had.
+* **No query injection.** Event-log queries are assembled from numbers and
+  from log and provider names limited to letters, digits, spaces and `-_./`,
+  checked when the profile is read and again just before the query.
+* **Bounded.** At most 100 checks, 20 event IDs each and 30 days back; files
+  are read up to 1 MB; patterns are compiled with size limits.
+* **A typo stays local.** A check that's written wrong (an unknown setting, a
+  condition that doesn't fit its kind, two conditions, a pattern that doesn't
+  compile) shows as a warning on that row saying what's wrong, and the other
+  checks still run. Only TOML that doesn't parse at all makes the profile
+  invalid, as before.
+* **No false all-clear.** On Linux, a journal that records nothing, or one
+  this account can only partly see, is reported as "couldn't check" rather
+  than "none".
+
+`HKCU` is the account ITriage runs as; when it runs elevated as a different
+account, that's the administrator's hive, not the signed-in person's.
+
+How it was tested: unit tests plan and judge every kind (registry values of
+each type, real files in UTF-8 and UTF-16, services, this test's own process,
+counts and journal lines) and check that each mistake above is named; the
+example profiles' checks are all valid; the module was run from the command
+line on Linux against both example profiles (the home lab's journal check
+reported the empty journal, the clinical profile's Windows-only checks were
+skipped), and the core crate is Clippy-clean for Windows. The Windows smoke
+run in CI runs the clinical profile's checks for real.
 
 Two complete examples live in [`profiles/`](profiles/): a clinical workstation
 and a home lab. Their hosts and articles are placeholders to replace with your
