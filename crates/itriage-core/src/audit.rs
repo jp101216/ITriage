@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Event IDs used in the Windows event log. Unchanged since 0.5, so SIEM
-/// rules written for them keep working; 1102 is new in 0.10.
+/// rules written for them keep working; 1102 is new in 0.10, 1200 in 0.11.
 pub mod event_id {
     pub const RUN: u32 = 1000;
     pub const MODULE: u32 = 1001;
@@ -41,6 +41,8 @@ pub mod event_id {
     pub const FIX_FAILED: u32 = 1101;
     /// Refused before it ran: site policy, remote-safe mode or an install ban.
     pub const FIX_REFUSED: u32 = 1102;
+    /// A tool called by an AI client through `itriage --mcp` (new in 0.11).
+    pub const MCP: u32 = 1200;
 }
 
 /// The `prev` of the first line ever written.
@@ -122,6 +124,14 @@ pub fn run_finished(results: &[ModuleResult], cancelled: bool, ticket: Option<&s
         if ids.is_empty() { String::new() } else { format!(" ({})", ids.join(", ")) }
     );
     record("run", event_id::RUN, true, &message, json!({ "modules": ids, "cancelled": cancelled, "ticket": ticket }));
+}
+
+/// A tool an AI client called through `itriage --mcp`. The client's name is
+/// what it says it is: worth recording, not proof.
+pub fn mcp_call(tool: &str, client: Option<&str>, ok: bool, detail: &str, ticket: Option<&str>) {
+    let from = client.map(|c| format!(" from {c}")).unwrap_or_default();
+    let message = format!("ITriage MCP {tool}{from}{}: {detail}", for_ticket(ticket));
+    record("mcp", event_id::MCP, ok, &message, json!({ "tool": tool, "client": client, "ticket": ticket }));
 }
 
 /// A module that changes the machine has finished.

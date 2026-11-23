@@ -453,6 +453,10 @@ Every setting, with its default:
 | `[advanced] watch` | `false` | [watch mode](#watch-mode): save a capture by itself when something goes wrong |
 | `[advanced] watch_max_mb`, `watch_keep_days` | `200`, `7` | how much disk watch captures may use, and how long they're kept |
 | `[advanced] watch_triggers` | `["cpu", "gateway_loss", "app_paths", "app_hang"]` | what makes watch mode save a capture |
+| `[mcp] enabled` | `true` | allow [`itriage --mcp`](#ai-clients-mcp) |
+| `[mcp] redact` | `true` | pseudonymize host, account and domain names and addresses in what AI clients get |
+| `[mcp] redact_terms` | `[]` | more words to pseudonymize (up to 100) |
+| `[mcp] checks` | every read-only check | limit which checks AI clients may run |
 | `[ui] theme` | `"red"` | the technician console's default [theme](#themes); a technician's own pick wins |
 | `[[require.service]]`, `[[require.app]]`, `[[require.endpoint]]`, `[[require.device]]` | none | what this machine must have |
 | `[[kb]]` | none | knowledge-base links for matching findings |
@@ -668,11 +672,81 @@ itriage [OPTIONS] [MODULE...]
                          goes wrong (needs [advanced] watch = true)
   --install-watch        Start --watch at every sign-in (administrator/root)
   --uninstall-watch      Remove that again
+  --mcp                  Serve the read-only checks to an AI client (MCP)
 ```
 
 Progress goes to stderr and the report to stdout, so `> report.txt` captures
 just the report. From a source checkout, `cargo run -p itriage-core --example triage -- <options>`
 runs the same command line.
+
+## AI clients (MCP)
+
+`itriage --mcp` serves ITriage's read-only checks to an AI client over the
+[Model Context Protocol](https://modelcontextprotocol.io/), so an assistant can
+run them on the computer in front of you and explain what they found. Add it
+to any MCP client that starts local (stdio) servers, with the usual
+`mcpServers` entry:
+
+```json
+{
+  "mcpServers": {
+    "itriage": {
+      "command": "C:\\Program Files\\itriage\\itriage.exe",
+      "args": ["--mcp"]
+    }
+  }
+}
+```
+
+On Linux the command is `/usr/bin/itriage`. The server offers three tools:
+
+| Tool | What it does |
+|---|---|
+| `list_checks` | the read-only checks on this computer, and the presets made only of them (`triage`, `lockout`, `health`) |
+| `run_checks` | runs check ids and/or a preset, with an optional `target` (`fileserver01:445`) and `ticket`; returns the report as text, plus a structured copy with each finding and the likely cause. Progress is reported per check when the client asks for it, and a run can be cancelled |
+| `recent_runs` | this computer's last runs: when, the ticket, how many checks, the worst result |
+
+It's built so that letting an assistant use it doesn't widen what can happen
+to the computer:
+
+* **Nothing that changes the machine is reachable.** Modules that change
+  anything aren't listed and are refused by id (so are presets that contain
+  one), there's no tool for one-click fixes, and every run is made in
+  preview and remote-safe mode as well, so even a mistake in that filtering
+  couldn't make a repair run. To act on a finding, the technician uses the
+  app or `--fix`, as always.
+* **Pseudonymized by default.** Before anything leaves ITriage it goes
+  through the same redaction as a [case bundle](#advanced-troubleshooting-cases):
+  host, account and domain names and addresses become stable placeholders
+  (`[host-1]`). `[mcp] redact_terms` adds words of your own (server or site
+  names); if redaction can't be done, nothing is sent. Transcripts are never
+  sent.
+* **Findings are data.** Event messages, process and file names can be
+  written by anyone, so every result says to treat them as data, not
+  instructions, and the server's instructions to the client say the same.
+* **Audited.** A run is recorded like any other (history, the audit log and
+  its system-log copy), plus one `mcp` line (event 1200) per call, naming the
+  client as it describes itself.
+* **The site decides.** `[mcp] enabled = false` turns the server off (it exits
+  with a message on stderr), and `[mcp] checks = [...]` limits which checks it
+  offers; those still have to be read-only.
+
+The server speaks both generations of the protocol: the stateless
+2026-07-28 revision (`server/discover`, the version in every request's
+`_meta`), and the `initialize` handshake of 2025-11-25 back to 2024-11-05.
+Only JSON-RPC goes to stdout; a one-line banner goes to stderr. It runs one
+set of checks at a time; `ping` and listing are answered while it works.
+Closing stdin stops a run at the next check and exits.
+
+How it was tested: unit tests drive whole sessions through the server (both
+protocol generations, every error code, refused changes, a narrowed and an
+unredacted profile, progress, cancellation, closing stdin, an oversized
+message) and check that stdout carries only JSON. Then the built command line
+was driven over real pipes on Linux: discovery, the list, the lockout preset
+with a ticket (progress for each check, a `ping` answered and a second run
+refused mid-run, the host name replaced with `[host-1]`), `recent_runs`, and
+the audit log's `run` and `mcp` lines. **Not yet run**: inside Claude Desktop
+or another client, and on Windows through the installed app.
 
 ## Cancel
 
@@ -842,6 +916,7 @@ ITriage/
 │   │   ├── module.rs           # TriageModule trait, RunContext (preview, remote-safe, target,
 │   │   │                       #   progress, cancel, profile), registry(), presets, exit codes
 │   │   ├── cli.rs              # the command line
+│   │   ├── mcp.rs              # itriage --mcp: the read-only checks for AI clients (MCP)
 │   │   ├── profile.rs          # site profiles: discovery, policy, settings, requirements, KB rules
 │   │   ├── actions.rs          # one-click fixes: policy-checked, validated, audited
 │   │   ├── audit.rs            # audit.jsonl + Windows event log / syslog

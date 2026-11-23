@@ -78,6 +78,9 @@ OTHER COMMANDS
   --install-watch        Start --watch at every sign-in, as that user
                          (administrator/root; audited)
   --uninstall-watch      Remove that again
+  --mcp                  Serve the read-only checks to an AI client (Model
+                         Context Protocol over stdin/stdout); nothing that
+                         changes the machine is reachable that way
   -h, --help             Show this help
 
 EXIT CODES
@@ -108,6 +111,7 @@ struct Args {
     watch: bool,
     install_watch: bool,
     uninstall_watch: bool,
+    mcp: bool,
     fix: Option<(String, Option<String>)>,
     compare: Option<(PathBuf, PathBuf)>,
     baseline: Option<(PathBuf, PathBuf)>,
@@ -162,6 +166,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             "--watch" => a.watch = true,
             "--install-watch" => a.install_watch = true,
             "--uninstall-watch" => a.uninstall_watch = true,
+            "--mcp" => a.mcp = true,
             "--verify-audit" => {
                 let path = match &inline {
                     Some(v) => Some(v.clone()),
@@ -198,7 +203,7 @@ fn parse(argv: &[String]) -> Result<Args, String> {
             _ => a.modules.push(arg.clone()),
         }
     }
-    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends,a.verify_audit.is_some(),a.watch,a.install_watch,a.uninstall_watch];
+    let modes = [a.fix.is_some(),a.compare.is_some(),a.baseline.is_some(),a.timeline.is_some(),a.bundle.is_some(),a.bundle_preview.is_some(),a.runbook.is_some(),a.record.is_some(),a.trends,a.verify_audit.is_some(),a.watch,a.install_watch,a.uninstall_watch,a.mcp];
     if modes.iter().filter(|v|**v).count() > 1 { return Err("Choose one command mode at a time.".into()); }
     if modes.iter().any(|v|*v) && (!a.modules.is_empty() || !a.presets.is_empty()) { return Err("A command mode cannot be combined with module or preset selections.".into()); }
     if a.record.is_some_and(|v|!(5..=1800).contains(&v)) || a.interval_ms.is_some_and(|v|!(1000..=10000).contains(&v)) { return Err("Recording needs 5–1800 seconds and an interval of 1000–10000 ms.".into()); }
@@ -222,6 +227,11 @@ pub fn main(argv: Vec<String>) -> i32 {
         return 0;
     }
     let loaded = profile::load();
+    if args.mcp {
+        // Before anything else can print: stdout is the protocol's.
+        let status = loaded.status;
+        return crate::mcp::main(loaded.profile, status.source, status.name, status.error);
+    }
     let mut profile = loaded.profile.clone();
     crate::audit::set_system_log(crate::audit::system_log_wanted(&profile, loaded.status.source));
     if args.redact_serial {
@@ -661,6 +671,8 @@ mod tests {
         assert!(parse(&["--verify-audit".to_string(), "--trends".to_string()]).is_err());
         assert!(args(&["--watch"]).watch && args(&["--install-watch"]).install_watch && args(&["--uninstall-watch"]).uninstall_watch);
         assert!(parse(&["--watch".to_string(), "system.info".to_string()]).is_err(), "watch is a mode of its own");
+        assert!(args(&["--mcp"]).mcp);
+        assert!(parse(&["--mcp".to_string(), "--preset".to_string(), "triage".to_string()]).is_err(), "so is the MCP server");
     }
 
     #[test]

@@ -17,6 +17,7 @@
 //! * `profile`, `audit`, `report`: site policy and settings, the audit trail,
 //!   and saved runs with their before/after comparison.
 //! * `cli`: the command line, for remote shells, scheduled tasks and RMM tools.
+//! * `mcp`: `itriage --mcp`, the read-only checks as an MCP server for AI clients.
 //! * `win`: thin native Windows wrappers (SCM, Event Log, Windows Update
 //!   Agent, IP Helper, WinHTTP, PDH, SMBIOS, spooler, SetupAPI, WLAN,
 //!   certificates…) and the fixed PowerShell scripts a few repairs need.
@@ -36,6 +37,7 @@ pub mod investigate;
 pub mod desk;
 pub mod host;
 pub mod insight;
+pub mod mcp;
 pub mod model;
 pub mod module;
 pub mod net;

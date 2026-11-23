@@ -131,6 +131,13 @@ jobs:
           cargo run -q -p itriage-core --example triage -- --bundle case-recording.json --out case.zip
           python scripts/check-case.py case-recording.json case-preview.json case.zip
 
+      # itriage --mcp over real pipes, as an AI client would drive it: both
+      # protocol generations, the health preset with progress, a change
+      # refused, and nothing but JSON-RPC on stdout.
+      - name: Smoke-test the MCP server
+        shell: bash
+        run: python scripts/check-mcp.py cargo run -q -p itriage-core --example triage -- --mcp
+
   # The installers carry THIRD-PARTY-NOTICES.txt: the licenses and copyright
   # notices of every crate built into them. It's generated from Cargo.lock, and
   # this fails when a dependency has changed without it (a release stops here
