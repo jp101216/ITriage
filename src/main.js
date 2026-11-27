@@ -606,8 +606,8 @@
         "From the DeviceManagement Admin log. Some appear on every managed PC; they matter when they name the policy or app that isn't applying. Newest, event 404 5h ago: MDM ConfigurationManager: Command failure status. Configuration Source ID: (C2F3...), Enrollment Name: (MDMDeviceWithAAD), Provider Name: (Policy), Command Type: (Add: from Replace or Add), CSP URI: (./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana), Result: (The system cannot find the file specified.)."),
       F("Intune Management Extension", "running", "ok"),
       F("Intune Win32 apps", "11 installed · 1 failed", "info"),
-      F("Intune app failed: 7d1c6e2a-3b4f-4a8e-9c2d-5e6f7a8b9c0d", "the install failed · error 0x87D1041C: the install finished but Intune didn't detect the app afterwards (the detection rule doesn't match, or it was uninstalled)", "warning",
-        "Assigned to the device. EnforcementState 5000. Find the app by this ID in the Intune admin center; this PC's install log is AppWorkload.log in C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs. Sync with Intune retries it at the next check-in.",
+      F("Intune app failed: 7d1c6e2a-3b4f-4a8e-9c2d-5e6f7a8b9c0d", "the install failed · error 0x87D1041C", "warning",
+        "The install finished but Intune didn't detect the app afterwards: the detection rule doesn't match what was installed, or it was uninstalled. Assigned to the device. EnforcementState 5000. Find the app by this ID in the Intune admin center; this PC's install log is AppWorkload.log in C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs. Sync with Intune retries it at the next check-in.",
         { action: A("sync-intune") }),
     ]),
     "desk.browser": R("desk.browser", "Edge IE mode site list", "workstation", "1 IE mode finding needs attention", 640, [

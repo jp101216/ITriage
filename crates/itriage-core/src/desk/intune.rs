@@ -153,24 +153,27 @@ fn failure_text(state: u32) -> &'static str {
     }
 }
 
-/// An app's error code: Intune's own (0x87D…), an HRESULT, or the
-/// installer's exit code.
-pub fn error_text(code: i64) -> String {
-    let as_u32 = code as u32;
-    let known = match as_u32 {
+/// An app's error code as a technician would search for it: an installer's
+/// exit code in decimal (1603), anything else in hex (0x87D1041C).
+pub fn error_code(code: i64) -> String {
+    if (0..=0xFFFF).contains(&code) {
+        code.to_string()
+    } else {
+        format!("0x{:08X}", code as u32)
+    }
+}
+
+/// What an app error code means, where Microsoft documents it.
+pub fn error_meaning(code: i64) -> Option<&'static str> {
+    match code as u32 {
         // Microsoft's Intune app installation error reference.
-        0x87D1_041C => Some("the install finished but Intune didn't detect the app afterwards (the detection rule doesn't match, or it was uninstalled)"),
-        0x8000_FFFF => Some("an unexpected error during installation"),
+        0x87D1_041C => Some("The install finished but Intune didn't detect the app afterwards: the detection rule doesn't match what was installed, or it was uninstalled."),
+        0x8000_FFFF => Some("An unexpected error during installation."),
         // Windows Installer, as an exit code and as an HRESULT.
-        1603 | 0x8007_0643 => Some("the installer reported a fatal error (1603)"),
+        1603 | 0x8007_0643 => Some("The installer reported a fatal error."),
         // ERROR_INSTALL_ALREADY_RUNNING.
-        1618 | 0x8007_0652 => Some("another installation was already in progress (1618)"),
+        1618 | 0x8007_0652 => Some("Another installation was already in progress."),
         _ => None,
-    };
-    let number = if (0..=0xFFFF).contains(&code) { code.to_string() } else { format!("0x{as_u32:08X}") };
-    match known {
-        Some(k) => format!("{number}: {k}"),
-        None => number,
     }
 }
 
@@ -280,9 +283,10 @@ pub fn findings(f: &Facts, now: u64) -> Vec<Finding> {
         out.push(Finding::new("Intune Win32 apps", parts.join(" · "), if failed == 0 { Severity::Ok } else { Severity::Info }));
         for a in f.apps.iter().filter(|a| outcome(a.state) == Outcome::Failed) {
             out.push(
-                Finding::warn(format!("Intune app failed: {}", a.app), format!("{} · error {}", failure_text(a.state), error_text(a.error)))
+                Finding::warn(format!("Intune app failed: {}", a.app), format!("{} · error {}", failure_text(a.state), error_code(a.error)))
                     .with_detail(format!(
-                        "Assigned to the {}. EnforcementState {}. Find the app by this ID in the Intune admin center; this PC's install log is AppWorkload.log in C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs. Sync with Intune retries it at the next check-in.",
+                        "{}Assigned to the {}. EnforcementState {}. Find the app by this ID in the Intune admin center; this PC's install log is AppWorkload.log in C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs. Sync with Intune retries it at the next check-in.",
+                        error_meaning(a.error).map(|m| format!("{m} ")).unwrap_or_default(),
                         if a.user { "signed-in person" } else { "device" },
                         a.state
                     ))
@@ -532,10 +536,12 @@ mod tests {
         assert_eq!(get(&rows, "Intune Win32 apps").value, "1 installed · 2 failed · 1 requirements not met");
         let undetected = get(&rows, "Intune app failed: e316127d-a9a4-4193-8f04-b07c37d1130f");
         assert_eq!(undetected.severity, Severity::Warning);
-        assert!(undetected.value.starts_with("the install failed · error 0x87D1041C: the install finished but Intune didn't detect"), "{}", undetected.value);
+        assert_eq!(undetected.value, "the install failed · error 0x87D1041C");
+        assert!(undetected.detail.as_deref().unwrap().starts_with("The install finished but Intune didn't detect the app afterwards"));
         assert!(undetected.detail.as_deref().unwrap().contains("Assigned to the device"));
         let msi = get(&rows, "Intune app failed: 0c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f");
-        assert_eq!(msi.value, "the install failed · error 1603: the installer reported a fatal error (1603)");
+        assert_eq!(msi.value, "the install failed · error 1603");
+        assert!(msi.detail.as_deref().unwrap().starts_with("The installer reported a fatal error. Assigned"));
         assert!(msi.detail.as_deref().unwrap().contains("signed-in person"));
         assert_eq!(summarise(&rows), "2 Intune apps failed to install");
     }
@@ -554,7 +560,7 @@ mod tests {
         assert!(errors.detail.as_deref().unwrap().contains("Newest, event 404 1h ago: MDM ConfigurationManager"));
         assert_eq!(outcome(2008), Outcome::InProgress);
         assert_eq!(outcome(6002), Outcome::NotAttempted);
-        assert_eq!(error_text(1618), "1618: another installation was already in progress (1618)");
-        assert_eq!(error_text(-2_147_024_891), "0x80070005");
+        assert_eq!((error_code(1618), error_meaning(1618)), ("1618".to_string(), Some("Another installation was already in progress.")));
+        assert_eq!((error_code(-2_147_024_891), error_meaning(-2_147_024_891)), ("0x80070005".to_string(), None));
     }
 }
