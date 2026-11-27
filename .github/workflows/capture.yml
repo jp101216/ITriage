@@ -5,20 +5,38 @@ on:
 permissions:
   contents: read
 jobs:
-  capture:
+  fslogix-run:
     runs-on: windows-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-      - name: Capture
-        shell: powershell
-        run: ./capture.ps1
-      - name: Show
-        if: always()
-        shell: bash
-        run: for f in out/*.txt; do echo "################ $f"; cat "$f"; done
-      - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: capture
-          path: out/
+          ref: feature/profile-updates-intune
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build -q -p itriage-core --example triage
+      - name: Install and configure FSLogix
+        shell: powershell
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'fslogix.zip'
+          Invoke-WebRequest -Uri 'https://aka.ms/fslogix_download' -OutFile $zip -UseBasicParsing
+          $dir = Join-Path $env:RUNNER_TEMP 'fslogix'
+          Expand-Archive $zip -DestinationPath $dir -Force
+          $setup = Get-ChildItem $dir -Recurse -Filter FSLogixAppsSetup.exe | Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList '/install','/quiet','/norestart' -Wait -PassThru
+          "setup exit: $($p.ExitCode)"
+          New-Item -ItemType Directory -Force C:\fslprofiles | Out-Null
+          reg add HKLM\SOFTWARE\FSLogix\Profiles /v Enabled /t REG_DWORD /d 1 /f
+          reg add HKLM\SOFTWARE\FSLogix\Profiles /v VHDLocations /t REG_MULTI_SZ /d "C:\fslprofiles\00C:\fslprofiles2" /f
+          reg query HKLM\SOFTWARE\FSLogix /s
+      - name: Run the three checks
+        shell: bash
+        run: |
+          ./target/debug/examples/triage desk.profile desk.intune update.history --no-history || true
+          ./target/debug/examples/triage desk.profile desk.intune update.history --json --no-history --quiet > out.json || true
+          python -c "import json; r=json.load(open('out.json')); [print(x['module_id'], '|', x['summary'], '|', x.get('error')) or [print('   ', f['severity'], '|', f['label'], '|', f['value'], '|', (f.get('detail') or '')[:300]) for f in x['findings']] for x in r['results']]"
+      - name: Stop frxsvc and check again
+        shell: bash
+        run: |
+          net stop frxsvc || true
+          ./target/debug/examples/triage desk.profile --no-history || true
