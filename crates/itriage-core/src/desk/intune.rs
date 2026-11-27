@@ -20,9 +20,11 @@
 //! * the Intune Management Extension service, which installs Win32 apps
 //!   and runs scripts;
 //! * Win32 app results it records under `...\IntuneManagementExtension\Win32Apps`
-//!   (an EnforcementStateMessage per app, with Microsoft's state codes as
-//!   MSEndpointMgr documents them). Nothing records the apps' names, so
-//!   each is shown by its Intune app ID.
+//!   (an EnforcementStateMessage per app). Microsoft doesn't document this
+//!   layout; the state codes are the ones MSEndpointMgr's "Win32 app state
+//!   messages demystified" lists, and the reader skips anything that
+//!   doesn't match. Nothing records the apps' names, so each is shown by its
+//!   Intune app ID.
 //!
 //! The one fix, Sync with Intune, starts an MDM session through Windows'
 //! own `MdmSessionManager` API and restarts the Intune Management Extension,
@@ -161,8 +163,8 @@ pub fn error_text(code: i64) -> String {
         0x8000_FFFF => Some("an unexpected error during installation"),
         // Windows Installer, as an exit code and as an HRESULT.
         1603 | 0x8007_0643 => Some("the installer reported a fatal error (1603)"),
-        // Intune's default return code for "retry".
-        1618 | 0x8007_0652 => Some("another installation was already running (1618); Intune retries it"),
+        // ERROR_INSTALL_ALREADY_RUNNING.
+        1618 | 0x8007_0652 => Some("another installation was already in progress (1618)"),
         _ => None,
     };
     let number = if (0..=0xFFFF).contains(&code) { code.to_string() } else { format!("0x{as_u32:08X}") };
@@ -552,7 +554,7 @@ mod tests {
         assert!(errors.detail.as_deref().unwrap().contains("Newest, event 404 1h ago: MDM ConfigurationManager"));
         assert_eq!(outcome(2008), Outcome::InProgress);
         assert_eq!(outcome(6002), Outcome::NotAttempted);
-        assert_eq!(error_text(1618), "1618: another installation was already running (1618); Intune retries it");
+        assert_eq!(error_text(1618), "1618: another installation was already in progress (1618)");
         assert_eq!(error_text(-2_147_024_891), "0x80070005");
     }
 }
