@@ -575,6 +575,97 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         out.push(insight(45, Severity::Warning, "Microsoft 365 Apps are older than the site requires.", vec![cite(h)], "Check its update channel and whether Office updates are reaching this PC; Update Now in any Office app's Account page starts one."));
     }
 
+    // --- A temporary profile: everything the person changes is thrown away.
+    if let Some(h) = v.find("desk.profile", |f| f.label == "Signed-in profile" && f.severity == Severity::Critical) {
+        let holder = v.problem("desk.profile", "Program holding a profile's registry file");
+        let mut evidence = vec![cite(h)];
+        evidence.extend(holder.map(cite));
+        evidence.extend(v.problem("desk.profile", "Profile load failures (7 days)").map(cite));
+        let who = h.1.value.split(" is on").next().unwrap_or("The person");
+        out.push(insight(
+            88,
+            Severity::Critical,
+            format!("{who} is signed in with a temporary profile, so files on the desktop and changed settings are lost at sign-out."),
+            evidence,
+            if holder.is_some() {
+                "Stop the program named above from opening users' NTUSER.DAT, then have them sign out and back in. Save anything they need first: it's deleted at sign-out."
+            } else {
+                "Find what stopped the profile loading (the load failures above), fix it, then have them sign out and back in. Save anything they need first: it's deleted at sign-out."
+            },
+        ));
+    }
+
+    // --- FSLogix.
+    if let Some(h) = v.problem("desk.profile", "FSLogix service (frxsvc)") {
+        out.push(insight(82, Severity::Critical, "FSLogix's service isn't running, so no profile container attaches when people sign in.", vec![cite(h)], "Start the FSLogix Apps Services service (frxsvc); if it's missing, reinstall FSLogix. People signed in meanwhile need to sign out and back in."));
+    }
+    if let Some(h) = v.find("desk.profile", |f| f.label == "FSLogix container for this sign-in" && bad(f)) {
+        let local = h.1.value.contains("local profile");
+        out.push(insight(
+            if h.1.severity == Severity::Critical { 80 } else { 62 },
+            h.1.severity,
+            format!("The FSLogix profile container isn't in use for this sign-in ({}), so the person's roaming settings and files aren't here.", h.1.value.trim_start_matches("not attached: ").trim_start_matches("not used: ")),
+            vec![cite(h)],
+            if local {
+                "Copy anything they need from their local profile on this PC, remove it, then have them sign in again."
+            } else {
+                "Check the container location is reachable from this PC, then read the day's FSLogix profile log (C:\\ProgramData\\FSLogix\\Logs\\Profile) for this sign-in."
+            },
+        ));
+    }
+    let full = v
+        .find("desk.profile", |f| f.label == "FSLogix container space" && bad(f))
+        .or_else(|| v.find("desk.profile", |f| f.label.starts_with("FSLogix: container is") && f.label.contains("space") && bad(f)))
+        .or_else(|| v.problem("desk.profile", "FSLogix: container is nearly full and must be expanded"));
+    if let Some(h) = full {
+        out.push(insight(74, h.1.severity, "The FSLogix profile container is running out of space, and sign-in fails once it's full.", vec![cite(h)], "Raise SizeInMBs (existing containers grow to it at the next sign-in), or clear space in the profile."));
+    }
+    if let Some(h) = v.find("desk.profile", |f| f.label.starts_with("FSLogix: container in use") && bad(f)) {
+        out.push(insight(70, h.1.severity, "The FSLogix container is in use by another session, so this sign-in can't attach it.", vec![cite(h)], "Sign the person out of their other session or PC (or detach the disk there), then sign in again."));
+    }
+
+    // --- Windows updates that keep failing.
+    if let Some(h) = v.find("update.history", |f| f.label.starts_with(crate::update::history::FAILING) && bad(f)) {
+        use crate::parse::wuerror::Cause;
+        let kb = h.1.label.trim_start_matches(crate::update::history::FAILING);
+        let code = h.1.value.rsplit(" · ").next().unwrap_or_default();
+        let cause = crate::update::history::cause_of(h.1);
+        let meaning = u32::from_str_radix(code.trim_start_matches("0x"), 16).ok().and_then(crate::parse::wuerror::lookup).map(|k| k.meaning);
+        let what = match (cause, meaning) {
+            (Some(Cause::Corruption), _) => format!("Windows updates fail because the component store is damaged ({kb}, {code})."),
+            (_, Some(m)) => format!("{kb} keeps failing to install: {m} ({code})."),
+            _ => format!("{kb} keeps failing to install ({code})."),
+        };
+        out.push(insight(
+            if h.1.severity == Severity::Critical { 58 } else { 46 },
+            h.1.severity,
+            what,
+            vec![cite(h)],
+            cause.unwrap_or(Cause::Other).next(),
+        ));
+    }
+
+    // --- Intune.
+    if let Some(h) = v.find("desk.intune", |f| f.label == "Last Intune sync" && f.severity == Severity::Critical) {
+        out.push(insight(
+            58,
+            Severity::Critical,
+            "This PC hasn't synced with Intune in over a week, so new policies and apps aren't reaching it.",
+            vec![cite(h)],
+            "Run Sync with Intune. If it fails, the error is in the DeviceManagement-Enterprise-Diagnostics-Provider Sync log.",
+        ));
+    }
+    let failed_apps = v.problems("desk.intune", |f| f.label.starts_with("Intune app failed: "));
+    if !failed_apps.is_empty() {
+        out.push(insight(
+            46,
+            Severity::Warning,
+            format!("{} Intune app{} failed to install on this PC.", failed_apps.len(), if failed_apps.len() == 1 { "" } else { "s" }),
+            failed_apps.iter().take(3).map(|h| cite(*h)).collect(),
+            "Look each app ID up in the Intune admin center and read AppWorkload.log on this PC; Sync with Intune retries them.",
+        ));
+    }
+
     // --- Edge IE mode.
     if let Some(h) = v.problem("desk.browser", "Enterprise site list") {
         out.push(insight(
@@ -1000,5 +1091,91 @@ mod tests {
         assert!(likely_causes(&[preview, failed]).is_empty());
         assert_eq!(times("1"), "once");
         assert_eq!(times("14"), "14 times");
+    }
+
+    /// The rules read the labels the modules write, so these build their
+    /// rows with the modules' own `findings`.
+    #[test]
+    fn a_temporary_profile_names_what_held_it() {
+        use crate::desk::profile::{findings, Event, Facts, Listed};
+        let sid = "S-1-5-21-1-2-3-1001";
+        let ev = |id: u32, sid: &str, data: &[(&str, &str)]| Event { epoch: 1_000, id, sid: sid.into(), data: data.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), message: None };
+        let facts = Facts {
+            account: "CORP\\jparker".into(),
+            sid: Some(sid.into()),
+            path: Some("C:\\Users\\TEMP".into()),
+            listed: vec![Listed { sid: sid.into(), path: "C:\\Users\\jparker".into(), backup: true }],
+            events: vec![ev(1545, "S-1-5-18", &[("InterferingImageName", "C:\\Program Files\\Backup\\agent.exe")]), ev(1511, sid, &[])],
+            fslogix: None,
+        };
+        let rows = findings(&facts, &crate::profile::Band { warn: 15.0, crit: 10.0 }, 1_060);
+        let found = likely_causes(&[result("desk.profile", "User profile & FSLogix", rows)]);
+        assert_eq!(found[0].cause, "CORP\\jparker is signed in with a temporary profile, so files on the desktop and changed settings are lost at sign-out.");
+        assert!(found[0].evidence.iter().any(|e| e.contains("agent.exe")), "{:?}", found[0].evidence);
+        assert!(found[0].next.starts_with("Stop the program named above"));
+    }
+
+    #[test]
+    fn an_update_failing_on_corruption_points_at_system_file_repair() {
+        use crate::update::history::{findings, Attempt};
+        let title = "2026-11 Cumulative Update for Windows 11 Version 24H2 for x64-based Systems (KB5046617)";
+        let a = |days: u64| Attempt { epoch: 10_000_000 - days * 86_400, title: title.into(), update_id: "x".into(), succeeded: false, code: 0x800F_0831 };
+        let rows = findings(&[a(1), a(2), a(3)], 10_000_000);
+        let found = likely_causes(&[result("update.history", "Why updates fail", rows)]);
+        assert_eq!(found[0].severity, Severity::Critical);
+        assert_eq!(found[0].cause, "Windows updates fail because the component store is damaged (KB5046617, 0x800F0831).");
+        assert!(found[0].next.contains("Clean up & check system files"));
+        let net = findings(&[Attempt { code: 0x8024_401B, ..a(1) }], 10_000_000);
+        let found = likely_causes(&[result("update.history", "Why updates fail", net)]);
+        assert_eq!(found[0].cause, "KB5046617 keeps failing to install: the proxy asked for a sign-in (HTTP 407) (0x8024401B).");
+        assert_eq!(found[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn intune_that_stopped_syncing_and_failed_apps() {
+        use crate::desk::intune::{findings, AppResult, Facts, SyncEnd};
+        let facts = Facts {
+            intune: vec![("2A4A1C35-6D5B-4C3A-9E7F-1B2C3D4E5F60".into(), None)],
+            sync_log: true,
+            syncs: vec![SyncEnd { epoch: 0, ok: true, status: "The operation completed successfully.".into() }],
+            ime_running: Some(true),
+            apps: vec![AppResult { app: "e316127d-a9a4-4193-8f04-b07c37d1130f".into(), user: false, state: 5000, error: 1603 }],
+            ..Facts::default()
+        };
+        let rows = findings(&facts, 30 * 86_400);
+        let found = likely_causes(&[result("desk.intune", "Intune enrollment & apps", rows)]);
+        assert_eq!(found.len(), 2);
+        assert!(found[0].cause.starts_with("This PC hasn't synced with Intune in over a week"));
+        assert_eq!(found[1].cause, "1 Intune app failed to install on this PC.");
+    }
+
+    #[test]
+    fn an_fslogix_container_kept_out_by_a_local_profile() {
+        use crate::desk::profile::{findings, Facts, Fslogix, Session};
+        let facts = Facts {
+            account: "CORP\\jparker".into(),
+            path: Some("C:\\Users\\jparker".into()),
+            fslogix: Some(Fslogix { version: "3.26".into(), enabled: true, locations: vec!["\\\\files\\p".into()], service_running: Some(true), session: Some(Session { reason: 3, ..Session::default() }), ..Fslogix::default() }),
+            ..Facts::default()
+        };
+        let rows = findings(&facts, &crate::profile::Band { warn: 15.0, crit: 10.0 }, 0);
+        let found = likely_causes(&[result("desk.profile", "User profile & FSLogix", rows)]);
+        assert_eq!(found[0].cause, "The FSLogix profile container isn't in use for this sign-in (a local profile already exists for this account), so the person's roaming settings and files aren't here.");
+        assert!(found[0].next.starts_with("Copy anything they need from their local profile"));
+    }
+
+    #[test]
+    fn a_stopped_fslogix_service_comes_first() {
+        use crate::desk::profile::{findings, Facts, Fslogix};
+        let facts = Facts {
+            account: "CORP\\jparker".into(),
+            path: Some("C:\\Users\\jparker".into()),
+            fslogix: Some(Fslogix { version: "3.26".into(), enabled: true, locations: vec!["C:\\fslprofiles".into()], service_running: Some(false), ..Fslogix::default() }),
+            ..Facts::default()
+        };
+        let rows = findings(&facts, &crate::profile::Band { warn: 15.0, crit: 10.0 }, 0);
+        let found = likely_causes(&[result("desk.profile", "User profile & FSLogix", rows)]);
+        assert_eq!(found[0].cause, "FSLogix's service isn't running, so no profile container attaches when people sign in.");
+        assert_eq!(found[0].severity, Severity::Critical);
     }
 }

@@ -123,10 +123,12 @@
     mod("desk.time", "Clock & time sync", "workstation", "Clock offset against the time server, where the time comes from, and the time zone. Domain sign-in fails past 5 minutes of drift."),
     mod("desk.domain", "Domain & Group Policy", "workstation", "Domain membership, whether a domain controller or cached credentials signed you in, the AD site, and when Group Policy last applied. On Linux: the realm, SSSD online or offline, the machine account and keytab, and sssd.conf's permissions."),
     mod("desk.logon", "Sign-in speed (Group Policy)", "workstation", "How long the last sign-in spent loading the profile and applying Group Policy, which policy step took the time or failed, and lost contact with the domain controller during policy processing.", WIN),
+    mod("desk.profile", "User profile & FSLogix", "workstation", "Whether the signed-in person got a temporary profile, profiles Windows set aside (.bak), the last 7 days of profile load failures and the program that held a profile's registry file, and FSLogix: the container's status for this sign-in, its free space and FSLogix's own errors.", WIN),
     mod("desk.account", "Sign-in & account lockouts", "workstation", "Whether the signed-in account is locked, disabled or about to need a new password, mapped drives, and what on this PC keeps locking it: saved credentials, stale sessions, services, scheduled tasks and failed sign-ins."),
     mod("desk.identity", "Entra, Kerberos & SSO sign-in", "workstation", "Device join and authentication, Windows Hello, signed-in-user PRT/WAM status, and the Kerberos tickets: TGT, RC4 tickets, the KDC, and servers that rejected a ticket. Reads no tokens."),
     mod("desk.printers", "Printers & print queue", "workstation", "Print Spooler state, every printer's status, stuck jobs, the default printer, label printers, and Point and Print: who may install drivers, the approved print servers, and drivers protected print mode won't load."),
     mod("desk.m365", "Outlook, Teams & OneDrive", "workstation", "Outlook data files against their size limit, the Microsoft 365 Apps version and update channel, Desktop and Documents in OneDrive without OneDrive running, the Teams cache, and Entra sign-in broker errors.", WIN),
+    mod("desk.intune", "Intune enrollment & apps", "workstation", "Whether this PC is enrolled in Intune, when it last synced and whether that worked, the week's MDM errors, the Intune Management Extension, and Win32 apps that failed to install, with a Sync with Intune fix.", WIN),
     mod("desk.browser", "Edge IE mode site list", "workstation", "Whether Edge's Internet Explorer mode is set up, whether its Enterprise Mode Site List can be fetched and read, and which of the site's application URLs (and the target) open in IE mode.", WIN),
     mod("desk.devices", "Devices & peripherals", "workstation", "Devices with driver problems (the Code 43s), microphones, cameras and card readers, devices the site profile requires, and USB power saving (selective suspend) that makes idle scanners drop out."),
     mod("desk.wifi", "Wi-Fi & VPN", "workstation", "The connected Wi-Fi network, signal strength (warns at 70%), security (802.1X or not), radio and link rate, and VPN client and tunnel evidence."),
@@ -160,6 +162,7 @@
     mod("fix.sccm", "Run Configuration Manager actions", "fixes", "Triggers the SCCM/MECM client's machine policy, application deployment and hardware inventory cycles, if the client is installed.",
       CHANGE("Asks the Configuration Manager client to fetch policy and evaluate deployments now; software it's told to install may start installing.", Object.assign({}, DROP, WIN))),
     mod("update.scan", "Available updates", "updates", "Pending Windows Update patches and drivers, winget app upgrades, restart state, the current BIOS and the OEM driver/BIOS tool. Installs nothing."),
+    mod("update.history", "Why updates fail", "updates", "Windows Update installs that failed in the last 90 days: which update, how many times, the last error code and what Microsoft says causes it, and whether it has installed since. Reads the update history; contacts nothing.", WIN),
     mod("update.apply", "Install OS & app updates", "updates", "Installs pending Windows Update patches (security & quality) and upgrades winget apps. Optional/preview updates are skipped.",
       CHANGE("Installs every pending Windows update and app upgrade. This can take 30+ minutes, apps being upgraded may close, and a restart is usually needed afterwards.", ADMIN)),
     mod("update.firmware", "Install drivers & firmware", "updates", "Drivers, BIOS and firmware through the manufacturer's tool (Dell, HP, Lenovo), and Windows Update drivers. Won't run on battery.",
@@ -183,8 +186,8 @@
       description: "Why an account keeps locking or can't sign in: its state on the domain controller, what on this PC still holds an old password, the domain connection, the clock and the network. Changes nothing.",
       modules: ["desk.account", "desk.domain", "desk.time", "net.connectivity"] },
     { id: "health", title: "Health check", script: "",
-      description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-      modules: ["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan"] },
+      description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear, what's waiting to be installed and updates that keep failing. Changes nothing.",
+      modules: ["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan", "update.history"] },
   ];
 
   const CAT_ORDER = ["system", "processes", "network", "eventlog", "workstation", "security", "site", "repair", "fixes", "updates"];
@@ -217,7 +220,7 @@
     "system.storage": "DSK-USE", "system.startup": "SYS-BOOT",
     "sec.blocks": "SEC-BLK", "desk.logon": "LOG-GPO", "system.hardware": "HW-THR",
     "desk.m365": "M365-APP", "desk.browser": "EDGE-IEM", "net.wired-auth": "NAC-8021X",
-    "site.rules": "SITE-RUL",
+    "site.rules": "SITE-RUL", "desk.profile": "USR-PRF", "desk.intune": "MDM-SYN", "update.history": "UPD-ERR",
   };
   /** Cards with a live mini-chart fed by the telemetry sampler. */
   const LIVE_GLYPH = { "system.info": "cpu", "system.disk": "disk", "system.memory": "mem", "proc.top": "cores" };
@@ -236,7 +239,7 @@
     "system.storage": I.layers, "system.startup": I.power,
     "sec.blocks": I.shield, "desk.logon": I.domain, "system.hardware": I.chip,
     "desk.m365": I.apps, "desk.browser": I.globe, "net.wired-auth": I.nic,
-    "site.rules": I.okc,
+    "site.rules": I.okc, "desk.profile": I.layers, "desk.intune": I.refresh, "update.history": I.alert,
   };
 
   /** One-click fixes (mirrors itriage-core::actions::FIXES). */
@@ -269,6 +272,8 @@
       description: "Removes the Kerberos tickets cached for this sign-in (klist purge). Windows gets new ones the next time each file share, intranet site or app is opened; nothing else changes. It acts on the account ITriage runs as, so run ITriage as the signed-in user, not elevated." },
     { id: "clear-teams-cache", label: "Clear Teams cache", requires_admin: false, disruptive: false,
       description: "Empties new Teams' cache folder for the signed-in person, as Microsoft's article on Teams that won't start or sign in describes. Teams has to be quit first; it rebuilds the cache when it next starts. It also deletes Teams' diagnostic logs, so don't use it for missing messages." },
+    { id: "sync-intune", label: "Sync with Intune", requires_admin: true, disruptive: false,
+      description: "Starts an Intune (MDM) sync through Windows' MDM session API, then restarts the Intune Management Extension service, which checks in for Win32 apps and scripts as it starts. If an app is installing right now, let it finish first." },
     { id: "keep-usb-awake", label: "Keep USB devices awake", requires_admin: true, disruptive: false, technician_only: true,
       description: "Turns USB selective suspend off in the active power plan, plugged in and on battery, so Windows stops powering down idle USB devices such as scanners and badge readers. It costs some battery. The old settings are saved first; Restore USB power puts them back. Only offered when the site profile's fixes list names it." },
     { id: "restore-usb-power", label: "Restore USB power", requires_admin: true, disruptive: false, technician_only: true,
@@ -310,7 +315,7 @@
   };
   const MOCK_FIXES = ["restart-spooler", "clear-print-queue", "resync-time", "gpupdate", "flush-dns", "start-service:Spooler", "start-service:W32Time",
     "restart-computer", "cancel-restart", "install-oem-tool", "install-update",
-    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup", "clear-teams-cache", "keep-usb-awake"];
+    "clear-saved-credentials", "logoff-session:3", "unlock-account:CORP\\jparker", "revert-tuneup", "clear-teams-cache", "sync-intune", "keep-usb-awake"];
   const MOCK_PROFILE = {
     source: "managed",
     path: "C:\\ProgramData\\itriage\\profile.toml",
@@ -583,6 +588,28 @@
         "Most common: 0xCAA2000C The request requires user interaction.. Microsoft-Windows-AAD/Operational, last at 2026-11-10T14:12:40Z UTC. A few a day is normal; many in a row, with Outlook or Teams asking for the password again and again, is the broken sign-in token Microsoft's article covers.",
         { kb: K("Troubleshoot primary refresh token issues (Microsoft)", "https://learn.microsoft.com/en-us/entra/identity/devices/troubleshoot-primary-refresh-token") }),
     ]),
+    "desk.profile": R("desk.profile", "User profile & FSLogix", "workstation", "3 profile findings need attention", 520, [
+      F("Signed-in profile", "CORP\\jparker · C:\\Users\\jparker", "ok"),
+      F("Profiles set aside (.bak)", "nurse2", "warning",
+        "1 profile failed to load and is kept under ProfileList as <SID>.bak. Each account gets a temporary profile until Windows can use its own again: nurse2 (S-1-5-21-1004336348-1177238915-682003330-1104.bak)."),
+      F("Temporary-profile sign-ins (7 days)", "twice · last 2d ago", "warning", "Event 1511 for nurse2. Each of those sign-ins lost its changes at sign-out."),
+      F("Program holding a profile's registry file", "BackupAgent.exe", "warning",
+        "Events 1545/1552, twice in 7 days, last 2d ago: Windows found C:\\Program Files\\Contoso Backup\\BackupAgent.exe open while loading a profile, and the profile couldn't load. Stop that program from opening users' NTUSER.DAT (an exclusion in it, or a fix from its vendor)."),
+      F("FSLogix Profile Container", "3.26.826.17182 · on · VHD locations: \\\\fs01\\profiles$"),
+      F("FSLogix container for this sign-in", "attached · Profile_jparker.VHDX", "ok", "\\\\fs01\\profiles$\\jparker_S-1-5-21-1004336348-1177238915-682003330-1187\\Profile_jparker.VHDX"),
+      F("FSLogix container space", "21.8 GB free of 30.0 GB · 73%", "ok", "Sign-in fails when the container fills up. Raising SizeInMBs extends existing containers at the person's next sign-in; otherwise clear space in the profile.", { metric: M(73, "%", false) }),
+    ]),
+    "desk.intune": R("desk.intune", "Intune enrollment & apps", "workstation", "1 Intune app failed to install", 410, [
+      F("Intune enrollment", "enrolled · jparker@corp.example.org", "ok"),
+      F("Last Intune sync", "succeeded 3h ago", "ok", "Intune normally syncs about every 8 hours."),
+      F("MDM errors (7 days)", "4 · most often event 404 (3×)", "info",
+        "From the DeviceManagement Admin log. Some appear on every managed PC; they matter when they name the policy or app that isn't applying. Newest, event 404 5h ago: MDM ConfigurationManager: Command failure status. Configuration Source ID: (C2F3...), Enrollment Name: (MDMDeviceWithAAD), Provider Name: (Policy), Command Type: (Add: from Replace or Add), CSP URI: (./Device/Vendor/MSFT/Policy/Config/Experience/AllowCortana), Result: (The system cannot find the file specified.)."),
+      F("Intune Management Extension", "running", "ok"),
+      F("Intune Win32 apps", "11 installed · 1 failed", "info"),
+      F("Intune app failed: 7d1c6e2a-3b4f-4a8e-9c2d-5e6f7a8b9c0d", "the install failed · error 0x87D1041C", "warning",
+        "The install finished but Intune didn't detect the app afterwards: the detection rule doesn't match what was installed, or it was uninstalled. Assigned to the device. EnforcementState 5000. Find the app by this ID in the Intune admin center; this PC's install log is AppWorkload.log in C:\\ProgramData\\Microsoft\\IntuneManagementExtension\\Logs. Sync with Intune retries it at the next check-in.",
+        { action: A("sync-intune") }),
+    ]),
     "desk.browser": R("desk.browser", "Edge IE mode site list", "workstation", "1 IE mode finding needs attention", 640, [
       F("IE integration", "Internet Explorer mode (computer policy)", "ok"),
       F("Enterprise site list", "can't be fetched: intranet.example.org answered HTTP 404", "warning",
@@ -680,6 +707,12 @@
     ]),
     "fix.restart": R("fix.restart", "Restart the PC", "fixes", "Restarting in 60 seconds", 120, [
       F("Restart", "scheduled in 60 seconds; the signed-in user was warned", "warning", null, { action: A("cancel-restart") }),
+    ]),
+    "update.history": R("update.history", "Why updates fail", "updates", "KB5070001 keeps failing (0x800F0831)", 180, [
+      F("Installs in the last 90 days", "41 installed · 3 failed", "info"),
+      F("Failing update: KB5070001", "failed 3 times · last 1d ago · 0x800F0831", "critical",
+        CU_TITLE + " (KB5070001). Last error 0x800F0831 (CBS_E_STORE_CORRUPTION): the component store is corrupted. Next: Run Clean up & check system files (DISM /RestoreHealth, then SFC), restart, then install the update again.",
+        { metric: M(3, "failures") }),
     ]),
     "update.scan": R("update.scan", "Available updates", "updates", "3 Windows updates · 1 driver update · restart pending · 4 app upgrades", 41_380, [
       F("Windows Update", "3 important · 1 optional", "warning"),
@@ -789,6 +822,7 @@
     "logoff-session": (t) => `Asked Windows to sign out CORP\\jparker's disconnected session ${t}.`,
     "unlock-account": (t) => `${t} is unlocked. If something is still using the old password, it will lock again: clear the sources the report lists.`,
     "purge-kerberos-tickets": () => "Cleared 14 Kerberos tickets for this sign-in. New ones are fetched as each server is used.",
+    "sync-intune": () => "Synced with Intune (MDM session completed). Restarted the Intune Management Extension, which checks in for Win32 apps and scripts as it starts.",
     "clear-teams-cache": () => "Cleared 612 MB of CORP\\jparker's Teams cache. Teams rebuilds it the next time it starts, which takes a little longer than usual.",
     "keep-usb-awake": () => "Turned USB selective suspend off in the active power plan (it was selective suspend on plugged in, on on battery). USB devices stay powered while idle; Restore USB power puts the old settings back.",
     "restore-usb-power": () => "Put back selective suspend on plugged in, on on battery in the power plan.",
@@ -3899,6 +3933,20 @@
     if (clock) {
       add(clock.f.severity === "critical" ? 90 : 45, clock.f.severity, "The clock is wrong. Past five minutes of drift, domain sign-in, Wi-Fi (802.1X) and secure sites fail.",
         [clock.cite], "Resync the clock, then check where it gets its time from.");
+    }
+    const failing = find("update.history", (f) => f.label.startsWith("Failing update: ") && bad(f));
+    if (failing) {
+      const kb = failing.f.label.replace("Failing update: ", "");
+      const code = failing.f.value.split(" · ").pop();
+      add(failing.f.severity === "critical" ? 58 : 46, failing.f.severity, `Windows updates fail because the component store is damaged (${kb}, ${code}).`,
+        [failing.cite], "Run Clean up & check system files (DISM /RestoreHealth, then SFC), restart, then install the update again.");
+    }
+    const intuneApps = usable.find((x) => x.module_id === "desk.intune");
+    const appFails = intuneApps ? intuneApps.findings.filter((f) => f.label.startsWith("Intune app failed: ") && bad(f)) : [];
+    if (appFails.length) {
+      add(46, "warning", `${appFails.length} Intune app${appFails.length === 1 ? "" : "s"} failed to install on this PC.`,
+        appFails.slice(0, 3).map((f) => `${intuneApps.title}: ${f.label}: ${f.value}`),
+        "Look each app ID up in the Intune admin center and read AppWorkload.log on this PC; Sync with Intune retries them.");
     }
     const up = find("system.info", (f) => f.label === "Uptime" && bad(f));
     if (up) {

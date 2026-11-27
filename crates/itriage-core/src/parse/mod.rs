@@ -35,3 +35,4 @@ pub mod time;
 pub mod version;
 pub mod wired;
 pub mod winget;
+pub mod wuerror;

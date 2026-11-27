@@ -74,9 +74,26 @@ pub fn filetime_to_epoch(filetime: u64) -> Option<u64> {
     (filetime / 10_000_000).checked_sub(11_644_473_600)
 }
 
+/// An OLE Automation date (days since 1899-12-30, the time as the
+/// fraction), as COM's DATE returns it, as Unix seconds. `None` before 1970
+/// or when it isn't a number.
+pub fn ole_date_to_epoch(date: f64) -> Option<u64> {
+    let secs = (date - 25_569.0) * 86_400.0;
+    (secs.is_finite() && secs >= 0.0).then(|| secs.round() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_ole_dates() {
+        assert_eq!(ole_date_to_epoch(25_569.0), Some(0));
+        // 2026-11-06 19:22:31 UTC: 46_332 days, plus the time of day.
+        assert_eq!(ole_date_to_epoch(46_332.0 + 69_751.0 / 86_400.0), Some(1_793_992_951));
+        assert_eq!(ole_date_to_epoch(0.0), None, "1899 is before the epoch");
+        assert_eq!(ole_date_to_epoch(f64::NAN), None);
+    }
 
     #[test]
     fn formats_and_round_trips() {

@@ -1,6 +1,7 @@
 //! Update modules: one read-only scan, plus two installers split by risk.
 //!
 //! * `update.scan`     lists what's pending and installs nothing.
+//! * `update.history`  says which installs failed, and why. Read-only and local.
 //! * `update.apply`    installs OS & app updates (Windows Update + winget, or
 //!   the Linux package manager).
 //! * `update.firmware` installs drivers, BIOS and firmware (OEM tool or Windows
@@ -11,6 +12,7 @@
 
 pub mod apply;
 pub mod firmware;
+pub mod history;
 pub mod notice;
 pub mod scan;
 

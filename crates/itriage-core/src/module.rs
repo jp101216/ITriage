@@ -262,10 +262,12 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::desk::time::ClockSync),
         Box::new(crate::desk::domain::DomainPolicy),
         Box::new(crate::desk::logon::SignInWaterfall),
+        Box::new(crate::desk::profile::ProfileHealth),
         Box::new(crate::desk::account::SignInAccount),
         Box::new(crate::investigate::identity::IdentityHealth),
         Box::new(crate::desk::printers::Printers),
         Box::new(crate::desk::m365::Microsoft365),
+        Box::new(crate::desk::intune::IntuneHealth),
         Box::new(crate::desk::browser::EdgeSiteList),
         Box::new(crate::desk::devices::Devices),
         Box::new(crate::desk::wifi::WifiVpn),
@@ -293,6 +295,7 @@ pub fn registry() -> Vec<Box<dyn TriageModule>> {
         Box::new(crate::fixes::maintenance::ConfigMgrCycles),
         // --- Updates: one read-only scan, two installers split by risk ---
         Box::new(crate::update::scan::AvailableUpdates),
+        Box::new(crate::update::history::UpdateHistory),
         Box::new(crate::update::apply::InstallUpdates),
         Box::new(crate::update::firmware::InstallFirmware),
         // --- Last, so it runs after everything else in a sequence ---
@@ -367,8 +370,8 @@ pub const PRESETS: &[Preset] = &[
         id: "health",
         title: "Health check",
         script: "",
-        description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-        modules: &["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan"],
+        description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear, what's waiting to be installed and updates that keep failing. Changes nothing.",
+        modules: &["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan", "update.history"],
     },
 ];
 
