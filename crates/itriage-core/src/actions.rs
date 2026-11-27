@@ -163,6 +163,15 @@ pub const FIXES: &[FixSpec] = &[
         technician_only: false,
     },
     FixSpec {
+        id: "sync-intune",
+        label: "Sync with Intune",
+        description: "Starts an Intune (MDM) sync through Windows' MDM session API, then restarts the Intune Management Extension service, which checks in for Win32 apps and scripts as it starts. If an app is installing right now, let it finish first.",
+        targeted: false,
+        disruptive: false,
+        install: false,
+        technician_only: false,
+    },
+    FixSpec {
         id: "keep-usb-awake",
         label: "Keep USB devices awake",
         description: "Turns USB selective suspend off in the active power plan, plugged in and on battery, so Windows stops powering down idle USB devices such as scanners and badge readers. It costs some battery. The old settings are saved first; Restore USB power puts them back. Only offered when the site profile's fixes list names it.",
@@ -458,6 +467,7 @@ mod imp {
                 ))
             }
             "clear-teams-cache" => crate::desk::m365::clear_teams_cache(),
+            "sync-intune" => crate::desk::intune::sync_now(),
             "keep-usb-awake" => crate::fixes::usbpower::keep_awake(),
             "restore-usb-power" => crate::fixes::usbpower::restore(),
             other => Err(format!("Fix `{other}` isn't available on Windows.")),
@@ -523,6 +533,7 @@ mod imp {
             "gpupdate" => "Group Policy is a Windows feature.",
             "install-oem-tool" | "install-update" => "That's a Windows Update / winget fix; on Linux, use Install OS & app updates.",
             "clear-teams-cache" => "New Teams' cache is a Windows thing; on Linux, Teams runs in the browser.",
+            "sync-intune" => "Sync with Intune is a Windows fix.",
             "revert-tuneup" => "The tune-up's TCP and adapter power step is Windows-only, so there's nothing to put back here.",
             "clear-saved-credentials" => "Saved Windows credentials are a Windows feature. On Linux they're in the desktop keyring (Passwords and Keys).",
             "logoff-session" => "Signing out a disconnected session is a Windows fix. On Linux: loginctl terminate-session.",

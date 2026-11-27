@@ -8,8 +8,9 @@ use windows::core::{Interface, BSTR};
 use windows::Win32::Foundation::VARIANT_BOOL;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::UpdateAgent::{
-    orcSucceeded, orcSucceededWithErrors, ISystemInformation, IUpdate, IUpdate3, IUpdateCollection,
-    IUpdateSession, OperationResultCode, SystemInformation, UpdateCollection, UpdateSession,
+    orcAborted, orcFailed, orcSucceeded, orcSucceededWithErrors, uoInstallation, ISystemInformation, IUpdate, IUpdate3,
+    IUpdateCollection, IUpdateHistoryEntry, IUpdateSession, OperationResultCode, SystemInformation, UpdateCollection,
+    UpdateSession,
 };
 
 /// Which class of update to search for.
@@ -171,6 +172,50 @@ pub fn pending(kind: Kind) -> Result<Vec<Pending>, String> {
                 .map_err(wu("reading an update"))
         })
         .collect()
+}
+
+/// Installs from Windows Update's history (Settings → Windows Update →
+/// Update history), newest first, at most `max` entries looked at.
+/// Read-only, and local: it contacts nothing. Uninstalls and installs still
+/// in progress are left out. Windows records the time in UTC.
+pub fn history(max: i32) -> Result<Vec<crate::update::history::Attempt>, String> {
+    let _com = ComGuard::init();
+    let session = new_session().map_err(wu("Windows Update unavailable"))?;
+    // SAFETY: COM initialised above; every call is a getter on a live object.
+    let entries = unsafe {
+        let searcher = session.CreateUpdateSearcher().map_err(wu("Windows Update unavailable"))?;
+        let total = searcher.GetTotalHistoryCount().map_err(wu("reading the update history"))?;
+        if total <= 0 {
+            return Ok(Vec::new());
+        }
+        searcher.QueryHistory(0, total.min(max)).map_err(wu("reading the update history"))?
+    };
+    let count = unsafe { entries.Count() }.map_err(wu("reading the update history"))?;
+    Ok((0..count).filter_map(|i| unsafe { entries.get_Item(i) }.ok().and_then(|e| attempt(&e))).collect())
+}
+
+fn attempt(e: &IUpdateHistoryEntry) -> Option<crate::update::history::Attempt> {
+    // SAFETY: property getters on a live history entry.
+    unsafe {
+        if e.Operation().ok()? != uoInstallation {
+            return None;
+        }
+        let result = e.ResultCode().ok()?;
+        let succeeded = result == orcSucceeded || result == orcSucceededWithErrors;
+        if !succeeded && result != orcFailed && result != orcAborted {
+            return None;
+        }
+        let epoch = crate::parse::time::ole_date_to_epoch(e.Date().ok()?)?;
+        let hresult = e.HResult().unwrap_or(0) as u32;
+        let code = if hresult != 0 { hresult } else { e.UnmappedResultCode().unwrap_or(0) as u32 };
+        Some(crate::update::history::Attempt {
+            epoch,
+            title: e.Title().map(|t| t.to_string()).unwrap_or_default(),
+            update_id: e.UpdateIdentity().and_then(|i| i.UpdateID()).map(|b| b.to_string()).unwrap_or_default(),
+            succeeded,
+            code,
+        })
+    }
 }
 
 /// Whether Windows reports a restart pending from an earlier install.

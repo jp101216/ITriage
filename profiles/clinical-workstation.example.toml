@@ -34,6 +34,12 @@ fixes = [
   "flush-dns",
   "start-service:Spooler",
   "start-service:W32Time",
+  # FSLogix and the Intune Management Extension, when their checks find
+  # them stopped.
+  "start-service:frxsvc",
+  "start-service:IntuneManagementExtension",
+  # Starts an Intune sync and the extension's app check-in.
+  "sync-intune",
   # Account lockouts. The first is the person's own to use (it's offered in
   # the self-service view); the next two are only ever offered to technicians.
   "clear-saved-credentials",

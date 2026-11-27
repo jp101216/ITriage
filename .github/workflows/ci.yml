@@ -117,6 +117,16 @@ jobs:
         shell: bash
         run: python scripts/check-rules.py cargo run -q -p itriage-core --example triage --
 
+      # A real temporary profile, made the way it happens in the field (a
+      # program holding a test account's NTUSER.DAT while its profile
+      # loads), then User profile & FSLogix has to report it; Why updates
+      # fail and Intune enrollment & apps read the runner's real history and
+      # enrollments.
+      - name: Check the profile, update-history and Intune checks against real Windows state
+        if: runner.os == 'Windows'
+        shell: bash
+        run: python scripts/check-profile.py cargo run -q -p itriage-core --example triage --
+
       - name: Upload smoke report
         # Case evidence is checked locally in the job; only the standard
         # synthetic-runner smoke report is retained as an artifact.
