@@ -189,7 +189,7 @@ pub fn findings(attempts: &[Attempt], now: u64) -> Vec<Finding> {
                 .with_detail("These failed at least once in the last 90 days and have installed since, so nothing is left to do for them."),
         );
     }
-    if failing.is_empty() {
+    if failing.is_empty() && failed > 0 {
         out.push(Finding::ok("Failing updates", "none: everything that failed has installed since"));
     }
     out
@@ -309,6 +309,7 @@ mod tests {
         assert_eq!(summarise(&rows), "No update installs recorded in 90 days");
         let clean = findings(&[a(3, CU, true, 0)], NOW);
         assert_eq!(clean[0].severity, Severity::Ok);
+        assert_eq!(clean.len(), 1, "nothing failed, so there's nothing to say about failures: {clean:#?}");
         assert_eq!(summarise(&clean), "No failing updates");
     }
 }

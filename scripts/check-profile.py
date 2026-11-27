@@ -42,7 +42,9 @@ EXPECT = {
         "Profiles set aside (.bak)": ("warning", USER, r"\.bak"),
         "Temporary-profile sign-ins (7 days)": ("warning", r"^(once|twice|\d+ times) · last ", USER),
         "Program holding a profile's registry file": ("warning", r"(?i)powershell\.exe", r"(?i)WindowsPowerShell"),
-        "Profile load failures (7 days)": ("warning", r" · last ", r"(?i)ntuser\.dat"),
+        # Windows retries the load dozens of times in a few seconds: that's
+        # one attempt, not dozens.
+        "Profile load failures (7 days)": ("warning", r"^once · last ", r"(?i)\d+ logged.*ntuser\.dat"),
         "Signed-in profile": ("ok", r".", r""),
     },
     "update.history": {

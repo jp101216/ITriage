@@ -213,7 +213,7 @@ fn session_row(s: &Session) -> Finding {
         (0, 0) => Finding::ok(LABEL, format!("attached{}", if s.vhd.is_empty() { String::new() } else { format!(" · {}", leaf(&s.vhd)) })).with_detail(if s.vhd.is_empty() { String::new() } else { s.vhd.clone() }),
         (_, 1) | (_, 2) | (_, 4) | (_, 8) => Finding::info(LABEL, format!("not used: {}", reason_text(s.reason))).with_detail(codes),
         (_, 3) => Finding::warn(LABEL, "not used: a local profile already exists for this account").with_detail(format!(
-            "{codes}. FSLogix leaves an existing local profile alone, so this person is working in it, not in their container. Removing the local profile (or setting DeleteLocalProfileWhenVHDShouldApply) lets the container attach at the next sign-in."
+            "{codes}. FSLogix leaves an existing local profile alone, so this person is working in it, not in their container. Removing the local profile lets the container attach at the next sign-in (DeleteLocalProfileWhenVHDShouldApply makes FSLogix delete such profiles itself, permanently). Copy anything they need from it first."
         )),
         (_, 9) => Finding::crit(LABEL, "not attached: the profile failed to load").with_detail(format!("{codes}.{error}")),
         (100 | 200, _) => Finding::info(LABEL, status_text(s.status)).with_detail(codes),
@@ -239,6 +239,20 @@ fn fslogix_event(id: u32) -> Option<(&'static str, Severity)> {
         45 | 49 | 50 => ("a container couldn't be detached", Severity::Warning),
         _ => return None,
     })
+}
+
+/// How many separate attempts a set of events stands for. Windows retries a
+/// profile load many times within seconds, logging each retry (98 events
+/// for one sign-in on a test runner), so events less than two minutes apart
+/// count as one.
+pub fn attempts(events: &[&Event]) -> usize {
+    let mut at: Vec<u64> = events.iter().map(|e| e.epoch).collect();
+    at.sort_unstable();
+    at.dedup();
+    if at.is_empty() {
+        return 0;
+    }
+    1 + at.windows(2).filter(|w| w[1] - w[0] > 120).count()
 }
 
 fn times(n: usize) -> String {
@@ -298,7 +312,7 @@ pub fn findings(f: &Facts, band: &Band, now: u64) -> Vec<Finding> {
         let mut who: Vec<String> = temps.iter().map(|e| name_of(&e.sid)).collect();
         who.dedup();
         out.push(
-            Finding::warn("Temporary-profile sign-ins (7 days)", format!("{} · last {}", times(temps.len()), ago(now.saturating_sub(last.epoch))))
+            Finding::warn("Temporary-profile sign-ins (7 days)", format!("{} · last {}", times(attempts(&temps)), ago(now.saturating_sub(last.epoch))))
                 .with_detail(format!("Event 1511 for {}. Each of those sign-ins lost its changes at sign-out.", who.join(", "))),
         );
     }
@@ -306,14 +320,14 @@ pub fn findings(f: &Facts, band: &Band, now: u64) -> Vec<Finding> {
     if let Some(last) = failed.first() {
         let why = field(last, "Error").map(|e| e.trim_end_matches('.').to_string());
         let file = failed.iter().find_map(|e| field(e, "File"));
-        let mut detail = String::from("Events 1500/1502/1508/1542: Windows couldn't load a profile or its registry file.");
+        let mut detail = format!("Events 1500/1502/1508/1542, {} logged: Windows couldn't load a profile or its registry file.", failed.len());
         if let Some(w) = why {
             detail.push_str(&format!(" Last reason: {w}."));
         }
         if let Some(file) = file {
             detail.push_str(&format!(" File: {file}."));
         }
-        out.push(Finding::warn("Profile load failures (7 days)", format!("{} · last {}", times(failed.len()), ago(now.saturating_sub(last.epoch)))).with_detail(detail));
+        out.push(Finding::warn("Profile load failures (7 days)", format!("{} · last {}", times(attempts(&failed)), ago(now.saturating_sub(last.epoch)))).with_detail(detail));
     }
     let locks = group(&[1545, 1552]);
     if let Some(last) = locks.first() {
@@ -325,7 +339,7 @@ pub fn findings(f: &Facts, band: &Band, now: u64) -> Vec<Finding> {
             Finding::warn("Program holding a profile's registry file", if names.is_empty() { "unnamed".to_string() } else { names.join(", ") })
                 .with_detail(format!(
                     "Events 1545/1552, {} in 7 days, last {}: Windows found {} open while loading a profile, and the profile couldn't load. Stop that program from opening users' NTUSER.DAT (an exclusion in it, or a fix from its vendor).",
-                    times(locks.len()),
+                    times(attempts(&locks)),
                     ago(now.saturating_sub(last.epoch)),
                     if programs.is_empty() { "another program".to_string() } else { programs.join(", ") }
                 )),
@@ -376,7 +390,7 @@ pub fn findings(f: &Facts, band: &Band, now: u64) -> Vec<Finding> {
                         let pct = free as f64 / total as f64 * 100.0;
                         out.push(
                             Finding::new("FSLogix container space", format!("{} free of {} · {pct:.0}%", human_bytes(free), human_bytes(total)), band.low(pct))
-                                .with_detail("Sign-in fails when the container fills up. FSLogix can grow it only to SizeInMBs; past that, expand the VHDX or clear the profile.")
+                                .with_detail("Sign-in fails when the container fills up. Raising SizeInMBs extends existing containers at the person's next sign-in; otherwise clear space in the profile.")
                                 .with_metric(pct, "%", false),
                         );
                     }
@@ -609,9 +623,19 @@ mod tests {
         assert_eq!(lock.value, "agent.exe");
         assert!(lock.detail.as_deref().unwrap().contains("C:\\Program Files\\Vendor\\agent.exe"));
         let failed = get(&rows, "Profile load failures (7 days)");
-        assert_eq!(failed.value, "twice · last just now");
+        assert_eq!(failed.value, "once · last just now", "the 1508 and 1502 of one sign-in are one attempt");
+        assert!(failed.detail.as_deref().unwrap().contains("2 logged"));
         assert!(failed.detail.as_deref().unwrap().contains("used by another process. File: C:\\Users\\jparker\\ntuser.dat"), "{:?}", failed.detail);
         assert_eq!(summarise(&rows), "Temporary profile: CORP\\jparker");
+    }
+
+    #[test]
+    fn retries_count_as_one_attempt() {
+        let e = |at: u64| ev(1502, at, SID, &[]);
+        let burst: Vec<Event> = (0..98).map(|i| e(10_000 - i / 4)).chain([e(4_000), e(3_990)]).collect();
+        let refs: Vec<&Event> = burst.iter().collect();
+        assert_eq!(attempts(&refs), 2);
+        assert_eq!(attempts(&[]), 0);
     }
 
     #[test]

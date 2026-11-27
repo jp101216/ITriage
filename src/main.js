@@ -597,7 +597,7 @@
         "Events 1545/1552, twice in 7 days, last 2d ago: Windows found C:\\Program Files\\Contoso Backup\\BackupAgent.exe open while loading a profile, and the profile couldn't load. Stop that program from opening users' NTUSER.DAT (an exclusion in it, or a fix from its vendor)."),
       F("FSLogix Profile Container", "3.26.826.17182 · on · VHD locations: \\\\fs01\\profiles$"),
       F("FSLogix container for this sign-in", "attached · Profile_jparker.VHDX", "ok", "\\\\fs01\\profiles$\\jparker_S-1-5-21-1004336348-1177238915-682003330-1187\\Profile_jparker.VHDX"),
-      F("FSLogix container space", "21.8 GB free of 30.0 GB · 73%", "ok", "Sign-in fails when the container fills up. FSLogix can grow it only to SizeInMBs; past that, expand the VHDX or clear the profile.", { metric: M(73, "%", false) }),
+      F("FSLogix container space", "21.8 GB free of 30.0 GB · 73%", "ok", "Sign-in fails when the container fills up. Raising SizeInMBs extends existing containers at the person's next sign-in; otherwise clear space in the profile.", { metric: M(73, "%", false) }),
     ]),
     "desk.intune": R("desk.intune", "Intune enrollment & apps", "workstation", "1 Intune app failed to install", 410, [
       F("Intune enrollment", "enrolled · jparker@corp.example.org", "ok"),

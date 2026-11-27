@@ -596,6 +596,9 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
     }
 
     // --- FSLogix.
+    if let Some(h) = v.problem("desk.profile", "FSLogix service (frxsvc)") {
+        out.push(insight(82, Severity::Critical, "FSLogix's service isn't running, so no profile container attaches when people sign in.", vec![cite(h)], "Start the FSLogix Apps Services service (frxsvc); if it's missing, reinstall FSLogix. People signed in meanwhile need to sign out and back in."));
+    }
     if let Some(h) = v.find("desk.profile", |f| f.label == "FSLogix container for this sign-in" && bad(f)) {
         let local = h.1.value.contains("local profile");
         out.push(insight(
@@ -604,7 +607,7 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
             format!("The FSLogix profile container isn't in use for this sign-in ({}), so the person's roaming settings and files aren't here.", h.1.value.trim_start_matches("not attached: ").trim_start_matches("not used: ")),
             vec![cite(h)],
             if local {
-                "Remove this person's local profile on this PC (or set DeleteLocalProfileWhenVHDShouldApply), then have them sign in again."
+                "Copy anything they need from their local profile on this PC, remove it, then have them sign in again."
             } else {
                 "Check the container location is reachable from this PC, then read the day's FSLogix profile log (C:\\ProgramData\\FSLogix\\Logs\\Profile) for this sign-in."
             },
@@ -615,7 +618,7 @@ fn rules(v: &View) -> Vec<(u8, Insight)> {
         .or_else(|| v.find("desk.profile", |f| f.label.starts_with("FSLogix: container is") && f.label.contains("space") && bad(f)))
         .or_else(|| v.problem("desk.profile", "FSLogix: container is nearly full and must be expanded"));
     if let Some(h) = full {
-        out.push(insight(74, h.1.severity, "The FSLogix profile container is running out of space, and sign-in fails once it's full.", vec![cite(h)], "Expand the VHDX (or raise SizeInMBs for new ones), or clear space in the profile."));
+        out.push(insight(74, h.1.severity, "The FSLogix profile container is running out of space, and sign-in fails once it's full.", vec![cite(h)], "Raise SizeInMBs (existing containers grow to it at the next sign-in), or clear space in the profile."));
     }
     if let Some(h) = v.find("desk.profile", |f| f.label.starts_with("FSLogix: container in use") && bad(f)) {
         out.push(insight(70, h.1.severity, "The FSLogix container is in use by another session, so this sign-in can't attach it.", vec![cite(h)], "Sign the person out of their other session or PC (or detach the disk there), then sign in again."));
@@ -1158,6 +1161,21 @@ mod tests {
         let rows = findings(&facts, &crate::profile::Band { warn: 15.0, crit: 10.0 }, 0);
         let found = likely_causes(&[result("desk.profile", "User profile & FSLogix", rows)]);
         assert_eq!(found[0].cause, "The FSLogix profile container isn't in use for this sign-in (a local profile already exists for this account), so the person's roaming settings and files aren't here.");
-        assert!(found[0].next.starts_with("Remove this person's local profile"));
+        assert!(found[0].next.starts_with("Copy anything they need from their local profile"));
+    }
+
+    #[test]
+    fn a_stopped_fslogix_service_comes_first() {
+        use crate::desk::profile::{findings, Facts, Fslogix};
+        let facts = Facts {
+            account: "CORP\\jparker".into(),
+            path: Some("C:\\Users\\jparker".into()),
+            fslogix: Some(Fslogix { version: "3.26".into(), enabled: true, locations: vec!["C:\\fslprofiles".into()], service_running: Some(false), ..Fslogix::default() }),
+            ..Facts::default()
+        };
+        let rows = findings(&facts, &crate::profile::Band { warn: 15.0, crit: 10.0 }, 0);
+        let found = likely_causes(&[result("desk.profile", "User profile & FSLogix", rows)]);
+        assert_eq!(found[0].cause, "FSLogix's service isn't running, so no profile container attaches when people sign in.");
+        assert_eq!(found[0].severity, Severity::Critical);
     }
 }

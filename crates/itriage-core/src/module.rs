@@ -370,8 +370,8 @@ pub const PRESETS: &[Preset] = &[
         id: "health",
         title: "Health check",
         script: "",
-        description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear and what's waiting to be installed. Changes nothing.",
-        modules: &["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan"],
+        description: "Is this PC sound: drive health and crashes, throttling and hardware errors, free space, security posture, battery wear, what's waiting to be installed and updates that keep failing. Changes nothing.",
+        modules: &["system.info", "system.disk", "system.reliability", "system.hardware", "system.startup", "sec.posture", "desk.battery", "update.scan", "update.history"],
     },
 ];
 
